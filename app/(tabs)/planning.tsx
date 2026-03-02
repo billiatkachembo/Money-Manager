@@ -7,6 +7,10 @@ import {
   TouchableOpacity,
   TextInput,
   Alert,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
+  KeyboardTypeOptions,
 } from 'react-native';
 import {
   Target,
@@ -17,20 +21,59 @@ import {
   Plus,
   Edit3,
   Trash2,
+  Clock,
+  Percent,
+  Calendar,
+  X,
+  ChevronRight,
 } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+
+interface CalculatorForm {
+  loanAmount: string;
+  interestRate: string;
+  loanTerm: string;
+  principal: string;
+  rateOfReturn: string;
+  years: string;
+  currentSavings: string;
+  monthlyContribution: string;
+  targetAmount: string;
+  timeframe: string;
+  debtAmount: string;
+  monthlyPayment: string;
+  extraPayment: string;
+}
 
 export default function PlanningScreen() {
   const { theme } = useTheme();
   const { financialGoals, addFinancialGoal, deleteFinancialGoal, budgets, formatCurrency, getBudgetSpending } = useTransactionStore();
   const [activeSection, setActiveSection] = useState<'goals' | 'budgets' | 'calculator'>('goals');
   const [showAddGoal, setShowAddGoal] = useState(false);
+  const [activeCalculator, setActiveCalculator] = useState<string | null>(null);
+  const [calculatorResult, setCalculatorResult] = useState<any>(null);
   const [newGoal, setNewGoal] = useState({
     title: '',
     targetAmount: '',
     targetDate: '',
     category: 'savings' as const,
+  });
+
+  const [calculatorForm, setCalculatorForm] = useState<CalculatorForm>({
+    loanAmount: '',
+    interestRate: '',
+    loanTerm: '',
+    principal: '',
+    rateOfReturn: '',
+    years: '',
+    currentSavings: '',
+    monthlyContribution: '',
+    targetAmount: '',
+    timeframe: '',
+    debtAmount: '',
+    monthlyPayment: '',
+    extraPayment: '',
   });
 
   const getCategoryIcon = (category: string) => {
@@ -82,6 +125,302 @@ export default function PlanningScreen() {
     } catch {
       Alert.alert('Error', 'Failed to add goal');
     }
+  };
+
+  // Financial Calculator Functions
+  const calculateLoan = () => {
+    const principal = parseFloat(calculatorForm.loanAmount);
+    const annualRate = parseFloat(calculatorForm.interestRate) / 100;
+    const months = parseFloat(calculatorForm.loanTerm) * 12;
+
+    if (!principal || !annualRate || !months) {
+      Alert.alert('Error', 'Please enter all loan details');
+      return;
+    }
+
+    const monthlyRate = annualRate / 12;
+    const monthlyPayment = (principal * monthlyRate * Math.pow(1 + monthlyRate, months)) /
+      (Math.pow(1 + monthlyRate, months) - 1);
+    const totalPayment = monthlyPayment * months;
+    const totalInterest = totalPayment - principal;
+
+    setCalculatorResult({
+      title: 'Loan Calculator Results',
+      monthlyPayment: formatCurrency(monthlyPayment),
+      totalPayment: formatCurrency(totalPayment),
+      totalInterest: formatCurrency(totalInterest),
+    });
+  };
+
+  const calculateInvestment = () => {
+    const principal = parseFloat(calculatorForm.principal);
+    const annualRate = parseFloat(calculatorForm.rateOfReturn) / 100;
+    const years = parseFloat(calculatorForm.years);
+
+    if (!principal || !annualRate || !years) {
+      Alert.alert('Error', 'Please enter all investment details');
+      return;
+    }
+
+    const futureValue = principal * Math.pow(1 + annualRate, years);
+    const totalInterest = futureValue - principal;
+    const annualGrowth = (futureValue / principal) ** (1 / years) - 1;
+
+    setCalculatorResult({
+      title: 'Investment Growth Results',
+      futureValue: formatCurrency(futureValue),
+      totalInterest: formatCurrency(totalInterest),
+      annualGrowth: `${(annualGrowth * 100).toFixed(2)}%`,
+      years: years,
+    });
+  };
+
+  const calculateSavingsGoal = () => {
+    const current = parseFloat(calculatorForm.currentSavings);
+    const monthly = parseFloat(calculatorForm.monthlyContribution);
+    const target = parseFloat(calculatorForm.targetAmount);
+    const months = parseFloat(calculatorForm.timeframe) * 12;
+
+    if (!target || !months) {
+      Alert.alert('Error', 'Please enter target amount and timeframe');
+      return;
+    }
+
+    const needed = target - (current || 0);
+    const monthlyRequired = needed / months;
+
+    let result;
+    if (monthly) {
+      // Calculate months needed with current monthly contribution
+      const monthsNeeded = needed / monthly;
+      result = {
+        title: 'Savings Goal Analysis',
+        monthlyContribution: formatCurrency(monthly),
+        monthsNeeded: Math.ceil(monthsNeeded),
+        yearsNeeded: (monthsNeeded / 12).toFixed(1),
+        totalContribution: formatCurrency(monthly * monthsNeeded),
+      };
+    } else {
+      // Calculate required monthly contribution
+      result = {
+        title: 'Savings Goal Analysis',
+        monthlyRequired: formatCurrency(monthlyRequired),
+        totalMonths: months,
+        totalYears: (months / 12).toFixed(1),
+        finalAmount: formatCurrency(target),
+      };
+    }
+
+    setCalculatorResult(result);
+  };
+
+  const calculateDebtPayoff = () => {
+    const principal = parseFloat(calculatorForm.debtAmount);
+    const monthly = parseFloat(calculatorForm.monthlyPayment);
+    const annualRate = 0.18; // 18% average credit card interest
+    const extra = parseFloat(calculatorForm.extraPayment) || 0;
+
+    if (!principal || !monthly) {
+      Alert.alert('Error', 'Please enter debt amount and monthly payment');
+      return;
+    }
+
+    let balance = principal;
+    let totalMonths = 0;
+    let totalInterest = 0;
+    const monthlyRate = annualRate / 12;
+    const totalPayment = monthly + extra;
+
+    while (balance > 0 && totalMonths < 600) { // Cap at 50 years
+      const interest = balance * monthlyRate;
+      const principalPayment = Math.min(totalPayment - interest, balance);
+      balance -= principalPayment;
+      totalInterest += interest;
+      totalMonths++;
+    }
+
+    type DebtPayoffResult = {
+      title: string;
+      totalMonths: number;
+      totalYears: string;
+      totalInterest: string;
+      totalPaid: string;
+      payoffDate: string;
+      interestSaved?: string;
+      monthsSaved?: number;
+    };
+
+    let result: DebtPayoffResult = {
+      title: 'Debt Payoff Analysis',
+      totalMonths: totalMonths,
+      totalYears: (totalMonths / 12).toFixed(1),
+      totalInterest: formatCurrency(totalInterest),
+      totalPaid: formatCurrency(principal + totalInterest),
+      payoffDate: new Date(new Date().setMonth(new Date().getMonth() + totalMonths)).toLocaleDateString(),
+    };
+
+    if (extra > 0) {
+      result.interestSaved = formatCurrency(principal * 0.18 * (totalMonths / 12) - totalInterest);
+      result.monthsSaved = Math.round((principal * 0.18 * (10/12)) / monthly - totalMonths);
+    }
+
+    setCalculatorResult(result);
+  };
+
+  const openCalculator = (calculator: string) => {
+    setActiveCalculator(calculator);
+    setCalculatorResult(null);
+    // Reset form for this calculator
+    setCalculatorForm({
+      loanAmount: '',
+      interestRate: '',
+      loanTerm: '',
+      principal: '',
+      rateOfReturn: '',
+      years: '',
+      currentSavings: '',
+      monthlyContribution: '',
+      targetAmount: '',
+      timeframe: '',
+      debtAmount: '',
+      monthlyPayment: '',
+      extraPayment: '',
+    });
+  };
+
+  const closeCalculator = () => {
+    setActiveCalculator(null);
+    setCalculatorResult(null);
+  };
+
+  const renderCalculatorInput = (label: string, value: string, key: keyof CalculatorForm, placeholder: string, icon: React.ReactNode, keyboardType: KeyboardTypeOptions = 'numeric') => (
+    <View style={styles.inputGroup}>
+      <View style={styles.inputLabel}>
+        {icon}
+        <Text style={[styles.inputLabelText, { color: theme.colors.text }]}>{label}</Text>
+      </View>
+      <TextInput
+        style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
+        placeholder={placeholder}
+        placeholderTextColor={theme.colors.textSecondary}
+        value={value}
+        onChangeText={(text) => setCalculatorForm(prev => ({ ...prev, [key]: text }))}
+        keyboardType={keyboardType}
+      />
+    </View>
+  );
+
+  const renderCalculatorModal = () => {
+    if (!activeCalculator) return null;
+
+    const calculators = {
+      loan: {
+        title: 'Loan Calculator',
+        description: 'Calculate monthly payments, total interest, and payoff schedule',
+        inputs: [
+          renderCalculatorInput('Loan Amount', calculatorForm.loanAmount, 'loanAmount', 'e.g., 25000', <DollarSign size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Interest Rate', calculatorForm.interestRate, 'interestRate', 'Annual percentage rate', <Percent size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Loan Term', calculatorForm.loanTerm, 'loanTerm', 'Years', <Calendar size={16} color={theme.colors.textSecondary} />),
+        ],
+        calculate: calculateLoan,
+      },
+      investment: {
+        title: 'Investment Growth Calculator',
+        description: 'Project how your investments will grow over time',
+        inputs: [
+          renderCalculatorInput('Initial Investment', calculatorForm.principal, 'principal', 'e.g., 10000', <DollarSign size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Rate of Return', calculatorForm.rateOfReturn, 'rateOfReturn', 'Annual percentage', <TrendingUp size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Time Period', calculatorForm.years, 'years', 'Years', <Clock size={16} color={theme.colors.textSecondary} />),
+        ],
+        calculate: calculateInvestment,
+      },
+      savings: {
+        title: 'Savings Goal Calculator',
+        description: 'Plan how to reach your savings targets',
+        inputs: [
+          renderCalculatorInput('Current Savings', calculatorForm.currentSavings, 'currentSavings', 'e.g., 5000', <PiggyBank size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Monthly Contribution', calculatorForm.monthlyContribution, 'monthlyContribution', 'e.g., 500', <DollarSign size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Target Amount', calculatorForm.targetAmount, 'targetAmount', 'e.g., 50000', <Target size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Timeframe', calculatorForm.timeframe, 'timeframe', 'Years', <Calendar size={16} color={theme.colors.textSecondary} />),
+        ],
+        calculate: calculateSavingsGoal,
+      },
+      debt: {
+        title: 'Debt Payoff Calculator',
+        description: 'Create a plan to eliminate your debt faster',
+        inputs: [
+          renderCalculatorInput('Total Debt', calculatorForm.debtAmount, 'debtAmount', 'e.g., 15000', <DollarSign size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Monthly Payment', calculatorForm.monthlyPayment, 'monthlyPayment', 'e.g., 300', <DollarSign size={16} color={theme.colors.textSecondary} />),
+          renderCalculatorInput('Extra Payment (Optional)', calculatorForm.extraPayment, 'extraPayment', 'e.g., 100', <Plus size={16} color={theme.colors.textSecondary} />),
+        ],
+        calculate: calculateDebtPayoff,
+      },
+    };
+
+    const calculator = calculators[activeCalculator as keyof typeof calculators];
+
+    return (
+      <Modal
+        visible={!!activeCalculator}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
+        >
+          <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
+            <TouchableOpacity onPress={closeCalculator}>
+              <X size={24} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>{calculator.title}</Text>
+            <View style={{ width: 24 }} />
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <Text style={[styles.modalDescription, { color: theme.colors.textSecondary }]}>
+              {calculator.description}
+            </Text>
+
+            <View style={styles.calculatorForm}>
+              {calculator.inputs}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.calculateButton, { backgroundColor: theme.colors.primary }]}
+              onPress={calculator.calculate}
+            >
+              <Text style={styles.calculateButtonText}>Calculate</Text>
+            </TouchableOpacity>
+
+            {calculatorResult && (
+              <View style={[styles.resultContainer, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
+                <Text style={[styles.resultTitle, { color: theme.colors.text }]}>{calculatorResult.title}</Text>
+                {Object.entries(calculatorResult).map(([key, value]) => {
+                  if (key === 'title') return null;
+                  return (
+                    <View key={key} style={styles.resultRow}>
+                      <Text style={[styles.resultLabel, { color: theme.colors.textSecondary }]}>
+                        {key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}:
+                      </Text>
+                      <Text style={[styles.resultValue, { color: theme.colors.text }]}>{String(value)}</Text>
+                    </View>
+                  );
+                })}
+                <TouchableOpacity
+                  style={[styles.saveResultButton, { borderColor: theme.colors.border }]}
+                  onPress={() => {
+                    Alert.alert('Save Result', 'This feature will save the calculation result to your notes');
+                  }}
+                >
+                  <Text style={[styles.saveResultText, { color: theme.colors.primary }]}>Save to Notes</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
   };
 
   const renderGoalsSection = () => (
@@ -292,40 +631,88 @@ export default function PlanningScreen() {
 
   const renderCalculatorSection = () => (
     <View style={styles.section}>
-      <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Financial Calculators</Text>
+      <View style={styles.sectionHeader}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Financial Calculators</Text>
+        <Text style={[styles.sectionSubtitle, { color: theme.colors.textSecondary }]}>
+          Plan and optimize your finances
+        </Text>
+      </View>
       
       <View style={styles.calculatorGrid}>
-        <TouchableOpacity style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <Calculator size={32} color={theme.colors.primary} />
+        <TouchableOpacity 
+          style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+          onPress={() => openCalculator('loan')}
+        >
+          <View style={styles.calculatorIconContainer}>
+            <Calculator size={28} color={theme.colors.primary} />
+          </View>
           <Text style={[styles.calculatorTitle, { color: theme.colors.text }]}>Loan Calculator</Text>
           <Text style={[styles.calculatorDescription, { color: theme.colors.textSecondary }]}>
             Calculate monthly payments and interest
           </Text>
+          <ChevronRight size={20} color={theme.colors.textSecondary} style={styles.calculatorArrow} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <TrendingUp size={32} color={theme.colors.success} />
+        <TouchableOpacity 
+          style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+          onPress={() => openCalculator('investment')}
+        >
+          <View style={styles.calculatorIconContainer}>
+            <TrendingUp size={28} color={theme.colors.success} />
+          </View>
           <Text style={[styles.calculatorTitle, { color: theme.colors.text }]}>Investment Growth</Text>
           <Text style={[styles.calculatorDescription, { color: theme.colors.textSecondary }]}>
             Project investment returns over time
           </Text>
+          <ChevronRight size={20} color={theme.colors.textSecondary} style={styles.calculatorArrow} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <PiggyBank size={32} color={theme.colors.warning} />
+        <TouchableOpacity 
+          style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+          onPress={() => openCalculator('savings')}
+        >
+          <View style={styles.calculatorIconContainer}>
+            <PiggyBank size={28} color={theme.colors.warning} />
+          </View>
           <Text style={[styles.calculatorTitle, { color: theme.colors.text }]}>Savings Goal</Text>
           <Text style={[styles.calculatorDescription, { color: theme.colors.textSecondary }]}>
             Calculate how much to save monthly
           </Text>
+          <ChevronRight size={20} color={theme.colors.textSecondary} style={styles.calculatorArrow} />
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <DollarSign size={32} color={theme.colors.error} />
+        <TouchableOpacity 
+          style={[styles.calculatorCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+          onPress={() => openCalculator('debt')}
+        >
+          <View style={styles.calculatorIconContainer}>
+            <DollarSign size={28} color={theme.colors.error} />
+          </View>
           <Text style={[styles.calculatorTitle, { color: theme.colors.text }]}>Debt Payoff</Text>
           <Text style={[styles.calculatorDescription, { color: theme.colors.textSecondary }]}>
             Plan your debt elimination strategy
           </Text>
+          <ChevronRight size={20} color={theme.colors.textSecondary} style={styles.calculatorArrow} />
         </TouchableOpacity>
+      </View>
+
+      <View style={[styles.tipsContainer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>💡 Financial Tips</Text>
+        <View style={styles.tipItem}>
+          <Text style={[styles.tipText, { color: theme.colors.text }]}>
+            • Aim to save 3-6 months of expenses for emergencies
+          </Text>
+        </View>
+        <View style={styles.tipItem}>
+          <Text style={[styles.tipText, { color: theme.colors.text }]}>
+            • Invest at least 15% of income for retirement
+          </Text>
+        </View>
+        <View style={styles.tipItem}>
+          <Text style={[styles.tipText, { color: theme.colors.text }]}>
+            • Pay off high-interest debt first (credit cards)
+          </Text>
+        </View>
       </View>
     </View>
   );
@@ -387,6 +774,8 @@ export default function PlanningScreen() {
         {activeSection === 'budgets' && renderBudgetsSection()}
         {activeSection === 'calculator' && renderCalculatorSection()}
       </ScrollView>
+
+      {renderCalculatorModal()}
     </View>
   );
 }
@@ -428,14 +817,15 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 24,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '700',
+  },
+  sectionSubtitle: {
+    fontSize: 14,
+    marginTop: 4,
   },
   addButton: {
     width: 40,
@@ -632,6 +1022,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  // Calculator Styles
   calculatorGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -641,7 +1032,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     width: '48%',
-    alignItems: 'center',
     borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: {
@@ -652,16 +1042,138 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  calculatorIconContainer: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    backgroundColor: 'rgba(102, 126, 234, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
   calculatorTitle: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
-    marginTop: 12,
     marginBottom: 4,
-    textAlign: 'center',
   },
   calculatorDescription: {
     fontSize: 12,
-    textAlign: 'center',
     lineHeight: 16,
+    flex: 1,
+  },
+  calculatorArrow: {
+    position: 'absolute',
+    right: 16,
+    bottom: 16,
+  },
+  tipsContainer: {
+    marginTop: 24,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  tipsTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  tipItem: {
+    marginBottom: 8,
+  },
+  tipText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  // Modal Styles
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    borderBottomWidth: 1,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    flex: 1,
+  },
+  modalContent: {
+    flex: 1,
+    padding: 16,
+  },
+  modalDescription: {
+    fontSize: 14,
+    marginBottom: 24,
+    lineHeight: 20,
+    textAlign: 'center',
+  },
+  calculatorForm: {
+    gap: 16,
+  },
+  inputGroup: {
+    gap: 8,
+  },
+  inputLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputLabelText: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  calculateButton: {
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 32,
+  },
+  calculateButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  resultContainer: {
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    marginBottom: 20,
+  },
+  resultTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  resultRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.1)',
+  },
+  resultLabel: {
+    fontSize: 14,
+  },
+  resultValue: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveResultButton: {
+    marginTop: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  saveResultText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

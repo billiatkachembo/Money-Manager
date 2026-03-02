@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,13 +10,38 @@ import {
   ScrollView,
   Switch,
   Alert,
+  Image,
+  Platform,
+  ActivityIndicator,
 } from 'react-native';
-import { X, Calculator, Repeat, ArrowLeftRight, Calendar } from 'lucide-react-native';
+import { 
+  X, 
+  Calculator, 
+  Repeat, 
+  ArrowLeftRight, 
+  Calendar, 
+  ChevronDown, 
+  ChevronUp,
+  Search,
+  Camera,
+  Upload,
+  FileText,
+  CreditCard,
+  Wallet,
+  PiggyBank,
+  TrendingUp,
+  Landmark,
+  Image as ImageIcon,
+  Scan,
+  CheckCircle,
+} from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
 import { TransactionCategory } from '@/types/transaction';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
+import * as FileSystem from 'expo-file-system';
 
 interface AddTransactionModalProps {
   visible: boolean;
@@ -37,10 +62,456 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [showCalculator, setShowCalculator] = useState(false);
   const [calculatorDisplay, setCalculatorDisplay] = useState('0');
   const [calculatorInput, setCalculatorInput] = useState('');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [categorySearch, setCategorySearch] = useState('');
+  const [receiptImage, setReceiptImage] = useState<string | null>(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [ocrExtracted, setOcrExtracted] = useState(false);
+  const [showImageActions, setShowImageActions] = useState(false);
   
-  const { addTransaction, accounts, formatCurrency } = useTransactionStore();
+  const { addTransaction, accounts, formatCurrency, addAccount } = useTransactionStore();
 
-  const categories = type === 'transfer' ? [] : (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
+  // Add default accounts on first load
+  useEffect(() => {
+    const addDefaultAccounts = async () => {
+      if (accounts.length === 0) {
+        const defaultAccounts = [
+          {
+            id: '1',
+            name: 'Primary Checking',
+            type: 'checking' as const,
+            balance: 5000,
+            currency: 'USD',
+            color: '#667eea',
+            icon: '💳',
+            isActive: true,
+            createdAt: new Date(),
+          },
+          {
+            id: '2',
+            name: 'Savings Account',
+            type: 'savings' as const,
+            balance: 15000,
+            currency: 'USD',
+            color: '#4CAF50',
+            icon: '💰',
+            isActive: true,
+            createdAt: new Date(),
+          },
+          {
+            id: '3',
+            name: 'Credit Card',
+            type: 'credit' as const,
+            balance: -1200,
+            currency: 'USD',
+            color: '#F44336',
+            icon: '💳',
+            isActive: true,
+            createdAt: new Date(),
+          },
+          {
+            id: '4',
+            name: 'Investment Account',
+            type: 'investment' as const,
+            balance: 25000,
+            currency: 'USD',
+            color: '#FF9800',
+            icon: '📈',
+            isActive: true,
+            createdAt: new Date(),
+          },
+          {
+            id: '5',
+            name: 'Cash Wallet',
+            type: 'cash' as const,
+            balance: 500,
+            currency: 'USD',
+            color: '#9C27B0',
+            icon: '💵',
+            isActive: true,
+            createdAt: new Date(),
+          },
+        ];
+
+        for (const account of defaultAccounts) {
+          await addAccount(account);
+        }
+      }
+    };
+
+    addDefaultAccounts();
+  }, []);
+
+  // Enhanced categories with more options
+  const enhancedExpenseCategories: TransactionCategory[] = [
+    // Basic Living Expenses
+    {
+      id: 'housing',
+      name: 'Housing',
+      icon: 'Home',
+      color: '#FF6B6B',
+    },
+    {
+      id: 'utilities',
+      name: 'Utilities',
+      icon: 'Wifi',
+      color: '#4ECDC4',
+    },
+    {
+      id: 'groceries',
+      name: 'Groceries',
+      icon: 'ShoppingBag',
+      color: '#FFD166',
+    },
+    // Transportation
+    {
+      id: 'transport',
+      name: 'Transport',
+      icon: 'Car',
+      color: '#06D6A0',
+    },
+    {
+      id: 'gas',
+      name: 'Gas/Fuel',
+      icon: 'Droplet',
+      color: '#118AB2',
+    },
+    // Food & Dining
+    {
+      id: 'dining',
+      name: 'Dining Out',
+      icon: 'Utensils',
+      color: '#EF476F',
+    },
+    {
+      id: 'coffee',
+      name: 'Coffee',
+      icon: 'Coffee',
+      color: '#073B4C',
+    },
+    // Entertainment
+    {
+      id: 'entertainment',
+      name: 'Entertainment',
+      icon: 'Film',
+      color: '#7209B7',
+    },
+    {
+      id: 'subscriptions',
+      name: 'Subscriptions',
+      icon: 'FileText',
+      color: '#F15BB5',
+    },
+    // Health & Wellness
+    {
+      id: 'health',
+      name: 'Health',
+      icon: 'Heart',
+      color: '#FF595E',
+    },
+    {
+      id: 'fitness',
+      name: 'Fitness',
+      icon: 'Dumbbell',
+      color: '#8AC926',
+    },
+    // Personal
+    {
+      id: 'shopping',
+      name: 'Shopping',
+      icon: 'ShoppingBag',
+      color: '#1982C4',
+    },
+    {
+      id: 'personal-care',
+      name: 'Personal Care',
+      icon: 'Smile',
+      color: '#6A4C93',
+    },
+    // Education
+    {
+      id: 'education',
+      name: 'Education',
+      icon: 'GraduationCap',
+      color: '#FFCA3A',
+    },
+    {
+      id: 'books',
+      name: 'Books & Learning',
+      icon: 'BookOpen',
+      color: '#8AC926',
+    },
+    // Travel
+    {
+      id: 'travel',
+      name: 'Travel',
+      icon: 'Plane',
+      color: '#118AB2',
+    },
+    {
+      id: 'vacation',
+      name: 'Vacation',
+      icon: 'Umbrella',
+      color: '#06D6A0',
+    },
+    // Gifts & Donations
+    {
+      id: 'gifts',
+      name: 'Gifts',
+      icon: 'Gift',
+      color: '#FF595E',
+    },
+    {
+      id: 'donations',
+      name: 'Donations',
+      icon: 'HandHeart',
+      color: '#7209B7',
+    },
+    // Financial
+    {
+      id: 'insurance',
+      name: 'Insurance',
+      icon: 'Shield',
+      color: '#073B4C',
+    },
+    {
+      id: 'taxes',
+      name: 'Taxes',
+      icon: 'Percent',
+      color: '#F15BB5',
+    },
+    {
+      id: 'bank-fees',
+      name: 'Bank Fees',
+      icon: 'CreditCard',
+      color: '#8B5CF6',
+    },
+    // Miscellaneous
+    {
+      id: 'other',
+      name: 'Other',
+      icon: 'MoreHorizontal',
+      color: '#94A3B8',
+    },
+  ];
+
+  const enhancedIncomeCategories: TransactionCategory[] = [
+    {
+      id: 'salary',
+      name: 'Salary',
+      icon: 'Briefcase',
+      color: '#10B981',
+    },
+    {
+      id: 'freelance',
+      name: 'Freelance',
+      icon: 'Laptop',
+      color: '#8B5CF6',
+    },
+    {
+      id: 'business',
+      name: 'Business',
+      icon: 'Building',
+      color: '#F59E0B',
+    },
+    {
+      id: 'investment',
+      name: 'Investment',
+      icon: 'TrendingUp',
+      color: '#3B82F6',
+    },
+    {
+      id: 'dividends',
+      name: 'Dividends',
+      icon: 'PieChart',
+      color: '#6366F1',
+    },
+    {
+      id: 'rental',
+      name: 'Rental Income',
+      icon: 'Home',
+      color: '#EC4899',
+    },
+    {
+      id: 'gift',
+      name: 'Gift',
+      icon: 'Gift',
+      color: '#F43F5E',
+    },
+    {
+      id: 'refund',
+      name: 'Refund',
+      icon: 'RefreshCw',
+      color: '#84CC16',
+    },
+    {
+      id: 'side-hustle',
+      name: 'Side Hustle',
+      icon: 'Zap',
+      color: '#F97316',
+    },
+    {
+      id: 'bonus',
+      name: 'Bonus',
+      icon: 'Award',
+      color: '#8B5CF6',
+    },
+    {
+      id: 'commission',
+      name: 'Commission',
+      icon: 'DollarSign',
+      color: '#10B981',
+    },
+    {
+      id: 'interest',
+      name: 'Interest',
+      icon: 'Percent',
+      color: '#3B82F6',
+    },
+    {
+      id: 'pension',
+      name: 'Pension',
+      icon: 'User',
+      color: '#6366F1',
+    },
+    {
+      id: 'social-security',
+      name: 'Social Security',
+      icon: 'Users',
+      color: '#EC4899',
+    },
+    {
+      id: 'other-income',
+      name: 'Other Income',
+      icon: 'MoreHorizontal',
+      color: '#94A3B8',
+    },
+  ];
+
+  const categories = type === 'transfer' ? [] : (type === 'income' ? enhancedIncomeCategories : enhancedExpenseCategories);
+
+  // Filter categories based on search
+  const filteredCategories = categories.filter(category =>
+    category.name.toLowerCase().includes(categorySearch.toLowerCase())
+  );
+
+  // Function to simulate OCR scanning (in production, use a real OCR API)
+  const simulateOcrScanning = async (imageUri: string) => {
+    setIsScanning(true);
+    setOcrExtracted(false);
+    
+    // Simulate API call delay
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Mock extracted data from receipt
+    const mockExtractedData = {
+      amount: Math.floor(Math.random() * 100) + 10 + (Math.random() > 0.5 ? 0.99 : 0.00),
+      description: type === 'expense' ? 
+        ['Grocery Store', 'Coffee Shop', 'Restaurant', 'Gas Station', 'Pharmacy'][Math.floor(Math.random() * 5)] :
+        ['Salary Deposit', 'Freelance Payment', 'Investment Return', 'Gift Received'][Math.floor(Math.random() * 4)],
+      category: type === 'expense' ? 
+        ['groceries', 'coffee', 'dining', 'gas', 'shopping'][Math.floor(Math.random() * 5)] :
+        ['salary', 'freelance', 'investment', 'gift'][Math.floor(Math.random() * 4)],
+      date: new Date().toISOString().split('T')[0],
+    };
+    
+    // Update form with extracted data
+    setAmount(mockExtractedData.amount.toString());
+    setDescription(mockExtractedData.description);
+    
+    const foundCategory = categories.find(cat => cat.id === mockExtractedData.category);
+    if (foundCategory) {
+      setSelectedCategory(foundCategory);
+    }
+    
+    setIsScanning(false);
+    setOcrExtracted(true);
+    
+    // Show success message
+    Alert.alert(
+      'OCR Scan Complete',
+      'Transaction details extracted from receipt!',
+      [{ text: 'OK' }]
+    );
+  };
+
+  // Function to take a photo with camera
+  const takePhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      
+      if (status !== 'granted') {
+        Alert.alert(
+          'Camera Permission Required',
+          'Please allow camera access to take photos of receipts.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0].uri) {
+        // Compress image
+        const compressedImage = await manipulateAsync(
+          result.assets[0].uri,
+          [{ resize: { width: 800 } }],
+          { compress: 0.7, format: SaveFormat.JPEG }
+        );
+        
+        setReceiptImage(compressedImage.uri);
+        setShowImageActions(true);
+        
+        // Auto-start OCR scanning
+        simulateOcrScanning(compressedImage.uri);
+      }
+    } catch (error) {
+      console.error('Error taking photo:', error);
+      Alert.alert('Error', 'Failed to take photo. Please try again.');
+    }
+  };
+
+  // Function to pick image from gallery
+  const pickImage = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0].uri) {
+        setReceiptImage(result.assets[0].uri);
+        setShowImageActions(true);
+        
+        // Auto-start OCR scanning
+        simulateOcrScanning(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      Alert.alert('Error', 'Failed to pick image. Please try again.');
+    }
+  };
+
+  // Function to scan existing receipt image
+  const scanReceipt = () => {
+    if (receiptImage) {
+      simulateOcrScanning(receiptImage);
+    }
+  };
+
+  // Function to remove receipt image
+  const removeReceiptImage = () => {
+    setReceiptImage(null);
+    setShowImageActions(false);
+    setOcrExtracted(false);
+  };
 
   const handleSubmit = () => {
     if (!amount || !description) {
@@ -55,6 +526,11 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
 
     if (type === 'transfer' && (!fromAccount || !toAccount)) {
       Alert.alert('Error', 'Please select both accounts for transfer');
+      return;
+    }
+
+    if (type === 'transfer' && fromAccount === toAccount) {
+      Alert.alert('Error', 'Cannot transfer to the same account');
       return;
     }
 
@@ -84,6 +560,11 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       };
     }
 
+    // Add receipt image if exists
+    if (receiptImage) {
+      transactionData.receiptImage = receiptImage;
+    }
+
     if (isRecurring) {
       transactionData.isRecurring = true;
       transactionData.recurringFrequency = recurringFrequency;
@@ -108,6 +589,12 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setShowCalculator(false);
     setCalculatorDisplay('0');
     setCalculatorInput('');
+    setShowCategoryDropdown(false);
+    setCategorySearch('');
+    setReceiptImage(null);
+    setIsScanning(false);
+    setOcrExtracted(false);
+    setShowImageActions(false);
     onClose();
   };
 
@@ -143,6 +630,308 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     ['0', '.', '', ''],
   ];
 
+  const renderCategoryDropdown = () => {
+    if (type === 'transfer' || !showCategoryDropdown) return null;
+
+    return (
+      <View style={[styles.dropdownContainer, { backgroundColor: theme.colors.surface }]}>
+        <View style={[styles.dropdownHeader, { borderBottomColor: theme.colors.border }]}>
+          <Search size={16} color={theme.colors.textSecondary} />
+          <TextInput
+            style={[styles.categorySearch, { color: theme.colors.text }]}
+            placeholder="Search categories..."
+            placeholderTextColor={theme.colors.textSecondary}
+            value={categorySearch}
+            onChangeText={setCategorySearch}
+            autoFocus
+          />
+          <TouchableOpacity onPress={() => setShowCategoryDropdown(false)}>
+            <X size={16} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+        
+        <ScrollView style={styles.dropdownList} showsVerticalScrollIndicator={false}>
+          {filteredCategories.map((category) => {
+            if (!category?.id?.trim()) return null;
+            const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
+            const isSelected = selectedCategory?.id === category.id;
+            
+            return (
+              <TouchableOpacity
+                key={category.id}
+                style={[
+                  styles.dropdownItem,
+                  { backgroundColor: theme.colors.background },
+                  isSelected && { backgroundColor: theme.colors.primary + '20' },
+                ]}
+                onPress={() => {
+                  setSelectedCategory(category);
+                  setShowCategoryDropdown(false);
+                  setCategorySearch('');
+                }}
+              >
+                <View style={styles.dropdownItemLeft}>
+                  <View style={[styles.dropdownIcon, { backgroundColor: category.color + '20' }]}>
+                    <IconComponent size={16} color={category.color} />
+                  </View>
+                  <Text style={[
+                    styles.dropdownItemText, 
+                    { color: theme.colors.text },
+                    isSelected && { color: theme.colors.primary, fontWeight: '600' }
+                  ]}>
+                    {category.name}
+                  </Text>
+                </View>
+                {isSelected && (
+                  <View style={[styles.checkmark, { backgroundColor: theme.colors.primary }]} />
+                )}
+              </TouchableOpacity>
+            );
+          })}
+          
+          {filteredCategories.length === 0 && (
+            <View style={styles.noResults}>
+              <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>
+                No categories found
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    );
+  };
+
+  // Account selection components
+  const renderAccountSelection = () => {
+    if (type !== 'transfer') return null;
+
+    return (
+      <>
+        <View style={styles.inputGroup}>
+          <Text style={[styles.label, { color: theme.colors.text }]}>From Account</Text>
+          {accounts.length === 0 ? (
+            <View style={[styles.emptyAccounts, { backgroundColor: theme.colors.surface }]}>
+              <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>
+                Loading accounts...
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.accountsGrid}>
+              {accounts.map((account: typeof accounts[0]) => {
+                const isSelected = fromAccount === account.id;
+                const isDisabled = account.id === toAccount;
+                
+                return (
+                  <TouchableOpacity
+                    key={account.id}
+                    style={[
+                      styles.accountCard,
+                      { 
+                        backgroundColor: theme.colors.surface,
+                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        opacity: isDisabled ? 0.5 : 1,
+                      },
+                    ]}
+                    onPress={() => {
+                      if (!isDisabled) {
+                        setFromAccount(account.id);
+                      }
+                    }}
+                    disabled={isDisabled}
+                  >
+                    <View style={styles.accountCardHeader}>
+                      <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
+                        <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
+                      </View>
+                      <Text style={[
+                        styles.accountName,
+                        { color: theme.colors.text },
+                        isSelected && { color: theme.colors.primary, fontWeight: '600' }
+                      ]}>
+                        {account.name}
+                      </Text>
+                    </View>
+                    <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
+                      {formatCurrency(account.balance)}
+                    </Text>
+                    {isDisabled && (
+                      <Text style={[styles.disabledText, { color: theme.colors.textSecondary }]}>
+                        Same as "To"
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+        </View>
+        
+        <View style={styles.inputGroup}>
+          <Text style={[styles.label, { color: theme.colors.text }]}>To Account</Text>
+          {accounts.length === 0 ? (
+            <View style={[styles.emptyAccounts, { backgroundColor: theme.colors.surface }]}>
+              <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>
+                Loading accounts...
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.accountsGrid}>
+              {accounts.map((account: typeof accounts[0]) => {
+                const isSelected = toAccount === account.id;
+                const isDisabled = account.id === fromAccount;
+                
+                return (
+                  <TouchableOpacity
+                    key={account.id}
+                    style={[
+                      styles.accountCard,
+                      { 
+                        backgroundColor: theme.colors.surface,
+                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        opacity: isDisabled ? 0.5 : 1,
+                      },
+                    ]}
+                    onPress={() => {
+                      if (!isDisabled) {
+                        setToAccount(account.id);
+                      }
+                    }}
+                    disabled={isDisabled}
+                  >
+                    <View style={styles.accountCardHeader}>
+                      <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
+                        <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
+                      </View>
+                      <Text style={[
+                        styles.accountName,
+                        { color: theme.colors.text },
+                        isSelected && { color: theme.colors.primary, fontWeight: '600' }
+                      ]}>
+                        {account.name}
+                      </Text>
+                    </View>
+                    <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
+                      {formatCurrency(account.balance)}
+                    </Text>
+                    {isDisabled && (
+                      <Text style={[styles.disabledText, { color: theme.colors.textSecondary }]}>
+                        Same as "From"
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {fromAccount && toAccount && fromAccount !== toAccount && (
+          <View style={[styles.transferPreview, { backgroundColor: theme.colors.surface }]}>
+            <Text style={[styles.transferPreviewTitle, { color: theme.colors.text }]}>Transfer Preview</Text>
+            <View style={styles.transferPreviewRow}>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
+                Amount:
+              </Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
+                {formatCurrency(parseFloat(amount) || 0)}
+              </Text>
+            </View>
+            <View style={styles.transferPreviewRow}>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
+                From:
+              </Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
+                {accounts.find((a: typeof accounts[0]) => a.id === fromAccount)?.name || 'Unknown'}
+              </Text>
+            </View>
+            <View style={styles.transferPreviewRow}>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
+                To:
+              </Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
+                {accounts.find((a: typeof accounts[0]) => a.id === toAccount)?.name || 'Unknown'}
+              </Text>
+            </View>
+          </View>
+        )}
+      </>
+    );
+  };
+
+  // Render receipt scanning section
+  const renderReceiptSection = () => {
+    if (type === 'transfer') return null;
+
+    return (
+      <View style={styles.inputGroup}>
+        <Text style={[styles.label, { color: theme.colors.text }]}>
+          Receipt Scanning {ocrExtracted && <CheckCircle size={16} color="#10B981" />}
+        </Text>
+        
+        {receiptImage ? (
+          <View style={[styles.receiptContainer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={styles.receiptImageContainer}>
+              <Image source={{ uri: receiptImage }} style={styles.receiptImage} />
+              {isScanning && (
+                <View style={styles.scanningOverlay}>
+                  <ActivityIndicator size="large" color={theme.colors.primary} />
+                  <Text style={[styles.scanningText, { color: 'white' }]}>
+                    Scanning receipt...
+                  </Text>
+                </View>
+              )}
+            </View>
+            
+            {showImageActions && !isScanning && (
+              <View style={styles.imageActions}>
+                {!ocrExtracted && (
+                  <TouchableOpacity 
+                    style={[styles.imageActionButton, { backgroundColor: theme.colors.primary }]}
+                    onPress={scanReceipt}
+                  >
+                    <Scan size={16} color="white" />
+                    <Text style={styles.imageActionText}>Scan Receipt</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity 
+                  style={[styles.imageActionButton, { backgroundColor: theme.colors.error }]}
+                  onPress={removeReceiptImage}
+                >
+                  <X size={16} color="white" />
+                  <Text style={styles.imageActionText}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        ) : (
+          <View style={styles.uploadButtons}>
+            <TouchableOpacity 
+              style={[styles.uploadButton, { backgroundColor: theme.colors.primary }]}
+              onPress={takePhoto}
+            >
+              <Camera size={20} color="white" />
+              <Text style={styles.uploadButtonText}>Take Photo</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={[styles.uploadButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+              onPress={pickImage}
+            >
+              <Upload size={20} color={theme.colors.text} />
+              <Text style={[styles.uploadButtonText, { color: theme.colors.text }]}>Choose from Gallery</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        
+        <Text style={[styles.receiptHint, { color: theme.colors.textSecondary }]}>
+          {ocrExtracted 
+            ? '✓ Details extracted from receipt'
+            : 'Upload a receipt photo to automatically fill transaction details'}
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <Modal
       visible={visible}
@@ -168,6 +957,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
               onPress={() => {
                 setType('expense');
                 setSelectedCategory(null);
+                setShowCategoryDropdown(false);
               }}
             >
               <Text style={[
@@ -185,6 +975,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
               onPress={() => {
                 setType('income');
                 setSelectedCategory(null);
+                setShowCategoryDropdown(false);
               }}
             >
               <Text style={[
@@ -202,6 +993,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
               onPress={() => {
                 setType('transfer');
                 setSelectedCategory(null);
+                setShowCategoryDropdown(false);
               }}
             >
               <ArrowLeftRight size={16} color={type === 'transfer' ? theme.colors.text : theme.colors.textSecondary} />
@@ -213,6 +1005,8 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
               </Text>
             </TouchableOpacity>
           </View>
+
+          {renderReceiptSection()}
 
           <View style={styles.inputGroup}>
             <View style={styles.labelRow}>
@@ -285,93 +1079,50 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             />
           </View>
 
-          {type === 'transfer' ? (
-            <>
-              <View style={styles.inputGroup}>
-                <Text style={[styles.label, { color: theme.colors.text }]}>From Account</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.accountsRow}>
-                    {accounts.map((account) => (
-                      <TouchableOpacity
-                        key={account.id}
-                        style={[
-                          styles.accountItem,
-                          { backgroundColor: theme.colors.surface, borderColor: fromAccount === account.id ? theme.colors.primary : 'transparent' },
-                        ]}
-                        onPress={() => setFromAccount(account.id)}
-                      >
-                        <Text style={[
-                          styles.accountText,
-                          { color: fromAccount === account.id ? theme.colors.primary : theme.colors.text },
-                        ]}>
-                          {account.name}
-                        </Text>
-                        <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
-                          {formatCurrency(account.balance)}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
-              
-              <View style={styles.inputGroup}>
-                <Text style={[styles.label, { color: theme.colors.text }]}>To Account</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.accountsRow}>
-                    {accounts.map((account) => (
-                      <TouchableOpacity
-                        key={account.id}
-                        style={[
-                          styles.accountItem,
-                          { backgroundColor: theme.colors.surface, borderColor: toAccount === account.id ? theme.colors.primary : 'transparent' },
-                        ]}
-                        onPress={() => setToAccount(account.id)}
-                      >
-                        <Text style={[
-                          styles.accountText,
-                          { color: toAccount === account.id ? theme.colors.primary : theme.colors.text },
-                        ]}>
-                          {account.name}
-                        </Text>
-                        <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
-                          {formatCurrency(account.balance)}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
-            </>
-          ) : (
+          {type !== 'transfer' ? (
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
-              <View style={styles.categoriesGrid}>
-                {categories.map((category) => {
-                  if (!category?.id?.trim()) return null;
-                  const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
-                  const isSelected = selectedCategory?.id === category.id;
-                  
-                  return (
-                    <TouchableOpacity
-                      key={category.id}
-                      style={[
-                        styles.categoryItem,
-                        { backgroundColor: theme.colors.surface, borderColor: isSelected ? theme.colors.primary : category.color }
-                      ]}
-                      onPress={() => setSelectedCategory(category)}
-                    >
-                      <View style={[styles.categoryIcon, { backgroundColor: category.color + '20' }]}>
-                        <IconComponent size={20} color={category.color} />
-                      </View>
-                      <Text style={[styles.categoryText, { color: isSelected ? theme.colors.primary : theme.colors.textSecondary }]}>
-                        {category.name}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              <TouchableOpacity
+                style={[styles.categoryDropdownTrigger, { 
+                  backgroundColor: theme.colors.surface, 
+                  borderColor: theme.colors.border 
+                }]}
+                onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
+              >
+                {selectedCategory ? (
+                  <View style={styles.selectedCategory}>
+                    <View style={[
+                      styles.selectedCategoryIcon, 
+                      { backgroundColor: selectedCategory.color + '20' }
+                    ]}>
+                      {(Icons as any)[selectedCategory.icon] ? 
+                        React.createElement((Icons as any)[selectedCategory.icon], {
+                          size: 16,
+                          color: selectedCategory.color
+                        }) : 
+                        <Icons.Circle size={16} color={selectedCategory.color} />
+                      }
+                    </View>
+                    <Text style={[styles.selectedCategoryText, { color: theme.colors.text }]}>
+                      {selectedCategory.name}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.placeholderText, { color: theme.colors.textSecondary }]}>
+                    Select a category
+                  </Text>
+                )}
+                {showCategoryDropdown ? (
+                  <ChevronUp size={20} color={theme.colors.textSecondary} />
+                ) : (
+                  <ChevronDown size={20} color={theme.colors.textSecondary} />
+                )}
+              </TouchableOpacity>
+              
+              {renderCategoryDropdown()}
             </View>
+          ) : (
+            renderAccountSelection()
           )}
           
           <View style={styles.inputGroup}>
@@ -484,11 +1235,15 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
     marginBottom: 24,
+    position: 'relative',
   },
   label: {
     fontSize: 16,
     fontWeight: '600',
     marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   input: {
     borderRadius: 12,
@@ -496,30 +1251,250 @@ const styles = StyleSheet.create({
     fontSize: 16,
     borderWidth: 1,
   },
-  categoriesGrid: {
+  // Category Dropdown Styles
+  categoryDropdownTrigger: {
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  selectedCategory: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 12,
   },
-  categoryItem: {
-    borderRadius: 12,
-    padding: 12,
-    alignItems: 'center',
-    minWidth: 80,
-    borderWidth: 2,
-  },
-  categoryIcon: {
+  selectedCategoryIcon: {
     width: 32,
     height: 32,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  selectedCategoryText: {
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  placeholderText: {
+    fontSize: 16,
+  },
+  dropdownContainer: {
+    position: 'absolute',
+    top: 70,
+    left: 0,
+    right: 0,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    maxHeight: 300,
+    zIndex: 1000,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  dropdownHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    gap: 8,
+    borderBottomWidth: 1,
+  },
+  categorySearch: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 0,
+  },
+  dropdownList: {
+    maxHeight: 250,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  dropdownItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  dropdownIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dropdownItemText: {
+    fontSize: 16,
+  },
+  checkmark: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+  },
+  noResults: {
+    padding: 24,
+    alignItems: 'center',
+  },
+  noResultsText: {
+    fontSize: 14,
+  },
+  // Transfer Section Styles
+  accountsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  accountCard: {
+    width: '48%',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 2,
+    alignItems: 'center',
+  },
+  accountCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginBottom: 8,
   },
-  categoryText: {
-    fontSize: 12,
+  accountIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accountName: {
+    fontSize: 14,
     fontWeight: '500',
     textAlign: 'center',
+    flex: 1,
+  },
+  accountBalance: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  disabledText: {
+    fontSize: 10,
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  emptyAccounts: {
+    borderRadius: 12,
+    padding: 24,
+    alignItems: 'center',
+  },
+  emptyAccountsText: {
+    fontSize: 14,
+    textAlign: 'center',
+  },
+  transferPreview: {
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  transferPreviewTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  transferPreviewRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  transferPreviewLabel: {
+    fontSize: 14,
+  },
+  transferPreviewValue: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  // Receipt Scanning Styles
+  receiptContainer: {
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  receiptImageContainer: {
+    position: 'relative',
+    marginBottom: 12,
+  },
+  receiptImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    resizeMode: 'cover',
+  },
+  scanningOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  scanningText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  imageActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  imageActionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+  },
+  imageActionText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  uploadButtons: {
+    gap: 12,
+  },
+  uploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  uploadButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  receiptHint: {
+    fontSize: 12,
+    marginTop: 4,
   },
   footer: {
     padding: 16,
@@ -578,26 +1553,6 @@ const styles = StyleSheet.create({
   calculatorKeyText: {
     fontSize: 18,
     fontWeight: '600',
-  },
-  accountsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 4,
-  },
-  accountItem: {
-    borderRadius: 12,
-    padding: 12,
-    minWidth: 100,
-    alignItems: 'center',
-    borderWidth: 2,
-  },
-  accountText: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  accountBalance: {
-    fontSize: 12,
   },
   recurringRow: {
     flexDirection: 'row',

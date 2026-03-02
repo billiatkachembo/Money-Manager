@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Money Manager App Inspired by RealByte",
-    "slug": "money-manager-app-inspired-by-realbyte",
+    "name": "Money Manager App",
+    "slug": "money-manager-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -15,14 +15,14 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.rork.money-manager-app-inspired-by-realbyte"
+      "bundleIdentifier": "app.rork.money-manager-app"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "app.rork.money-manager-app-inspired-by-realbyte"
+      "package": "money_manager.com"
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -33,10 +33,26 @@
         {
           "origin": "https://rork.com/"
         }
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you add receipt images.",
+          "cameraPermission": "The app needs access to your camera to take photos of receipts."
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://rork.com/"
+      },
+      "eas": {
+        "projectId": "f040fa3c-4c10-4263-acb6-2e24b9fac0ab"
+      }
     }
   }
 }

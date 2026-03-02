@@ -218,7 +218,7 @@ export default function ProfileScreen() {
                   { text: 'Cancel', style: 'cancel' },
                   {
                     text: 'Import',
-                    onPress: (jsonString) => {
+                    onPress: (jsonString?: string) => {
                       if (jsonString) {
                         handleJsonImport(jsonString);
                       }
@@ -427,7 +427,7 @@ export default function ProfileScreen() {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Set Password',
-            onPress: (password) => {
+            onPress: (password?: string) => {
               if (password && password.length >= 4) {
                 updateSecuritySetting('passwordEnabled', true);
                 Alert.alert('Success', 'App password has been set.');
@@ -586,12 +586,12 @@ export default function ProfileScreen() {
   ];
 
   const totalIncome = transactions
-    .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .filter((t: any) => t.type === 'income')
+    .reduce((sum: number, t: any) => sum + t.amount, 0);
 
   const totalExpenses = transactions
-    .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0);
+    .filter((t: any) => t.type === 'expense')
+    .reduce((sum: number, t: any) => sum + t.amount, 0);
 
   return (
     <ScrollView style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
@@ -679,7 +679,7 @@ export default function ProfileScreen() {
 
       <View style={styles.footer}>
         <Text style={[styles.version, { color: theme.colors.textSecondary }]}>Money Manager v1.0.0</Text>
-        <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Made with ❤️ by Rork</Text>
+        <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Made with Billiat</Text>
       </View>
       
       {/* App Settings Modal */}

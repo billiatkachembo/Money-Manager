@@ -1,0 +1,6 @@
+{
+    "recommendations": [
+        "christian-kohler.npm-intellisense",
+        "georgewfraser.vscode-javac"
+    ]
+}

@@ -1,688 +1,1118 @@
-import createContextHook from '@nkzw/create-context-hook';
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Transaction, Account, Note, Budget, BudgetAlert, FinancialGoal, UserProfile } from '@/types/transaction';
-import { Alert } from 'react-native';
 
-interface AppSettings {
-  currency: string;
-  language: string;
-  darkMode: boolean;
-  notifications: boolean;
-  biometricAuth: boolean;
-  autoBackup: boolean;
-  lastBackupDate?: Date;
-  privacy?: {
-    hideAmounts: boolean;
-    requireAuth: boolean;
-    dataSharing: boolean;
-    analytics: boolean;
-  };
-  security?: {
-    autoLock: number;
-    passwordEnabled: boolean;
-    twoFactorEnabled: boolean;
-  };
-}
+import createContextHook from '@nkzw/create-context-hook';
+import { Alert } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Account,
+  Budget,
+  BudgetAlert,
+  FinancialGoal,
+  FinancialHealthMetrics,
+  Insight,
+  Note,
+  RecurringRule,
+  SeasonalFarmSummary,
+  Transaction,
+  TransactionCategory,
+  UserProfile,
+} from '@/types/transaction';
+import {
+  AppSettings,
+  PersistedState,
+  clearPersistedState,
+  loadPersistedState,
+  savePersistedPatch,
+} from '@/src/storage/app-storage';
+import {
+  createTransferLegs,
+  deleteTransferPair,
+  getFromAccountId,
+  getToAccountId,
+  isVisibleTransaction,
+  recomputeAllBalances,
+  validateLedgerIntegrity,
+} from '@/src/domain/ledger';
+import {
+  createRecurringRuleFromTransaction,
+  materializeRecurringTransactions,
+} from '@/src/domain/recurring';
+import {
+  computeFinancialHealthMetrics,
+  computeFinancialHealthScore,
+} from '@/src/domain/financial-health';
+import { computeInsights } from '@/src/domain/insights';
+import { computeBehaviorMetrics } from '@/src/domain/analytics';
+import {
+  getFarmCostBreakdown,
+  getSeasonalFarmSummary,
+} from '@/src/domain/farming';
 
 interface BackupData {
   transactions: Transaction[];
   accounts: Account[];
   notes: Note[];
   settings: AppSettings;
+  recurringRules: RecurringRule[];
   exportDate: string;
   version: string;
 }
 
+interface HomeSnapshot {
+  netBalance: number;
+  monthlyCashFlow: number;
+  budgetRisk: number;
+  financialHealthScore: number;
+  insightOfWeek: Insight | null;
+  recentTransactions: Transaction[];
+}
+
+const TRANSFER_CATEGORY: TransactionCategory = {
+  id: 'transfer',
+  name: 'Transfer',
+  icon: 'ArrowLeftRight',
+  color: '#667eea',
+};
+
+const OPENING_BALANCE_CATEGORY: TransactionCategory = {
+  id: 'opening-balance',
+  name: 'Opening Balance',
+  icon: 'Landmark',
+  color: '#9CA3AF',
+};
+
+const DEFAULT_SETTINGS: AppSettings = {
+  currency: 'USD',
+  language: 'en',
+  darkMode: false,
+  notifications: true,
+  biometricAuth: false,
+  autoBackup: false,
+  privacy: {
+    hideAmounts: false,
+    requireAuth: false,
+    dataSharing: false,
+    analytics: false,
+  },
+  security: {
+    autoLock: 5,
+    passwordEnabled: false,
+    twoFactorEnabled: false,
+  },
+};
+
+const DEFAULT_USER_PROFILE: UserProfile = {
+  name: 'Money Manager User',
+  email: 'user@example.com',
+  phone: '+1 (555) 123-4567',
+  location: 'New York, NY',
+  occupation: 'Farmer',
+  joinDate: new Date('2024-01-01T00:00:00.000Z'),
+  avatar: 'U',
+};
+
+function monthKey(date: Date): string {
+  return date.toISOString().slice(0, 7);
+}
+
+function parseDate(value: Date | string | undefined): Date {
+  if (!value) {
+    return new Date();
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return new Date();
+  }
+
+  return parsed;
+}
+
+function generateId(): string {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.round(Math.random() * 1_000_000)}`;
+}
+
+function sortByDateDesc(transactions: Transaction[]): Transaction[] {
+  return [...transactions].sort((left, right) => right.date.getTime() - left.date.getTime());
+}
+
+function normalizeTransaction(transaction: Transaction): Transaction {
+  const fromAccountId = transaction.fromAccountId ?? transaction.fromAccount;
+  const toAccountId = transaction.toAccountId ?? transaction.toAccount;
+
+  return {
+    ...transaction,
+    date: parseDate(transaction.date),
+    createdAt: parseDate(transaction.createdAt),
+    updatedAt: transaction.updatedAt ? parseDate(transaction.updatedAt) : undefined,
+    recurringEndDate: transaction.recurringEndDate ? parseDate(transaction.recurringEndDate) : undefined,
+    fromAccount: fromAccountId,
+    toAccount: toAccountId,
+    fromAccountId,
+    toAccountId,
+  };
+}
+
+function computeNetBalance(transactions: Transaction[]): number {
+  return Math.round(
+    transactions.reduce((sum, transaction) => {
+      if (transaction.type === 'income') {
+        return sum + transaction.amount;
+      }
+
+      if (transaction.type === 'expense') {
+        return sum - transaction.amount;
+      }
+
+      return sum;
+    }, 0) * 100
+  ) / 100;
+}
+
+function normalizeRule(rule: RecurringRule): RecurringRule {
+  return {
+    ...rule,
+    template: {
+      ...rule.template,
+      createdAt: parseDate(rule.template.createdAt),
+      updatedAt: rule.template.updatedAt ? parseDate(rule.template.updatedAt) : undefined,
+      recurringEndDate: rule.template.recurringEndDate
+        ? parseDate(rule.template.recurringEndDate)
+        : undefined,
+      fromAccountId: rule.template.fromAccountId ?? rule.template.fromAccount,
+      toAccountId: rule.template.toAccountId ?? rule.template.toAccount,
+    },
+  };
+}
+
+function buildDefaults(): PersistedState {
+  return {
+    transactions: [],
+    accounts: [],
+    notes: [],
+    settings: DEFAULT_SETTINGS,
+    budgets: [],
+    budgetAlerts: [],
+    financialGoals: [],
+    userProfile: DEFAULT_USER_PROFILE,
+    recurringRules: [],
+  };
+}
+
 export const [TransactionProvider, useTransactionStore] = createContextHook(() => {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [ledgerTransactions, setLedgerTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [balance, setBalance] = useState<number>(0);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [budgetAlerts, setBudgetAlerts] = useState<BudgetAlert[]>([]);
   const [financialGoals, setFinancialGoals] = useState<FinancialGoal[]>([]);
-  const [userProfile, setUserProfile] = useState<UserProfile>({
-    name: 'Money Manager User',
-    email: 'user@example.com',
-    phone: '+1 (555) 123-4567',
-    location: 'New York, NY',
-    occupation: 'Software Engineer',
-    joinDate: new Date('2024-01-01'),
-    avatar: '👤',
-  });
-  const [settings, setSettings] = useState<AppSettings>({
-    currency: 'USD',
-    language: 'en',
-    darkMode: false,
-    notifications: true,
-    biometricAuth: false,
-    autoBackup: false,
-    privacy: {
-      hideAmounts: false,
-      requireAuth: false,
-      dataSharing: false,
-      analytics: false,
-    },
-    security: {
-      autoLock: 5,
-      passwordEnabled: false,
-      twoFactorEnabled: false,
-    },
-  });
+  const [userProfile, setUserProfile] = useState<UserProfile>(DEFAULT_USER_PROFILE);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
+  const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
+  const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
-  const calculateBalance = useCallback((transactionList: Transaction[]) => {
-    const newBalance = transactionList.reduce((acc, t) => {
-      if (t.type === 'income') return acc + t.amount;
-      if (t.type === 'expense') return acc - t.amount;
-      // transfers don't affect total balance as money moves between accounts
-      return acc;
-    }, 0);
-    setBalance(newBalance);
+  const visibleTransactions = useMemo(
+    () => sortByDateDesc(ledgerTransactions.filter(isVisibleTransaction)),
+    [ledgerTransactions]
+  );
+
+  const persistPatch = useCallback(async (patch: Partial<PersistedState>) => {
+    try {
+      await savePersistedPatch(patch);
+    } catch (error) {
+      console.error('Failed to persist patch:', error);
+    }
   }, []);
 
-  const updateAccountBalance = useCallback((accountId: string, amount: number, operation: 'add' | 'subtract') => {
-    setAccounts(prevAccounts => 
-      prevAccounts.map(account => {
-        if (account.id === accountId) {
-          const newBalance = operation === 'add' 
-            ? account.balance + amount 
-            : account.balance - amount;
-          return { ...account, balance: newBalance };
+  const applyLedgerState = useCallback(
+    (
+      nextTransactions: Transaction[],
+      nextAccounts: Account[],
+      nextRecurringRules: RecurringRule[],
+      extraPatch: Partial<PersistedState> = {}
+    ) => {
+      const normalized = sortByDateDesc(nextTransactions.map(normalizeTransaction));
+      const recomputedAccounts = recomputeAllBalances(nextAccounts, normalized);
+      const integrity = validateLedgerIntegrity(normalized);
+
+      setLedgerTransactions(normalized);
+      setAccounts(recomputedAccounts);
+      setBalance(computeNetBalance(normalized));
+      setRecurringRules(nextRecurringRules);
+      setLedgerIssues(integrity.issues);
+
+      void persistPatch({
+        transactions: normalized,
+        accounts: recomputedAccounts,
+        recurringRules: nextRecurringRules,
+        ...extraPatch,
+      });
+    },
+    [persistPatch]
+  );
+
+  const getBudgetSpendingInternal = useCallback(
+    (budgetId: string, transactions: Transaction[]): number => {
+      const budget = budgets.find((entry) => entry.id === budgetId);
+      if (!budget || !budget.category) {
+        return 0;
+      }
+
+      const startDate = budget.startDate;
+      const endDate = budget.endDate ?? new Date();
+
+      return transactions
+        .filter(
+          (transaction) =>
+            transaction.type === 'expense' &&
+            transaction.category.id === budget.category?.id &&
+            transaction.date >= startDate &&
+            transaction.date <= endDate
+        )
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+    },
+    [budgets]
+  );
+
+  const formatCurrency = useCallback(
+    (amount: number, currencyCode?: string): string => {
+      if (!Number.isFinite(amount)) {
+        return '$0.00';
+      }
+
+      const currency = currencyCode ?? settings.currency;
+      const locale = settings.language === 'en' ? 'en-US' : settings.language;
+
+      try {
+        return new Intl.NumberFormat(locale, {
+          style: 'currency',
+          currency,
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(amount);
+      } catch {
+        return amount.toFixed(2);
+      }
+    },
+    [settings.currency, settings.language]
+  );
+
+  const pushBudgetAlerts = useCallback(
+    (transaction: Transaction, transactionsAfterMutation: Transaction[]) => {
+      if (transaction.type !== 'expense') {
+        return;
+      }
+
+      const month = monthKey(transaction.date);
+      const relevant = budgets.filter(
+        (budget) => budget.category?.id === transaction.category.id && monthKey(budget.startDate) === month
+      );
+
+      if (relevant.length === 0) {
+        return;
+      }
+
+      const nextAlerts = [...budgetAlerts];
+
+      for (const budget of relevant) {
+        const spent = getBudgetSpendingInternal(budget.id, transactionsAfterMutation);
+        const percent = budget.amount > 0 ? (spent / budget.amount) * 100 : 0;
+
+        const already80 = nextAlerts.some((alert) => alert.budgetId === budget.id && alert.type === '80percent');
+        const alreadyExceeded = nextAlerts.some(
+          (alert) => alert.budgetId === budget.id && alert.type === 'exceeded'
+        );
+
+        if (budget.alertAt80Percent && percent >= 80 && percent < 100 && !already80) {
+          nextAlerts.unshift({
+            id: generateId(),
+            budgetId: budget.id,
+            type: '80percent',
+            message: `You reached 80% of ${budget.category?.name} budget (${formatCurrency(spent)}).`,
+            date: new Date(),
+            isRead: false,
+          });
         }
-        return account;
-      })
-    );
-  }, []);
 
-  const saveData = useCallback(async (type: 'transactions' | 'accounts' | 'notes' | 'settings' | 'budgets' | 'budgetAlerts' | 'financialGoals' | 'userProfile', data: any) => {
-    try {
-      let serialized;
-      switch (type) {
-        case 'transactions':
-          serialized = data.map((t: Transaction) => ({
-            ...t,
-            date: t.date.toISOString(),
-            createdAt: t.createdAt.toISOString(),
-            recurringEndDate: t.recurringEndDate?.toISOString(),
-          }));
-          break;
-        case 'accounts':
-          serialized = data.map((a: Account) => ({
-            ...a,
-            createdAt: a.createdAt.toISOString(),
-          }));
-          break;
-        case 'notes':
-          serialized = data.map((n: Note) => ({
-            ...n,
-            createdAt: n.createdAt.toISOString(),
-            updatedAt: n.updatedAt.toISOString(),
-          }));
-          break;
-        case 'settings':
-          serialized = {
-            ...data,
-            lastBackupDate: data.lastBackupDate?.toISOString(),
-          };
-          break;
-        case 'budgets':
-          serialized = data.map((b: Budget) => ({
-            ...b,
-            startDate: b.startDate.toISOString(),
-            endDate: b.endDate?.toISOString(),
-            createdAt: b.createdAt.toISOString(),
-            updatedAt: b.updatedAt.toISOString(),
-          }));
-          break;
-        case 'budgetAlerts':
-          serialized = data.map((a: BudgetAlert) => ({
-            ...a,
-            date: a.date.toISOString(),
-          }));
-          break;
-        case 'financialGoals':
-          serialized = data.map((g: FinancialGoal) => ({
-            ...g,
-            targetDate: g.targetDate.toISOString(),
-            createdAt: g.createdAt.toISOString(),
-            updatedAt: g.updatedAt.toISOString(),
-          }));
-          break;
-        case 'userProfile':
-          serialized = {
-            ...data,
-            joinDate: data.joinDate.toISOString(),
-          };
-          break;
-        default:
-          serialized = data;
-      }
-      await AsyncStorage.setItem(type, JSON.stringify(serialized));
-    } catch (error) {
-      console.error(`Failed to save ${type}:`, error);
-    }
-  }, []);
-
-  const loadData = useCallback(async () => {
-    try {
-      // Load transactions
-      const storedTransactions = await AsyncStorage.getItem('transactions');
-      if (storedTransactions?.trim()) {
-        const parsed = JSON.parse(storedTransactions);
-        const transactionsWithDates = parsed.map((t: any) => ({
-          ...t,
-          date: new Date(t.date),
-          createdAt: new Date(t.createdAt),
-          recurringEndDate: t.recurringEndDate ? new Date(t.recurringEndDate) : undefined,
-        }));
-        setTransactions(transactionsWithDates);
-        calculateBalance(transactionsWithDates);
+        if (budget.alertAtLimit && percent >= 100 && !alreadyExceeded) {
+          nextAlerts.unshift({
+            id: generateId(),
+            budgetId: budget.id,
+            type: 'exceeded',
+            message: `You exceeded ${budget.category?.name} budget (${formatCurrency(spent)}).`,
+            date: new Date(),
+            isRead: false,
+          });
+        }
       }
 
-      // Load accounts
-      const storedAccounts = await AsyncStorage.getItem('accounts');
-      if (storedAccounts?.trim()) {
-        const parsed = JSON.parse(storedAccounts);
-        const accountsWithDates = parsed.map((a: any) => ({
-          ...a,
-          createdAt: new Date(a.createdAt),
-        }));
-        setAccounts(accountsWithDates);
+      if (nextAlerts.length !== budgetAlerts.length) {
+        setBudgetAlerts(nextAlerts);
+        void persistPatch({ budgetAlerts: nextAlerts });
+
+        if (settings.notifications) {
+          Alert.alert('Budget Alert', nextAlerts[0].message);
+        }
+      }
+    },
+    [budgetAlerts, budgets, formatCurrency, getBudgetSpendingInternal, persistPatch, settings.notifications]
+  );
+
+  const materializeRecurringNow = useCallback(
+    (now: Date = new Date()): number => {
+      const normalizedRules = recurringRules.map(normalizeRule);
+      const { newTransactions, updatedRules } = materializeRecurringTransactions(
+        now,
+        normalizedRules,
+        ledgerTransactions
+      );
+
+      if (newTransactions.length === 0) {
+        const hasRuleChange =
+          JSON.stringify(updatedRules.map((rule) => rule.lastMaterializedAt)) !==
+          JSON.stringify(recurringRules.map((rule) => rule.lastMaterializedAt));
+
+        if (hasRuleChange) {
+          setRecurringRules(updatedRules);
+          void persistPatch({ recurringRules: updatedRules });
+        }
+
+        return 0;
       }
 
-      // Load notes
-      const storedNotes = await AsyncStorage.getItem('notes');
-      if (storedNotes?.trim()) {
-        const parsed = JSON.parse(storedNotes);
-        const notesWithDates = parsed.map((n: any) => ({
-          ...n,
-          createdAt: new Date(n.createdAt),
-          updatedAt: new Date(n.updatedAt),
-        }));
-        setNotes(notesWithDates);
+      const expanded: Transaction[] = [];
+
+      for (const transaction of newTransactions) {
+        const fromAccountId = transaction.fromAccountId ?? transaction.fromAccount;
+        const toAccountId = transaction.toAccountId ?? transaction.toAccount;
+
+        if (transaction.type === 'transfer' && fromAccountId && toAccountId) {
+          const pair = createTransferLegs({
+            amount: transaction.amount,
+            date: parseDate(transaction.date),
+            description: transaction.description,
+            category: transaction.category ?? TRANSFER_CATEGORY,
+            fromAccountId,
+            toAccountId,
+            createdAt: parseDate(transaction.createdAt),
+            updatedAt: parseDate(transaction.updatedAt ?? transaction.createdAt),
+            recurringId: transaction.recurringId,
+            recurringFrequency: transaction.recurringFrequency,
+            recurringEndDate: transaction.recurringEndDate,
+            isRecurring: transaction.isRecurring,
+            parentTransactionId: transaction.parentTransactionId,
+            materializedForDate: transaction.materializedForDate,
+            tags: transaction.tags,
+          });
+
+          expanded.push(pair.debit, pair.credit);
+          continue;
+        }
+
+        expanded.push(
+          normalizeTransaction({
+            ...transaction,
+            id: transaction.id ?? generateId(),
+            createdAt: parseDate(transaction.createdAt),
+            updatedAt: parseDate(transaction.updatedAt ?? transaction.createdAt),
+            fromAccount: fromAccountId,
+            toAccount: toAccountId,
+            fromAccountId,
+            toAccountId,
+          })
+        );
       }
 
-      // Load settings
-      const storedSettings = await AsyncStorage.getItem('settings');
-      if (storedSettings?.trim()) {
-        const parsed = JSON.parse(storedSettings);
-        setSettings({
-          ...parsed,
-          lastBackupDate: parsed.lastBackupDate ? new Date(parsed.lastBackupDate) : undefined,
-        });
-      }
-
-      // Load budgets
-      const storedBudgets = await AsyncStorage.getItem('budgets');
-      if (storedBudgets?.trim()) {
-        const parsed = JSON.parse(storedBudgets);
-        const budgetsWithDates = parsed.map((b: any) => ({
-          ...b,
-          startDate: new Date(b.startDate),
-          endDate: b.endDate ? new Date(b.endDate) : undefined,
-          createdAt: new Date(b.createdAt),
-          updatedAt: new Date(b.updatedAt),
-        }));
-        setBudgets(budgetsWithDates);
-      }
-
-      // Load budget alerts
-      const storedAlerts = await AsyncStorage.getItem('budgetAlerts');
-      if (storedAlerts?.trim()) {
-        const parsed = JSON.parse(storedAlerts);
-        const alertsWithDates = parsed.map((a: any) => ({
-          ...a,
-          date: new Date(a.date),
-        }));
-        setBudgetAlerts(alertsWithDates);
-      }
-
-      // Load financial goals
-      const storedGoals = await AsyncStorage.getItem('financialGoals');
-      if (storedGoals?.trim()) {
-        const parsed = JSON.parse(storedGoals);
-        const goalsWithDates = parsed.map((g: any) => ({
-          ...g,
-          targetDate: new Date(g.targetDate),
-          createdAt: new Date(g.createdAt),
-          updatedAt: new Date(g.updatedAt),
-        }));
-        setFinancialGoals(goalsWithDates);
-      }
-
-      // Load user profile
-      const storedProfile = await AsyncStorage.getItem('userProfile');
-      if (storedProfile?.trim()) {
-        const parsed = JSON.parse(storedProfile);
-        setUserProfile({
-          ...parsed,
-          joinDate: new Date(parsed.joinDate),
-        });
-      }
-    } catch (error) {
-      console.error('Failed to load data:', error);
-    }
-  }, [calculateBalance]);
+      applyLedgerState([...expanded, ...ledgerTransactions], accounts, updatedRules);
+      return expanded.length;
+    },
+    [accounts, applyLedgerState, ledgerTransactions, persistPatch, recurringRules]
+  );
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    let isCancelled = false;
 
-  const formatCurrency = useCallback((amount: number, currencyCode?: string) => {
-    if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
-    const currency = currencyCode || settings.currency;
-    const locale = settings.language === 'en' ? 'en-US' : settings.language;
-    
-    try {
-      return new Intl.NumberFormat(locale, {
-        style: 'currency',
-        currency: currency,
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }).format(amount);
-    } catch {
-      return `${amount.toFixed(2)}`;
-    }
-  }, [settings.currency, settings.language]);
+    const loadData = async () => {
+      try {
+        const defaults = buildDefaults();
+        const loaded = await loadPersistedState(defaults);
 
-  const getBudgetSpending = useCallback((budgetId: string, transactionsList?: Transaction[]) => {
-    const budget = budgets.find(b => b.id === budgetId);
-    if (!budget || !budget.category) return 0;
+        if (isCancelled) {
+          return;
+        }
 
-    const txList = transactionsList || transactions;
-    const startDate = budget.startDate;
-    const endDate = budget.endDate || new Date();
+        const normalizedTransactions = sortByDateDesc(loaded.transactions.map(normalizeTransaction));
+        const normalizedRules = loaded.recurringRules.map(normalizeRule);
 
-    return txList
-      .filter(t => 
-        t.type === 'expense' &&
-        t.category.id === budget.category!.id &&
-        t.date >= startDate &&
-        t.date <= endDate
-      )
-      .reduce((sum, t) => sum + t.amount, 0);
-  }, [budgets, transactions]);
+        const { newTransactions, updatedRules } = materializeRecurringTransactions(
+          new Date(),
+          normalizedRules,
+          normalizedTransactions
+        );
 
-  const checkBudgetAlerts = useCallback((transaction: Transaction, transactionsList: Transaction[]) => {
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const relevantBudgets = budgets.filter(b => {
-      if (!b.category) return false;
-      const budgetMonth = b.startDate.toISOString().slice(0, 7);
-      return b.category.id === transaction.category.id && budgetMonth === currentMonth;
-    });
+        const materialized: Transaction[] = [];
+        for (const transaction of newTransactions) {
+          const fromAccountId = transaction.fromAccountId ?? transaction.fromAccount;
+          const toAccountId = transaction.toAccountId ?? transaction.toAccount;
 
-    relevantBudgets.forEach(budget => {
-      const spent = getBudgetSpending(budget.id, transactionsList);
-      const percentage = (spent / budget.amount) * 100;
+          if (transaction.type === 'transfer' && fromAccountId && toAccountId) {
+            const pair = createTransferLegs({
+              amount: transaction.amount,
+              date: parseDate(transaction.date),
+              description: transaction.description,
+              category: transaction.category ?? TRANSFER_CATEGORY,
+              fromAccountId,
+              toAccountId,
+              createdAt: parseDate(transaction.createdAt),
+              updatedAt: parseDate(transaction.updatedAt ?? transaction.createdAt),
+              recurringId: transaction.recurringId,
+              recurringFrequency: transaction.recurringFrequency,
+              recurringEndDate: transaction.recurringEndDate,
+              isRecurring: transaction.isRecurring,
+              parentTransactionId: transaction.parentTransactionId,
+              materializedForDate: transaction.materializedForDate,
+              tags: transaction.tags,
+            });
 
-      const existingAlerts = budgetAlerts.filter(a => a.budgetId === budget.id);
-      const has80Alert = existingAlerts.some(a => a.type === '80percent');
-      const hasExceededAlert = existingAlerts.some(a => a.type === 'exceeded');
+            materialized.push(pair.debit, pair.credit);
+            continue;
+          }
 
-      if (budget.alertAt80Percent && percentage >= 80 && percentage < 100 && !has80Alert) {
-        const alert: BudgetAlert = {
-          id: Date.now().toString(),
-          budgetId: budget.id,
-          type: '80percent',
-          message: `You've reached 80% of your ${budget.category?.name} budget (${formatCurrency(spent)} of ${formatCurrency(budget.amount)})`,
-          date: new Date(),
-          isRead: false,
-        };
-        const newAlerts = [alert, ...budgetAlerts];
-        setBudgetAlerts(newAlerts);
-        saveData('budgetAlerts', newAlerts);
-        
-        if (settings.notifications) {
-          Alert.alert('Budget Alert', alert.message);
+          materialized.push(normalizeTransaction(transaction));
+        }
+
+        const mergedTransactions = sortByDateDesc([...materialized, ...normalizedTransactions]);
+        const recomputedAccounts = recomputeAllBalances(loaded.accounts, mergedTransactions);
+        const integrity = validateLedgerIntegrity(mergedTransactions);
+
+        setLedgerTransactions(mergedTransactions);
+        setAccounts(recomputedAccounts);
+        setNotes(loaded.notes);
+        setBalance(computeNetBalance(mergedTransactions));
+        setBudgets(loaded.budgets);
+        setBudgetAlerts(loaded.budgetAlerts);
+        setFinancialGoals(loaded.financialGoals);
+        setUserProfile(loaded.userProfile);
+        setSettings({ ...DEFAULT_SETTINGS, ...loaded.settings });
+        setRecurringRules(updatedRules);
+        setLedgerIssues(integrity.issues);
+        setIsHydrated(true);
+
+        const rulesChanged =
+          JSON.stringify(updatedRules.map((rule) => rule.lastMaterializedAt)) !==
+          JSON.stringify(normalizedRules.map((rule) => rule.lastMaterializedAt));
+
+        if (materialized.length > 0 || rulesChanged) {
+          await savePersistedPatch({
+            transactions: mergedTransactions,
+            accounts: recomputedAccounts,
+            recurringRules: updatedRules,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load data:', error);
+        if (!isCancelled) {
+          setIsHydrated(true);
         }
       }
+    };
 
-      if (budget.alertAtLimit && percentage >= 100 && !hasExceededAlert) {
-        const alert: BudgetAlert = {
-          id: Date.now().toString(),
-          budgetId: budget.id,
-          type: 'exceeded',
-          message: `You've exceeded your ${budget.category?.name} budget! Spent ${formatCurrency(spent)} of ${formatCurrency(budget.amount)}`,
-          date: new Date(),
-          isRead: false,
-        };
-        const newAlerts = [alert, ...budgetAlerts];
-        setBudgetAlerts(newAlerts);
-        saveData('budgetAlerts', newAlerts);
-        
-        if (settings.notifications) {
-          Alert.alert('Budget Exceeded!', alert.message);
-        }
-      }
-    });
-  }, [budgets, budgetAlerts, getBudgetSpending, formatCurrency, settings.notifications, saveData]);
+    void loadData();
 
-  const scheduleRecurringTransactions = useCallback((baseTransaction: Transaction) => {
-    console.log('Scheduling recurring transaction:', baseTransaction.description);
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
-  const addTransaction = useCallback((transactionData: Omit<Transaction, 'id' | 'createdAt'>) => {
-    const transaction: Transaction = {
-      ...transactionData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-    };
-    
-    const newTransactions = [transaction, ...transactions];
-    setTransactions(newTransactions);
-    calculateBalance(newTransactions);
-    saveData('transactions', newTransactions);
+  const addTransaction = useCallback(
+    (transactionData: Omit<Transaction, 'id' | 'createdAt'>) => {
+      const now = new Date();
+      const fromAccountId = transactionData.fromAccountId ?? transactionData.fromAccount;
+      const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
+      const date = parseDate(transactionData.date);
 
-    // Check budgets and trigger alerts if needed
-    if (transaction.type === 'expense') {
-      checkBudgetAlerts(transaction, newTransactions);
-    }
+      let nextTransactions = [...ledgerTransactions];
+      let primary: Transaction | null = null;
 
-    // Handle account balance updates for transfers
-    if (transaction.type === 'transfer' && transaction.fromAccount && transaction.toAccount) {
-      updateAccountBalance(transaction.fromAccount, transaction.amount, 'subtract');
-      updateAccountBalance(transaction.toAccount, transaction.amount, 'add');
-      
-      // Save updated accounts
-      setTimeout(() => {
-        setAccounts(currentAccounts => {
-          saveData('accounts', currentAccounts);
-          return currentAccounts;
+      if (transactionData.type === 'transfer') {
+        if (!fromAccountId || !toAccountId) {
+          Alert.alert('Invalid transfer', 'Please select both source and destination accounts.');
+          return;
+        }
+
+        if (fromAccountId === toAccountId) {
+          Alert.alert('Invalid transfer', 'Source and destination accounts must be different.');
+          return;
+        }
+
+        const pair = createTransferLegs({
+          amount: transactionData.amount,
+          date,
+          description: transactionData.description,
+          category: transactionData.category ?? TRANSFER_CATEGORY,
+          fromAccountId,
+          toAccountId,
+          createdAt: now,
+          updatedAt: now,
+          recurringFrequency: transactionData.recurringFrequency,
+          recurringEndDate: transactionData.recurringEndDate,
+          isRecurring: transactionData.isRecurring,
+          parentTransactionId: transactionData.parentTransactionId,
+          tags: transactionData.tags,
         });
-      }, 100);
-    }
 
-    // Handle recurring transactions
-    if (transaction.isRecurring && transaction.recurringFrequency && transaction.recurringEndDate) {
-      scheduleRecurringTransactions(transaction);
-    }
-  }, [transactions, calculateBalance, saveData, updateAccountBalance, scheduleRecurringTransactions, checkBudgetAlerts]);
+        nextTransactions = [pair.debit, pair.credit, ...nextTransactions];
+        primary = pair.debit;
+      } else {
+        const transaction: Transaction = normalizeTransaction({
+          ...transactionData,
+          id: generateId(),
+          date,
+          createdAt: now,
+          updatedAt: now,
+          fromAccount: fromAccountId,
+          toAccount: toAccountId,
+          fromAccountId,
+          toAccountId,
+        });
 
-  const updateTransaction = useCallback((updatedTransaction: Transaction) => {
-    const newTransactions = transactions.map(t => 
-      t.id === updatedTransaction.id ? updatedTransaction : t
-    );
-    setTransactions(newTransactions);
-    calculateBalance(newTransactions);
-    saveData('transactions', newTransactions);
-  }, [transactions, calculateBalance, saveData]);
+        nextTransactions = [transaction, ...nextTransactions];
+        primary = transaction;
+      }
 
-  const deleteTransaction = useCallback((id: string) => {
-    const newTransactions = transactions.filter(t => t.id !== id);
-    setTransactions(newTransactions);
-    calculateBalance(newTransactions);
-    saveData('transactions', newTransactions);
-  }, [transactions, calculateBalance, saveData]);
+      let nextRules = recurringRules;
+      if (primary?.isRecurring && primary.recurringFrequency) {
+        const rule = createRecurringRuleFromTransaction(primary, generateId);
+        if (rule) {
+          nextRules = [rule, ...nextRules];
+        }
+      }
 
-  const getTransactionsByCategory = useCallback((categoryId: string) => {
-    return transactions.filter(t => t.category.id === categoryId);
-  }, [transactions]);
+      applyLedgerState(nextTransactions, accounts, nextRules);
 
-  const getMonthlyTransactions = useCallback((month: string) => {
-    if (!month?.trim() || month.length > 50) return [];
-    return transactions.filter(t => {
-      const transactionMonth = t.date.toISOString().slice(0, 7);
-      return transactionMonth === month;
-    });
-  }, [transactions]);
+      if (primary) {
+        pushBudgetAlerts(primary, nextTransactions);
+      }
+    },
+    [accounts, applyLedgerState, ledgerTransactions, pushBudgetAlerts, recurringRules]
+  );
 
-  const getTotalIncome = useCallback((month?: string) => {
-    if (month && (!month.trim() || month.length > 50)) return 0;
-    const transactionList = month?.trim() && month.length <= 50
-      ? getMonthlyTransactions(month)
-      : transactions;
-    
-    return transactionList
-      .filter(t => t.type === 'income')
-      .reduce((sum, t) => sum + t.amount, 0);
-  }, [transactions, getMonthlyTransactions]);
+  const updateTransaction = useCallback(
+    (updatedTransaction: Transaction) => {
+      const current = ledgerTransactions.find((entry) => entry.id === updatedTransaction.id);
+      if (!current) {
+        return;
+      }
 
-  const getTotalExpenses = useCallback((month?: string) => {
-    if (month && (!month.trim() || month.length > 50)) return 0;
-    const transactionList = month?.trim() && month.length <= 50
-      ? getMonthlyTransactions(month)
-      : transactions;
-    
-    return transactionList
-      .filter(t => t.type === 'expense')
-      .reduce((sum, t) => sum + t.amount, 0);
-  }, [transactions, getMonthlyTransactions]);
+      const normalizedUpdated = normalizeTransaction({
+        ...current,
+        ...updatedTransaction,
+        date: parseDate(updatedTransaction.date),
+        updatedAt: new Date(),
+      });
 
-  const getCategorySpending = useCallback((categoryId: string, month?: string) => {
-    if (month && (!month.trim() || month.length > 50)) return 0;
-    const transactionList = month?.trim() && month.length <= 50
-      ? getMonthlyTransactions(month)
-      : transactions;
-    
-    return transactionList
-      .filter(t => t.category.id === categoryId)
-      .reduce((sum, t) => sum + t.amount, 0);
-  }, [transactions, getMonthlyTransactions]);
+      let nextTransactions: Transaction[];
 
-  const addBudget = useCallback((budgetData: Omit<Budget, 'id' | 'createdAt' | 'updatedAt'>) => {
-    const budget: Budget = {
-      ...budgetData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    
-    const newBudgets = [budget, ...budgets];
-    setBudgets(newBudgets);
-    saveData('budgets', newBudgets);
-  }, [budgets, saveData]);
+      if (current.type === 'transfer' || normalizedUpdated.type === 'transfer') {
+        const groupId = current.transferGroupId ?? normalizedUpdated.transferGroupId;
+        const pair = groupId
+          ? ledgerTransactions.filter((entry) => entry.transferGroupId === groupId)
+          : [current];
 
-  const updateBudget = useCallback((updatedBudget: Budget) => {
-    const newBudgets = budgets.map(b => 
-      b.id === updatedBudget.id ? { ...updatedBudget, updatedAt: new Date() } : b
-    );
-    setBudgets(newBudgets);
-    saveData('budgets', newBudgets);
-  }, [budgets, saveData]);
+        const existingDebit = pair.find((entry) => entry.transferLeg === 'debit');
+        const existingCredit = pair.find((entry) => entry.transferLeg === 'credit');
 
-  const deleteBudget = useCallback((id: string) => {
-    const newBudgets = budgets.filter(b => b.id !== id);
-    setBudgets(newBudgets);
-    saveData('budgets', newBudgets);
-  }, [budgets, saveData]);
+        const fromAccountId =
+          normalizedUpdated.fromAccountId ??
+          normalizedUpdated.fromAccount ??
+          getFromAccountId(existingDebit ?? current) ??
+          getFromAccountId(existingCredit ?? current);
 
-  const markAlertAsRead = useCallback((id: string) => {
-    const newAlerts = budgetAlerts.map(a => 
-      a.id === id ? { ...a, isRead: true } : a
-    );
-    setBudgetAlerts(newAlerts);
-    saveData('budgetAlerts', newAlerts);
-  }, [budgetAlerts, saveData]);
+        const toAccountId =
+          normalizedUpdated.toAccountId ??
+          normalizedUpdated.toAccount ??
+          getToAccountId(existingDebit ?? current) ??
+          getToAccountId(existingCredit ?? current);
+
+        if (!fromAccountId || !toAccountId || fromAccountId === toAccountId) {
+          Alert.alert('Invalid transfer', 'Transfer update requires valid source and destination accounts.');
+          return;
+        }
+
+        const transferPair = createTransferLegs({
+          amount: normalizedUpdated.amount,
+          date: normalizedUpdated.date,
+          description: normalizedUpdated.description,
+          category: normalizedUpdated.category ?? TRANSFER_CATEGORY,
+          fromAccountId,
+          toAccountId,
+          createdAt: current.createdAt,
+          updatedAt: new Date(),
+          recurringId: normalizedUpdated.recurringId,
+          recurringFrequency: normalizedUpdated.recurringFrequency,
+          recurringEndDate: normalizedUpdated.recurringEndDate,
+          isRecurring: normalizedUpdated.isRecurring,
+          parentTransactionId: normalizedUpdated.parentTransactionId,
+          materializedForDate: normalizedUpdated.materializedForDate,
+          tags: normalizedUpdated.tags,
+          transferGroupId: groupId ?? generateId(),
+          debitId: existingDebit?.id ?? normalizedUpdated.id,
+          creditId: existingCredit?.id,
+        });
+
+        const idsToRemove = new Set(pair.map((entry) => entry.id));
+        nextTransactions = [
+          transferPair.debit,
+          transferPair.credit,
+          ...ledgerTransactions.filter((entry) => !idsToRemove.has(entry.id)),
+        ];
+      } else {
+        nextTransactions = ledgerTransactions.map((entry) =>
+          entry.id === normalizedUpdated.id ? normalizedUpdated : entry
+        );
+      }
+
+      applyLedgerState(nextTransactions, accounts, recurringRules);
+      pushBudgetAlerts(normalizedUpdated, nextTransactions);
+    },
+    [accounts, applyLedgerState, ledgerTransactions, pushBudgetAlerts, recurringRules]
+  );
+
+  const deleteTransaction = useCallback(
+    (id: string) => {
+      const existing = ledgerTransactions.find((entry) => entry.id === id);
+      if (!existing) {
+        return;
+      }
+
+      const nextTransactions = deleteTransferPair(ledgerTransactions, existing);
+      applyLedgerState(nextTransactions, accounts, recurringRules);
+    },
+    [accounts, applyLedgerState, ledgerTransactions, recurringRules]
+  );
+
+  const getTransactionsByCategory = useCallback(
+    (categoryId: string) => visibleTransactions.filter((transaction) => transaction.category.id === categoryId),
+    [visibleTransactions]
+  );
+
+  const getMonthlyTransactions = useCallback(
+    (month: string): Transaction[] => {
+      if (!month?.trim() || month.length > 50) {
+        return [];
+      }
+
+      return visibleTransactions.filter((transaction) => monthKey(transaction.date) === month);
+    },
+    [visibleTransactions]
+  );
+
+  const getTotalIncome = useCallback(
+    (month?: string): number => {
+      if (month && (!month.trim() || month.length > 50)) {
+        return 0;
+      }
+
+      const list = month ? getMonthlyTransactions(month) : visibleTransactions;
+      return list.filter((transaction) => transaction.type === 'income').reduce((sum, tx) => sum + tx.amount, 0);
+    },
+    [getMonthlyTransactions, visibleTransactions]
+  );
+
+  const getTotalExpenses = useCallback(
+    (month?: string): number => {
+      if (month && (!month.trim() || month.length > 50)) {
+        return 0;
+      }
+
+      const list = month ? getMonthlyTransactions(month) : visibleTransactions;
+      return list.filter((transaction) => transaction.type === 'expense').reduce((sum, tx) => sum + tx.amount, 0);
+    },
+    [getMonthlyTransactions, visibleTransactions]
+  );
+
+  const getCategorySpending = useCallback(
+    (categoryId: string, month?: string): number => {
+      if (month && (!month.trim() || month.length > 50)) {
+        return 0;
+      }
+
+      const list = month ? getMonthlyTransactions(month) : visibleTransactions;
+      return list
+        .filter((transaction) => transaction.type === 'expense' && transaction.category.id === categoryId)
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+    },
+    [getMonthlyTransactions, visibleTransactions]
+  );
+
+  const addBudget = useCallback(
+    (budgetData: Omit<Budget, 'id' | 'createdAt' | 'updatedAt'>) => {
+      const budget: Budget = {
+        ...budgetData,
+        id: generateId(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const next = [budget, ...budgets];
+      setBudgets(next);
+      void persistPatch({ budgets: next });
+    },
+    [budgets, persistPatch]
+  );
+
+  const updateBudget = useCallback(
+    (updatedBudget: Budget) => {
+      const next = budgets.map((budget) =>
+        budget.id === updatedBudget.id
+          ? {
+              ...updatedBudget,
+              updatedAt: new Date(),
+            }
+          : budget
+      );
+
+      setBudgets(next);
+      void persistPatch({ budgets: next });
+    },
+    [budgets, persistPatch]
+  );
+
+  const deleteBudget = useCallback(
+    (id: string) => {
+      const next = budgets.filter((budget) => budget.id !== id);
+      setBudgets(next);
+      void persistPatch({ budgets: next });
+    },
+    [budgets, persistPatch]
+  );
+
+  const getBudgetSpending = useCallback(
+    (budgetId: string, transactions?: Transaction[]) => {
+      return getBudgetSpendingInternal(budgetId, transactions ?? visibleTransactions);
+    },
+    [getBudgetSpendingInternal, visibleTransactions]
+  );
+
+  const markAlertAsRead = useCallback(
+    (id: string) => {
+      const next = budgetAlerts.map((alert) => (alert.id === id ? { ...alert, isRead: true } : alert));
+      setBudgetAlerts(next);
+      void persistPatch({ budgetAlerts: next });
+    },
+    [budgetAlerts, persistPatch]
+  );
 
   const clearReadAlerts = useCallback(() => {
-    const newAlerts = budgetAlerts.filter(a => !a.isRead);
-    setBudgetAlerts(newAlerts);
-    saveData('budgetAlerts', newAlerts);
-  }, [budgetAlerts, saveData]);
+    const next = budgetAlerts.filter((alert) => !alert.isRead);
+    setBudgetAlerts(next);
+    void persistPatch({ budgetAlerts: next });
+  }, [budgetAlerts, persistPatch]);
 
-  const addFinancialGoal = useCallback((goalData: Omit<FinancialGoal, 'id' | 'createdAt' | 'updatedAt'>) => {
-    const goal: FinancialGoal = {
-      ...goalData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    
-    const newGoals = [goal, ...financialGoals];
-    setFinancialGoals(newGoals);
-    saveData('financialGoals', newGoals);
-  }, [financialGoals, saveData]);
+  const addFinancialGoal = useCallback(
+    (goalData: Omit<FinancialGoal, 'id' | 'createdAt' | 'updatedAt'>) => {
+      const goal: FinancialGoal = {
+        ...goalData,
+        id: generateId(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
 
-  const updateFinancialGoal = useCallback((updatedGoal: FinancialGoal) => {
-    const newGoals = financialGoals.map(g => 
-      g.id === updatedGoal.id ? { ...updatedGoal, updatedAt: new Date() } : g
-    );
-    setFinancialGoals(newGoals);
-    saveData('financialGoals', newGoals);
-  }, [financialGoals, saveData]);
+      const next = [goal, ...financialGoals];
+      setFinancialGoals(next);
+      void persistPatch({ financialGoals: next });
+    },
+    [financialGoals, persistPatch]
+  );
 
-  const deleteFinancialGoal = useCallback((id: string) => {
-    const newGoals = financialGoals.filter(g => g.id !== id);
-    setFinancialGoals(newGoals);
-    saveData('financialGoals', newGoals);
-  }, [financialGoals, saveData]);
+  const updateFinancialGoal = useCallback(
+    (updatedGoal: FinancialGoal) => {
+      const next = financialGoals.map((goal) =>
+        goal.id === updatedGoal.id
+          ? {
+              ...updatedGoal,
+              updatedAt: new Date(),
+            }
+          : goal
+      );
 
-  const updateUserProfile = useCallback((profile: UserProfile) => {
-    setUserProfile(profile);
-    saveData('userProfile', profile);
-  }, [saveData]);
+      setFinancialGoals(next);
+      void persistPatch({ financialGoals: next });
+    },
+    [financialGoals, persistPatch]
+  );
+
+  const deleteFinancialGoal = useCallback(
+    (id: string) => {
+      const next = financialGoals.filter((goal) => goal.id !== id);
+      setFinancialGoals(next);
+      void persistPatch({ financialGoals: next });
+    },
+    [financialGoals, persistPatch]
+  );
+
+  const updateUserProfile = useCallback(
+    (profile: UserProfile) => {
+      setUserProfile(profile);
+      void persistPatch({ userProfile: profile });
+    },
+    [persistPatch]
+  );
+
+  const updateSettings = useCallback(
+    (newSettings: Partial<AppSettings>) => {
+      const next = {
+        ...settings,
+        ...newSettings,
+      };
+
+      setSettings(next);
+      void persistPatch({ settings: next });
+    },
+    [persistPatch, settings]
+  );
+
+  const addAccount = useCallback(
+    (accountData: Omit<Account, 'id' | 'createdAt'>) => {
+      const id = generateId();
+      const openingBalance = Number(accountData.balance ?? 0);
+
+      const account: Account = {
+        ...accountData,
+        id,
+        balance: 0,
+        createdAt: new Date(),
+      };
+
+      let nextTransactions = [...ledgerTransactions];
+
+      if (openingBalance !== 0) {
+        const opening: Transaction = {
+          id: generateId(),
+          amount: Math.abs(openingBalance),
+          description: 'Opening balance',
+          category: OPENING_BALANCE_CATEGORY,
+          type: openingBalance >= 0 ? 'income' : 'expense',
+          date: new Date(),
+          createdAt: new Date(),
+          fromAccount: openingBalance < 0 ? id : undefined,
+          toAccount: openingBalance >= 0 ? id : undefined,
+          fromAccountId: openingBalance < 0 ? id : undefined,
+          toAccountId: openingBalance >= 0 ? id : undefined,
+          isHidden: true,
+        };
+
+        nextTransactions = [opening, ...nextTransactions];
+      }
+
+      const nextAccounts = [account, ...accounts];
+      applyLedgerState(nextTransactions, nextAccounts, recurringRules);
+    },
+    [accounts, applyLedgerState, ledgerTransactions, recurringRules]
+  );
+
+  const updateAccount = useCallback(
+    (updatedAccount: Account) => {
+      const nextAccounts = accounts.map((account) =>
+        account.id === updatedAccount.id
+          ? {
+              ...updatedAccount,
+              balance: account.balance,
+            }
+          : account
+      );
+
+      applyLedgerState(ledgerTransactions, nextAccounts, recurringRules);
+    },
+    [accounts, applyLedgerState, ledgerTransactions, recurringRules]
+  );
+
+  const deleteAccount = useCallback(
+    (accountId: string) => {
+      const nextAccounts = accounts.filter((account) => account.id !== accountId);
+      const nextTransactions = ledgerTransactions.filter((transaction) => {
+        const from = getFromAccountId(transaction);
+        const to = getToAccountId(transaction);
+        return from !== accountId && to !== accountId;
+      });
+
+      applyLedgerState(nextTransactions, nextAccounts, recurringRules);
+    },
+    [accounts, applyLedgerState, ledgerTransactions, recurringRules]
+  );
+
+  const addNote = useCallback(
+    (noteData: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => {
+      const note: Note = {
+        ...noteData,
+        id: generateId(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const next = [note, ...notes];
+      setNotes(next);
+      void persistPatch({ notes: next });
+    },
+    [notes, persistPatch]
+  );
+
+  const updateAccountBalance = useCallback(
+    (_accountId: string, _amount: number, _operation: 'add' | 'subtract') => {
+      // Backward-compatible API. Balances are always ledger-derived.
+      const recomputed = recomputeAllBalances(accounts, ledgerTransactions);
+      setAccounts(recomputed);
+      void persistPatch({ accounts: recomputed });
+    },
+    [accounts, ledgerTransactions, persistPatch]
+  );
 
   const backupToGoogleDrive = useCallback(async () => {
     try {
       const backupData: BackupData = {
-        transactions,
+        transactions: ledgerTransactions,
         accounts,
         notes,
         settings,
+        recurringRules,
         exportDate: new Date().toISOString(),
-        version: '1.0.0',
+        version: '2.0.0',
       };
 
-      // In a real app, this would use Google Drive API
-      console.log('Backing up to Google Drive:', JSON.stringify(backupData, null, 2));
-      
-      const updatedSettings = {
+      console.log('Offline backup payload:', JSON.stringify(backupData));
+      const nextSettings = {
         ...settings,
         lastBackupDate: new Date(),
       };
-      setSettings(updatedSettings);
-      saveData('settings', updatedSettings);
-      
-      Alert.alert('Backup Successful', 'Your data has been backed up to Google Drive.');
+      setSettings(nextSettings);
+      await savePersistedPatch({ settings: nextSettings });
+      Alert.alert('Backup successful', 'A local backup snapshot was prepared successfully.');
     } catch (error) {
       console.error('Backup failed:', error);
-      Alert.alert('Backup Failed', 'Failed to backup data to Google Drive.');
+      Alert.alert('Backup failed', 'Unable to create backup snapshot.');
     }
-  }, [transactions, accounts, notes, settings, saveData]);
+  }, [accounts, ledgerTransactions, notes, recurringRules, settings]);
 
   const restoreFromGoogleDrive = useCallback(async () => {
-    try {
-      // In a real app, this would fetch from Google Drive API
-      // For now, we'll simulate a restore with sample data
-      Alert.alert(
-        'Restore from Google Drive',
-        'This will replace all your current data with the backup. Are you sure?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Restore',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                console.log('Restore from Google Drive - no sample data to restore');
-                Alert.alert('Restore Failed', 'No backup data found on Google Drive.');
-              } catch (restoreError) {
-                console.error('Restore process failed:', restoreError);
-                Alert.alert('Restore Failed', 'Failed to restore data from Google Drive.');
-              }
-            },
-          },
-        ]
-      );
-    } catch (error) {
-      console.error('Restore failed:', error);
-      Alert.alert('Restore Failed', 'Failed to restore data from Google Drive.');
-    }
+    Alert.alert('Restore not available', 'Cloud restore is not enabled in offline mode.');
   }, []);
-
-  const updateSettings = useCallback((newSettings: Partial<AppSettings>) => {
-    const updated = { ...settings, ...newSettings };
-    setSettings(updated);
-    saveData('settings', updated);
-  }, [settings, saveData]);
-
-  const addAccount = useCallback((accountData: Omit<Account, 'id' | 'createdAt'>) => {
-    const account: Account = {
-      ...accountData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-    };
-    
-    const newAccounts = [account, ...accounts];
-    setAccounts(newAccounts);
-    saveData('accounts', newAccounts);
-  }, [accounts, saveData]);
-
-  const addNote = useCallback((noteData: Omit<Note, 'id' | 'createdAt' | 'updatedAt'>) => {
-    const note: Note = {
-      ...noteData,
-      id: Date.now().toString(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    
-    const newNotes = [note, ...notes];
-    setNotes(newNotes);
-    saveData('notes', newNotes);
-  }, [notes, saveData]);
 
   const clearAllData = useCallback(async () => {
     try {
-      // Clear all data from AsyncStorage
-      await AsyncStorage.multiRemove(['transactions', 'accounts', 'notes', 'settings', 'budgets', 'budgetAlerts', 'financialGoals', 'userProfile']);
-      
-      // Reset state to initial values
-      setTransactions([]);
-      setNotes([]);
+      await clearPersistedState();
+
+      const defaults = buildDefaults();
+      setLedgerTransactions(defaults.transactions);
+      setAccounts(defaults.accounts);
+      setNotes(defaults.notes);
       setBalance(0);
-      setBudgets([]);
-      setBudgetAlerts([]);
-      setFinancialGoals([]);
-      
-      // Reset accounts to empty
-      setAccounts([]);
-      
-      // Reset settings to default
-      const defaultSettings: AppSettings = {
-        currency: 'USD',
-        language: 'en',
-        darkMode: false,
-        notifications: true,
-        biometricAuth: false,
-        autoBackup: false,
-        privacy: {
-          hideAmounts: false,
-          requireAuth: false,
-          dataSharing: false,
-          analytics: false,
-        },
-        security: {
-          autoLock: 5,
-          passwordEnabled: false,
-          twoFactorEnabled: false,
-        },
-      };
-      setSettings(defaultSettings);
-      saveData('settings', defaultSettings);
-      
-      // Reset user profile to default
-      const defaultProfile: UserProfile = {
-        name: 'Money Manager User',
-        email: 'user@example.com',
-        phone: '+1 (555) 123-4567',
-        location: 'New York, NY',
-        occupation: 'Software Engineer',
-        joinDate: new Date(),
-        avatar: '👤',
-      };
-      setUserProfile(defaultProfile);
-      saveData('userProfile', defaultProfile);
-      
-      console.log('All data cleared successfully');
+      setBudgets(defaults.budgets);
+      setBudgetAlerts(defaults.budgetAlerts);
+      setFinancialGoals(defaults.financialGoals);
+      setUserProfile(defaults.userProfile);
+      setSettings(defaults.settings);
+      setRecurringRules(defaults.recurringRules);
+      setLedgerIssues([]);
+      setIsHydrated(true);
     } catch (error) {
-      console.error('Failed to clear all data:', error);
+      console.error('Failed to clear data:', error);
       throw error;
     }
-  }, [saveData]);
+  }, []);
 
-  return useMemo(() => ({
-    transactions,
+  const triggerReconciliation = useCallback(() => {
+    const normalizedRules = recurringRules.map(normalizeRule);
+    const deduped = new Map<string, Transaction>();
+
+    for (const transaction of ledgerTransactions) {
+      const fingerprint = [
+        transaction.type,
+        transaction.amount.toFixed(2),
+        transaction.date.toISOString(),
+        transaction.recurringId ?? '',
+        transaction.transferGroupId ?? '',
+        transaction.transferLeg ?? '',
+        transaction.description.trim().toLowerCase(),
+      ].join('|');
+
+      if (!deduped.has(fingerprint)) {
+        deduped.set(fingerprint, transaction);
+      }
+    }
+
+    const reconciled = sortByDateDesc(Array.from(deduped.values()));
+    applyLedgerState(reconciled, accounts, normalizedRules);
+    materializeRecurringNow(new Date());
+  }, [accounts, applyLedgerState, ledgerTransactions, materializeRecurringNow, recurringRules]);
+
+
+  const behaviorMetrics = useMemo(
+    () => computeBehaviorMetrics(visibleTransactions, budgets, accounts),
+    [accounts, budgets, visibleTransactions]
+  );
+
+  const financialHealthMetrics: FinancialHealthMetrics = useMemo(
+    () =>
+      computeFinancialHealthMetrics({
+        monthlyIncome: behaviorMetrics.monthly.map((entry) => entry.income),
+        monthlyExpenses: behaviorMetrics.monthly.map((entry) => entry.expenses),
+        budgetAdherence: behaviorMetrics.budget.adherence,
+        liquidBalance: balance,
+      }),
+    [balance, behaviorMetrics]
+  );
+
+  const financialHealthScore = useMemo(
+    () => computeFinancialHealthScore(financialHealthMetrics),
+    [financialHealthMetrics]
+  );
+
+  const insights = useMemo(
+    () =>
+      computeInsights(
+        {
+          ...behaviorMetrics.insightContext,
+          savingsRate: financialHealthMetrics.savingsRate,
+          budgetAdherence: financialHealthMetrics.budgetAdherence,
+          bufferMonths: financialHealthMetrics.bufferMonths,
+          expenseCV: financialHealthMetrics.expenseCV,
+          incomeCV: financialHealthMetrics.incomeCV,
+        },
+        10
+      ),
+    [behaviorMetrics.insightContext, financialHealthMetrics]
+  );
+
+  const farmSummary: SeasonalFarmSummary = useMemo(
+    () => getSeasonalFarmSummary(visibleTransactions),
+    [visibleTransactions]
+  );
+
+  const farmCostBreakdown = useMemo(
+    () => getFarmCostBreakdown(visibleTransactions),
+    [visibleTransactions]
+  );
+
+  const homeSnapshot: HomeSnapshot = useMemo(
+    () => ({
+      netBalance: balance,
+      monthlyCashFlow: behaviorMetrics.currentMonth.net,
+      budgetRisk: behaviorMetrics.budget.risk,
+      financialHealthScore,
+      insightOfWeek: insights[0] ?? null,
+      recentTransactions: visibleTransactions.slice(0, 5),
+    }),
+    [balance, behaviorMetrics, financialHealthScore, insights, visibleTransactions]
+  );
+
+  return {
+    transactions: visibleTransactions,
+    allTransactions: ledgerTransactions,
     accounts,
     notes,
     balance,
@@ -691,9 +1121,22 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     budgetAlerts,
     financialGoals,
     userProfile,
+    recurringRules,
+    ledgerIssues,
+    isHydrated,
+    isLoaded: isHydrated,
+    financialHealthMetrics,
+    financialHealthScore,
+    healthScore: financialHealthScore,
+    insights,
+    farmSummary,
+    farmCostBreakdown,
+    homeSnapshot,
     addTransaction,
     updateTransaction,
     deleteTransaction,
+    materializeRecurringNow,
+    triggerReconciliation,
     getTransactionsByCategory,
     getMonthlyTransactions,
     getTotalIncome,
@@ -704,6 +1147,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     restoreFromGoogleDrive,
     updateSettings,
     addAccount,
+    updateAccount,
+    deleteAccount,
     addNote,
     clearAllData,
     updateAccountBalance,
@@ -717,41 +1162,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     updateFinancialGoal,
     deleteFinancialGoal,
     updateUserProfile,
-  }), [
-    transactions,
-    accounts,
-    notes,
-    balance,
-    settings,
-    budgets,
-    budgetAlerts,
-    financialGoals,
-    userProfile,
-    addTransaction,
-    updateTransaction,
-    deleteTransaction,
-    getTransactionsByCategory,
-    getMonthlyTransactions,
-    getTotalIncome,
-    getTotalExpenses,
-    getCategorySpending,
-    formatCurrency,
-    backupToGoogleDrive,
-    restoreFromGoogleDrive,
-    updateSettings,
-    addAccount,
-    addNote,
-    clearAllData,
-    updateAccountBalance,
-    addBudget,
-    updateBudget,
-    deleteBudget,
-    getBudgetSpending,
-    markAlertAsRead,
-    clearReadAlerts,
-    addFinancialGoal,
-    updateFinancialGoal,
-    deleteFinancialGoal,
-    updateUserProfile,
-  ]);
+  };
 });
+

@@ -1,16 +1,29 @@
+export type TransactionType = 'income' | 'expense' | 'transfer';
+
+export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
+
+export type TransferLeg = 'debit' | 'credit';
+
 export interface Transaction {
   id: string;
   amount: number;
   description: string;
   category: TransactionCategory;
-  type: 'income' | 'expense' | 'transfer';
+  type: TransactionType;
   date: Date;
   createdAt: Date;
   fromAccount?: string;
   toAccount?: string;
+  fromAccountId?: string;
+  toAccountId?: string;
+  transferGroupId?: string;
+  transferLeg?: TransferLeg;
+  isHidden?: boolean;
   isRecurring?: boolean;
-  recurringFrequency?: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurringFrequency?: RecurringFrequency;
   recurringEndDate?: Date;
+  recurringId?: string;
+  materializedForDate?: string;
   parentTransactionId?: string;
   tags?: string[];
   updatedAt?: Date;
@@ -51,6 +64,7 @@ export interface Account {
   id: string;
   name: string;
   type: 'checking' | 'savings' | 'credit' | 'investment' | 'cash';
+  // Cached only. Transaction ledger remains source of truth.
   balance: number;
   currency: string;
   color: string;
@@ -91,3 +105,46 @@ export interface UserProfile {
   joinDate: Date;
   avatar: string;
 }
+
+export interface RecurringRule {
+  id: string;
+  frequency: RecurringFrequency;
+  startDate: string;
+  endDate?: string;
+  lastMaterializedAt?: string;
+  template: Omit<Transaction, 'id' | 'date'>;
+}
+
+export interface FinancialHealthMetrics {
+  savingsRate: number;
+  budgetAdherence: number;
+  bufferMonths: number;
+  expenseCV: number;
+  incomeCV: number;
+}
+
+export type InsightSeverity = 'info' | 'warning' | 'critical';
+
+export interface Insight {
+  id: string;
+  title: string;
+  message: string;
+  severity: InsightSeverity;
+  confidence: number;
+}
+
+export interface FarmCategoryBreakdown {
+  categoryId: string;
+  categoryName: string;
+  amount: number;
+  ratio: number;
+}
+
+export interface SeasonalFarmSummary {
+  season: 'spring' | 'summer' | 'autumn' | 'winter';
+  farmIncome: number;
+  farmExpenses: number;
+  farmProfit: number;
+  costBreakdown: FarmCategoryBreakdown[];
+}
+

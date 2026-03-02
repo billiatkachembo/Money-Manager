@@ -11,9 +11,9 @@ interface TransactionItemProps {
 
 export function TransactionItem({ transaction, onPress }: TransactionItemProps) {
   const { theme } = useTheme();
-  
+
   const formatCurrency = (amount: number) => {
-    if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
+    if (typeof amount !== 'number' || Number.isNaN(amount)) return '$0.00';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -30,25 +30,33 @@ export function TransactionItem({ transaction, onPress }: TransactionItemProps) 
 
   const IconComponent = (Icons as any)[transaction.category.icon] || Icons.Circle;
 
+  const amountPrefix =
+    transaction.type === 'income' ? '+' : transaction.type === 'expense' ? '-' : '';
+
+  const amountColor =
+    transaction.type === 'income'
+      ? styles.incomeAmount
+      : transaction.type === 'expense'
+      ? styles.expenseAmount
+      : { color: theme.colors.primary };
+
   return (
     <TouchableOpacity style={[styles.container, { backgroundColor: theme.colors.surface }]} onPress={onPress}>
       <View style={[styles.iconContainer, { backgroundColor: transaction.category.color + '20' }]}>
         <IconComponent size={20} color={transaction.category.color} />
       </View>
-      
+
       <View style={styles.content}>
         <Text style={[styles.description, { color: theme.colors.text }]} numberOfLines={1}>
           {transaction.description}
         </Text>
         <Text style={[styles.category, { color: theme.colors.textSecondary }]}>{transaction.category.name}</Text>
       </View>
-      
+
       <View style={styles.rightContent}>
-        <Text style={[
-          styles.amount,
-          transaction.type === 'income' ? styles.incomeAmount : styles.expenseAmount
-        ]}>
-          {transaction.type === 'income' ? '+' : '-'}{formatCurrency(transaction.amount)}
+        <Text style={[styles.amount, amountColor]}>
+          {amountPrefix}
+          {formatCurrency(transaction.amount)}
         </Text>
         <Text style={[styles.date, { color: theme.colors.textSecondary }]}>{formatDate(transaction.date)}</Text>
       </View>

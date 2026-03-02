@@ -6,7 +6,7 @@ import {
   StyleSheet,
   SafeAreaView,
 } from 'react-native';
-import { Home, List, BarChart3, User, Calendar, CreditCard, FileText, Target } from 'lucide-react-native';
+import { Home, List, BarChart3, User, Calendar, CreditCard, FileText, Target, LucideIcon } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/store/theme-store';
 
@@ -24,7 +24,7 @@ type TabType = 'home' | 'transactions' | 'analytics' | 'profile' | 'calendar' | 
 interface TabItem {
   key: TabType;
   title: string;
-  icon: React.ComponentType<{ size: number; color: string }>;
+  icon: LucideIcon;
   component: React.ComponentType;
 }
 

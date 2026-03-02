@@ -39,38 +39,7 @@ const NOTE_COLORS = [
 
 export default function NotesScreen() {
   const { theme } = useTheme();
-  const [notes, setNotes] = useState<Note[]>([
-    {
-      id: '1',
-      title: 'Emergency Fund Goal',
-      content: 'Save $10,000 for emergency fund by end of year. Currently at $6,500. Need to save $583/month.',
-      category: 'goal',
-      color: '#C8E6C9',
-      isPinned: true,
-      createdAt: new Date('2024-01-15'),
-      updatedAt: new Date('2024-01-20'),
-    },
-    {
-      id: '2',
-      title: 'Investment Ideas',
-      content: 'Research index funds: VTI, VXUS, BND. Consider increasing 401k contribution to 15%.',
-      category: 'idea',
-      color: '#E1BEE7',
-      isPinned: false,
-      createdAt: new Date('2024-01-10'),
-      updatedAt: new Date('2024-01-10'),
-    },
-    {
-      id: '3',
-      title: 'Monthly Budget Review',
-      content: 'Review and adjust budget categories. Dining out exceeded by $200 last month.',
-      category: 'reminder',
-      color: '#FFCCBC',
-      isPinned: false,
-      createdAt: new Date('2024-01-05'),
-      updatedAt: new Date('2024-01-05'),
-    },
-  ]);
+  const [notes, setNotes] = useState<Note[]>([]); // Empty array instead of mock data
 
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);

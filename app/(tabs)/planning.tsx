@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -383,7 +383,9 @@ export default function PlanningScreen() {
             </Text>
 
             <View style={styles.calculatorForm}>
-              {calculator.inputs}
+              {calculator.inputs.map((input, index) => (
+                <React.Fragment key={`${activeCalculator}-input-${index}`}>{input}</React.Fragment>
+              ))}
             </View>
 
             <TouchableOpacity
@@ -697,20 +699,20 @@ export default function PlanningScreen() {
       </View>
 
       <View style={[styles.tipsContainer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>💡 Financial Tips</Text>
+        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>Financial Tips</Text>
         <View style={styles.tipItem}>
           <Text style={[styles.tipText, { color: theme.colors.text }]}>
-            • Aim to save 3-6 months of expenses for emergencies
+            - Aim to save 3-6 months of expenses for emergencies
           </Text>
         </View>
         <View style={styles.tipItem}>
           <Text style={[styles.tipText, { color: theme.colors.text }]}>
-            • Invest at least 15% of income for retirement
+            - Invest at least 15% of income for retirement
           </Text>
         </View>
         <View style={styles.tipItem}>
           <Text style={[styles.tipText, { color: theme.colors.text }]}>
-            • Pay off high-interest debt first (credit cards)
+            - Pay off high-interest debt first (credit cards)
           </Text>
         </View>
       </View>
@@ -1177,3 +1179,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

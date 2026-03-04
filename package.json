@@ -44,9 +44,12 @@
     "@types/react-dom": "^19.2.3"
   },
   "name": "moneymanager",
+  "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
     "android": "expo run:android",
     "ios": "expo run:ios"
   }
 }
+
+

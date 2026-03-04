@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+﻿import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,18 @@ import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction } from '@/types/transaction';
 
-const { width } = Dimensions.get('window');
-const CELL_SIZE = (width - 32) / 7;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const CALENDAR_MARGIN = 16;
+const CALENDAR_PADDING = 16;
+const GRID_WIDTH = SCREEN_WIDTH - CALENDAR_MARGIN * 2 - CALENDAR_PADDING * 2;
+const CELL_SIZE = GRID_WIDTH / 7;
+
+function toDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 export default function CalendarScreen() {
   const { transactions } = useTransactionStore();
@@ -22,7 +32,7 @@ export default function CalendarScreen() {
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
 
   const formatCurrency = (amount: number) => {
-    if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
+    if (typeof amount !== 'number' || Number.isNaN(amount)) return '$0.00';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -38,43 +48,65 @@ export default function CalendarScreen() {
     const startingDayOfWeek = firstDay.getDay();
 
     const days: (Date | null)[] = [];
-    
+
     for (let i = 0; i < startingDayOfWeek; i++) {
       days.push(null);
     }
-    
+
     for (let day = 1; day <= daysInMonth; day++) {
       days.push(new Date(year, month, day));
     }
-    
+
+    // Keep full week rows for a stable grid.
+    const trailingEmptyCells = (7 - (days.length % 7)) % 7;
+    for (let i = 0; i < trailingEmptyCells; i++) {
+      days.push(null);
+    }
+
     return days;
   };
 
+  const transactionsByDate = useMemo(() => {
+    const map = new Map<
+      string,
+      { transactions: Transaction[]; income: number; expenses: number; net: number }
+    >();
+
+    for (const transaction of transactions) {
+      const txDate = new Date(transaction.date);
+      const key = toDateKey(txDate);
+      const bucket = map.get(key) ?? { transactions: [], income: 0, expenses: 0, net: 0 };
+
+      bucket.transactions.push(transaction);
+      if (transaction.type === 'income') {
+        bucket.income += transaction.amount;
+        bucket.net += transaction.amount;
+      } else if (transaction.type === 'expense') {
+        bucket.expenses += transaction.amount;
+        bucket.net -= transaction.amount;
+      }
+
+      map.set(key, bucket);
+    }
+
+    return map;
+  }, [transactions]);
+
   const getTransactionsForDate = (date: Date): Transaction[] => {
-    return transactions.filter(transaction => {
-      const transactionDate = new Date(transaction.date);
-      return (
-        transactionDate.getDate() === date.getDate() &&
-        transactionDate.getMonth() === date.getMonth() &&
-        transactionDate.getFullYear() === date.getFullYear()
-      );
-    });
+    return transactionsByDate.get(toDateKey(date))?.transactions ?? [];
   };
 
   const getDayTotal = (date: Date) => {
-    const dayTransactions = getTransactionsForDate(date);
-    const income = dayTransactions
-      .filter(t => t.type === 'income')
-      .reduce((sum, t) => sum + t.amount, 0);
-    const expenses = dayTransactions
-      .filter(t => t.type === 'expense')
-      .reduce((sum, t) => sum + t.amount, 0);
-    return { income, expenses, net: income - expenses };
+    const entry = transactionsByDate.get(toDateKey(date));
+    if (!entry) {
+      return { income: 0, expenses: 0, net: 0 };
+    }
+    return { income: entry.income, expenses: entry.expenses, net: entry.net };
   };
 
   const selectedDateTransactions = useMemo(() => {
     return getTransactionsForDate(selectedDate);
-  }, [selectedDate, transactions]);
+  }, [selectedDate, transactionsByDate]);
 
   const navigateMonth = (direction: 'prev' | 'next') => {
     const newMonth = new Date(currentMonth);
@@ -83,7 +115,10 @@ export default function CalendarScreen() {
     } else {
       newMonth.setMonth(newMonth.getMonth() + 1);
     }
+
+    const newSelected = new Date(newMonth.getFullYear(), newMonth.getMonth(), 1);
     setCurrentMonth(newMonth);
+    setSelectedDate(newSelected);
   };
 
   const isToday = (date: Date) => {
@@ -115,14 +150,14 @@ export default function CalendarScreen() {
         >
           <ChevronLeft size={24} color={theme.colors.primary} />
         </TouchableOpacity>
-        
+
         <Text style={[styles.monthTitle, { color: theme.colors.text }]}>
           {currentMonth.toLocaleDateString('en-US', {
             month: 'long',
             year: 'numeric',
           })}
         </Text>
-        
+
         <TouchableOpacity
           style={styles.navButton}
           onPress={() => navigateMonth('next')}
@@ -143,7 +178,7 @@ export default function CalendarScreen() {
         <View style={styles.daysGrid}>
           {days.map((date, index) => {
             if (!date) {
-              return <View key={index} style={styles.emptyCell} />;
+              return <View key={`empty-${index}`} style={styles.emptyCell} />;
             }
 
             const dayTotal = getDayTotal(date);
@@ -151,10 +186,10 @@ export default function CalendarScreen() {
 
             return (
               <TouchableOpacity
-                key={date.toISOString()}
+                key={toDateKey(date)}
                 style={[
                   styles.dayCell,
-                  isToday(date) && { backgroundColor: theme.colors.primary + '20', borderRadius: 8 },
+                  isToday(date) && { backgroundColor: `${theme.colors.primary}20`, borderRadius: 8 },
                   isSelected(date) && { backgroundColor: theme.colors.primary, borderRadius: 8 },
                 ]}
                 onPress={() => setSelectedDate(date)}
@@ -186,7 +221,7 @@ export default function CalendarScreen() {
       </View>
 
       <View style={[styles.selectedDateSection, { backgroundColor: theme.colors.surface }]}>
-        <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}>
+        <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}> 
           {selectedDate.toLocaleDateString('en-US', {
             weekday: 'long',
             year: 'numeric',
@@ -204,7 +239,7 @@ export default function CalendarScreen() {
                 <Text style={[styles.statValue, styles.incomeText]}>
                   {formatCurrency(
                     selectedDateTransactions
-                      .filter(t => t.type === 'income')
+                      .filter((t) => t.type === 'income')
                       .reduce((sum, t) => sum + t.amount, 0)
                   )}
                 </Text>
@@ -215,7 +250,7 @@ export default function CalendarScreen() {
                 <Text style={[styles.statValue, styles.expenseText]}>
                   {formatCurrency(
                     selectedDateTransactions
-                      .filter(t => t.type === 'expense')
+                      .filter((t) => t.type === 'expense')
                       .reduce((sum, t) => sum + t.amount, 0)
                   )}
                 </Text>
@@ -226,7 +261,7 @@ export default function CalendarScreen() {
               <Text style={[styles.transactionsTitle, { color: theme.colors.text }]}>Transactions</Text>
               {selectedDateTransactions.map((transaction) => (
                 <View key={transaction.id} style={[styles.transactionItem, { borderBottomColor: theme.colors.border }]}>
-                  <View style={[styles.transactionIcon, { backgroundColor: theme.colors.background }]}>
+                  <View style={[styles.transactionIcon, { backgroundColor: theme.colors.background }]}> 
                     <Text style={styles.transactionEmoji}>
                       {transaction.category.icon}
                     </Text>
@@ -235,16 +270,14 @@ export default function CalendarScreen() {
                     <Text style={[styles.transactionDescription, { color: theme.colors.text }]}>
                       {transaction.description}
                     </Text>
-                    <Text style={[styles.transactionCategory, { color: theme.colors.textSecondary }]}>
+                    <Text style={[styles.transactionCategory, { color: theme.colors.textSecondary }]}> 
                       {transaction.category.name}
                     </Text>
                   </View>
                   <Text
                     style={[
                       styles.transactionAmount,
-                      transaction.type === 'income'
-                        ? styles.incomeText
-                        : styles.expenseText,
+                      transaction.type === 'income' ? styles.incomeText : styles.expenseText,
                     ]}
                   >
                     {transaction.type === 'income' ? '+' : '-'}
@@ -256,7 +289,7 @@ export default function CalendarScreen() {
           </>
         ) : (
           <View style={styles.noTransactions}>
-            <Text style={[styles.noTransactionsText, { color: theme.colors.textSecondary }]}>
+            <Text style={[styles.noTransactionsText, { color: theme.colors.textSecondary }]}> 
               No transactions on this date
             </Text>
           </View>
@@ -291,9 +324,9 @@ const styles = StyleSheet.create({
   },
   calendar: {
     backgroundColor: 'white',
-    margin: 16,
+    margin: CALENDAR_MARGIN,
     borderRadius: 16,
-    padding: 16,
+    padding: CALENDAR_PADDING,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -332,26 +365,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     position: 'relative',
   },
-  todayCell: {
-    backgroundColor: '#667eea20',
-    borderRadius: 8,
-  },
-  selectedCell: {
-    backgroundColor: '#667eea',
-    borderRadius: 8,
-  },
   dayText: {
     fontSize: 16,
     fontWeight: '500',
     color: '#1a1a1a',
-  },
-  todayText: {
-    color: '#667eea',
-    fontWeight: '600',
-  },
-  selectedText: {
-    color: 'white',
-    fontWeight: '600',
   },
   transactionIndicator: {
     position: 'absolute',

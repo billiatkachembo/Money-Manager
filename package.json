@@ -39,9 +39,11 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
-    "@types/node": "^25.3.3"
+    "@types/node": "^25.3.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
   },
-  "name": "MoneyManager",
+  "name": "moneymanager",
   "version": "1.0.0",
   "scripts": {
     "android": "expo run:android",

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-require-imports */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,12 +13,13 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { X, Calendar, Calculator, ArrowLeftRight, TrendingUp } from 'lucide-react-native';
+import { X, Calendar, Calculator, ArrowLeftRight } from 'lucide-react-native';
+import * as Icons from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction, TransactionCategory } from '@/types/transaction';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, ALL_CATEGORIES } from '@/constants/categories';
+import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
 
 interface EditTransactionModalProps {
   visible: boolean;
@@ -46,11 +47,36 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       setDescription(transaction.description || '');
       setDate(new Date(transaction.date));
       setType(transaction.type);
-      setSelectedCategory(transaction.category || null);
+
+      const categoryPool = transaction.type === 'income'
+        ? MODAL_INCOME_CATEGORIES
+        : transaction.type === 'expense'
+          ? MODAL_EXPENSE_CATEGORIES
+          : [];
+
+      const normalizedCategory = transaction.category
+        ? categoryPool.find(
+            (category) =>
+              category.id === transaction.category?.id ||
+              category.name.toLowerCase() === transaction.category?.name?.toLowerCase()
+          ) ?? transaction.category
+        : null;
+
+      setSelectedCategory(normalizedCategory);
     }
   }, [transaction]);
 
-  const categories = type === 'transfer' ? [] : (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
+  const categories = type === 'transfer' ? [] : (type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES);
+
+  const displayedCategories = useMemo(() => {
+    if (!selectedCategory || type === 'transfer') {
+      return categories;
+    }
+
+    return categories.some((category) => category.id === selectedCategory.id)
+      ? categories
+      : [selectedCategory, ...categories];
+  }, [categories, selectedCategory, type]);
 
   const handleDateChange = (event: any, selectedDate?: Date) => {
     setShowDatePicker(false);
@@ -306,9 +332,9 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
               <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesScroll}>
                 <View style={styles.categoriesRow}>
-                  {categories.map((category) => {
+                  {displayedCategories.map((category) => {
                     const isSelected = selectedCategory?.id === category.id;
-                    const IconComponent = (require('lucide-react-native') as any)[category.icon] || TrendingUp;
+                    const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
                     
                     return (
                       <TouchableOpacity
@@ -513,3 +539,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

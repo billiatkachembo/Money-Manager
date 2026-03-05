@@ -546,7 +546,6 @@ export default function ProfileScreen() {
     {
       icon: Edit3,
       title: 'Edit Profile',
-      subtitle: 'Update your personal information',
       onPress: () => {
         setEditForm(userProfile);
         setShowEditProfile(true);
@@ -554,35 +553,83 @@ export default function ProfileScreen() {
     },
     {
       icon: Settings,
-      title: 'App Settings',
-      subtitle: 'Notifications, theme, and preferences',
+      title: 'Settings',
       onPress: () => setShowSettings(true),
     },
     {
       icon: Download,
-      title: 'Backup & Restore',
-      subtitle: 'Backup to Google Drive or restore data',
+      title: 'Backup Center',
       onPress: () => setShowBackupRestore(true),
     },
     {
       icon: Shield,
-      title: 'Privacy & Security',
-      subtitle: 'Manage your privacy and security settings',
+      title: 'Privacy',
       onPress: () => setShowPrivacySecurity(true),
     },
     {
       icon: HelpCircle,
-      title: 'Help & Support',
-      subtitle: 'Get help and contact support',
+      title: 'Support',
       onPress: () => setShowHelpSupport(true),
     },
     {
+      icon: Moon,
+      title: 'Toggle Theme',
+      onPress: toggleTheme,
+    },
+    {
+      icon: DollarSign,
+      title: 'Currency',
+      onPress: () => setShowCurrencyPicker(true),
+    },
+    {
+      icon: Globe,
+      title: 'Language',
+      onPress: () => setShowLanguagePicker(true),
+    },
+    {
+      icon: Clock,
+      title: 'Auto Lock',
+      onPress: () => setShowAutoLockPicker(true),
+    },
+    {
+      icon: Download,
+      title: 'Export JSON',
+      onPress: handleExportData,
+    },
+    {
+      icon: Database,
+      title: 'Import JSON',
+      onPress: handleImportData,
+    },
+    {
+      icon: Download,
+      title: 'Drive Backup',
+      onPress: handleBackupToGoogleDrive,
+    },
+    {
+      icon: Database,
+      title: 'Drive Restore',
+      onPress: handleRestoreFromGoogleDrive,
+    },
+    {
+      icon: Mail,
+      title: 'Email Support',
+      onPress: openEmailSupport,
+    },
+    {
       icon: Trash2,
-      title: 'Clear All Data',
-      subtitle: 'Permanently delete all transactions',
+      title: 'Clear Data',
       onPress: handleClearData,
       destructive: true,
     },
+  ];
+
+  const MENU_GRID_COLUMNS = 3;
+  const MENU_GRID_ROWS = 5;
+  const MENU_GRID_SIZE = MENU_GRID_COLUMNS * MENU_GRID_ROWS;
+  const menuGridItems = [
+    ...menuItems,
+    ...Array.from({ length: Math.max(0, MENU_GRID_SIZE - menuItems.length) }, () => null),
   ];
 
   const totalIncome = transactions
@@ -645,36 +692,43 @@ export default function ProfileScreen() {
 
       {/* Menu Section */}
       <View style={[styles.menuSection, { backgroundColor: theme.colors.surface }]}>
-        {menuItems.map((item) => {
-          const IconComponent = item.icon;
-          return (
-            <TouchableOpacity
-              key={item.title}
-              style={[styles.menuItem, { borderBottomColor: theme.colors.border }]}
-              onPress={item.onPress}
-            >
-              <View style={[
-                styles.menuIconContainer,
-                item.destructive && styles.destructiveIconContainer
-              ]}>
-                <IconComponent 
-                  size={20} 
-                  color={item.destructive ? '#F44336' : '#667eea'} 
-                />
-              </View>
-              <View style={styles.menuContent}>
-                <Text style={[
-                  styles.menuTitle,
-                  { color: item.destructive ? '#F44336' : theme.colors.text },
-                  item.destructive && styles.destructiveText
-                ]}>
+        <Text style={[styles.menuSectionTitle, { color: theme.colors.text }]}>More</Text>
+        <View style={styles.menuGrid}>
+          {menuGridItems.map((item, index) => {
+            if (!item) {
+              return <View key={`placeholder-${index}`} style={styles.menuTilePlaceholder} />;
+            }
+
+            const IconComponent = item.icon;
+            return (
+              <TouchableOpacity
+                key={item.title}
+                style={[
+                  styles.menuTile,
+                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                  item.destructive && styles.menuTileDestructive,
+                ]}
+                onPress={item.onPress}
+                activeOpacity={0.85}
+              >
+                <View
+                  style={[
+                    styles.menuTileIcon,
+                    { backgroundColor: item.destructive ? '#F4433620' : theme.colors.primary + '1F' },
+                  ]}
+                >
+                  <IconComponent size={20} color={item.destructive ? '#F44336' : theme.colors.primary} />
+                </View>
+                <Text
+                  style={[styles.menuTileTitle, { color: item.destructive ? '#F44336' : theme.colors.text }]}
+                  numberOfLines={2}
+                >
                   {item.title}
                 </Text>
-                <Text style={[styles.menuSubtitle, { color: theme.colors.textSecondary }]}>{item.subtitle}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       <View style={styles.footer}>
@@ -1437,7 +1491,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     marginHorizontal: 16,
     borderRadius: 16,
-    overflow: 'hidden',
+    padding: 16,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -1447,40 +1501,49 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+  menuSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
   },
-  menuIconContainer: {
+  menuGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 12,
+  },
+  menuTile: {
+    width: '31.8%',
+    aspectRatio: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+  },
+  menuTileDestructive: {
+    borderColor: '#F4433660',
+  },
+  menuTileIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#667eea20',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 16,
+    marginBottom: 8,
   },
-  destructiveIconContainer: {
-    backgroundColor: '#F4433620',
-  },
-  menuContent: {
-    flex: 1,
-  },
-  menuTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#1a1a1a',
-    marginBottom: 2,
-  },
-  destructiveText: {
-    color: '#F44336',
-  },
-  menuSubtitle: {
+  menuTileTitle: {
     fontSize: 12,
-    color: '#666',
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  menuTilePlaceholder: {
+    width: '31.8%',
+    aspectRatio: 1,
+    borderRadius: 14,
+    opacity: 0,
   },
   footer: {
     alignItems: 'center',
@@ -1791,3 +1854,5 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+
+

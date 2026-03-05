@@ -37,6 +37,7 @@ import {
 } from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
 import { TransactionCategory } from '@/types/transaction';
+import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import * as ImagePicker from 'expo-image-picker';
@@ -64,6 +65,10 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [calculatorInput, setCalculatorInput] = useState('');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [categorySearch, setCategorySearch] = useState('');
+  const [fromAccountSearch, setFromAccountSearch] = useState('');
+  const [toAccountSearch, setToAccountSearch] = useState('');
+  const [showFromAccountDropdown, setShowFromAccountDropdown] = useState(false);
+  const [showToAccountDropdown, setShowToAccountDropdown] = useState(false);
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [ocrExtracted, setOcrExtracted] = useState(false);
@@ -142,253 +147,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     addDefaultAccounts();
   }, []);
 
-  // Enhanced categories with more options
-  const enhancedExpenseCategories: TransactionCategory[] = [
-    // Basic Living Expenses
-    {
-      id: 'housing',
-      name: 'Housing',
-      icon: 'Home',
-      color: '#FF6B6B',
-    },
-    {
-      id: 'utilities',
-      name: 'Utilities',
-      icon: 'Wifi',
-      color: '#4ECDC4',
-    },
-    {
-      id: 'groceries',
-      name: 'Groceries',
-      icon: 'ShoppingBag',
-      color: '#FFD166',
-    },
-    // Transportation
-    {
-      id: 'transport',
-      name: 'Transport',
-      icon: 'Car',
-      color: '#06D6A0',
-    },
-    {
-      id: 'gas',
-      name: 'Gas/Fuel',
-      icon: 'Droplet',
-      color: '#118AB2',
-    },
-    // Food & Dining
-    {
-      id: 'dining',
-      name: 'Dining Out',
-      icon: 'Utensils',
-      color: '#EF476F',
-    },
-    {
-      id: 'coffee',
-      name: 'Coffee',
-      icon: 'Coffee',
-      color: '#073B4C',
-    },
-    // Entertainment
-    {
-      id: 'entertainment',
-      name: 'Entertainment',
-      icon: 'Film',
-      color: '#7209B7',
-    },
-    {
-      id: 'subscriptions',
-      name: 'Subscriptions',
-      icon: 'FileText',
-      color: '#F15BB5',
-    },
-    // Health & Wellness
-    {
-      id: 'health',
-      name: 'Health',
-      icon: 'Heart',
-      color: '#FF595E',
-    },
-    {
-      id: 'fitness',
-      name: 'Fitness',
-      icon: 'Dumbbell',
-      color: '#8AC926',
-    },
-    // Personal
-    {
-      id: 'shopping',
-      name: 'Shopping',
-      icon: 'ShoppingBag',
-      color: '#1982C4',
-    },
-    {
-      id: 'personal-care',
-      name: 'Personal Care',
-      icon: 'Smile',
-      color: '#6A4C93',
-    },
-    // Education
-    {
-      id: 'education',
-      name: 'Education',
-      icon: 'GraduationCap',
-      color: '#FFCA3A',
-    },
-    {
-      id: 'books',
-      name: 'Books & Learning',
-      icon: 'BookOpen',
-      color: '#8AC926',
-    },
-    // Travel
-    {
-      id: 'travel',
-      name: 'Travel',
-      icon: 'Plane',
-      color: '#118AB2',
-    },
-    {
-      id: 'vacation',
-      name: 'Vacation',
-      icon: 'Umbrella',
-      color: '#06D6A0',
-    },
-    // Gifts & Donations
-    {
-      id: 'gifts',
-      name: 'Gifts',
-      icon: 'Gift',
-      color: '#FF595E',
-    },
-    {
-      id: 'donations',
-      name: 'Donations',
-      icon: 'HandHeart',
-      color: '#7209B7',
-    },
-    // Financial
-    {
-      id: 'insurance',
-      name: 'Insurance',
-      icon: 'Shield',
-      color: '#073B4C',
-    },
-    {
-      id: 'taxes',
-      name: 'Taxes',
-      icon: 'Percent',
-      color: '#F15BB5',
-    },
-    {
-      id: 'bank-fees',
-      name: 'Bank Fees',
-      icon: 'CreditCard',
-      color: '#8B5CF6',
-    },
-    // Miscellaneous
-    {
-      id: 'other',
-      name: 'Other',
-      icon: 'MoreHorizontal',
-      color: '#94A3B8',
-    },
-  ];
-
-  const enhancedIncomeCategories: TransactionCategory[] = [
-    {
-      id: 'salary',
-      name: 'Salary',
-      icon: 'Briefcase',
-      color: '#10B981',
-    },
-    {
-      id: 'freelance',
-      name: 'Freelance',
-      icon: 'Laptop',
-      color: '#8B5CF6',
-    },
-    {
-      id: 'business',
-      name: 'Business',
-      icon: 'Building',
-      color: '#F59E0B',
-    },
-    {
-      id: 'investment',
-      name: 'Investment',
-      icon: 'TrendingUp',
-      color: '#3B82F6',
-    },
-    {
-      id: 'dividends',
-      name: 'Dividends',
-      icon: 'PieChart',
-      color: '#6366F1',
-    },
-    {
-      id: 'rental',
-      name: 'Rental Income',
-      icon: 'Home',
-      color: '#EC4899',
-    },
-    {
-      id: 'gift',
-      name: 'Gift',
-      icon: 'Gift',
-      color: '#F43F5E',
-    },
-    {
-      id: 'refund',
-      name: 'Refund',
-      icon: 'RefreshCw',
-      color: '#84CC16',
-    },
-    {
-      id: 'side-hustle',
-      name: 'Side Hustle',
-      icon: 'Zap',
-      color: '#F97316',
-    },
-    {
-      id: 'bonus',
-      name: 'Bonus',
-      icon: 'Award',
-      color: '#8B5CF6',
-    },
-    {
-      id: 'commission',
-      name: 'Commission',
-      icon: 'DollarSign',
-      color: '#10B981',
-    },
-    {
-      id: 'interest',
-      name: 'Interest',
-      icon: 'Percent',
-      color: '#3B82F6',
-    },
-    {
-      id: 'pension',
-      name: 'Pension',
-      icon: 'User',
-      color: '#6366F1',
-    },
-    {
-      id: 'social-security',
-      name: 'Social Security',
-      icon: 'Users',
-      color: '#EC4899',
-    },
-    {
-      id: 'other-income',
-      name: 'Other Income',
-      icon: 'MoreHorizontal',
-      color: '#94A3B8',
-    },
-  ];
-
-  const categories = type === 'transfer' ? [] : (type === 'income' ? enhancedIncomeCategories : enhancedExpenseCategories);
+  const categories = type === 'transfer' ? [] : (type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES);
 
   // Filter categories based on search
   const filteredCategories = categories.filter(category =>
@@ -591,6 +350,10 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setCalculatorInput('');
     setShowCategoryDropdown(false);
     setCategorySearch('');
+    setFromAccountSearch('');
+    setToAccountSearch('');
+    setShowFromAccountDropdown(false);
+    setShowToAccountDropdown(false);
     setReceiptImage(null);
     setIsScanning(false);
     setOcrExtracted(false);
@@ -705,122 +468,208 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const renderAccountSelection = () => {
     if (type !== 'transfer') return null;
 
+    const selectedFrom = accounts.find((account) => account.id === fromAccount);
+    const selectedTo = accounts.find((account) => account.id === toAccount);
+    const normalizedFromSearch = fromAccountSearch.trim().toLowerCase();
+    const normalizedToSearch = toAccountSearch.trim().toLowerCase();
+
+    const fromOptions = accounts.filter((account) => {
+      if (account.id === toAccount) return false;
+      if (!normalizedFromSearch) return true;
+      return account.name.toLowerCase().includes(normalizedFromSearch);
+    });
+
+    const toOptions = accounts.filter((account) => {
+      if (account.id === fromAccount) return false;
+      if (!normalizedToSearch) return true;
+      return account.name.toLowerCase().includes(normalizedToSearch);
+    });
+
+    const renderAccountOption = (
+      account: typeof accounts[0],
+      selectedId: string,
+      onSelect: (accountId: string, accountName: string) => void
+    ) => {
+      const isSelected = selectedId === account.id;
+
+      return (
+        <TouchableOpacity
+          key={account.id}
+          style={[
+            styles.transferDropdownItem,
+            { borderBottomColor: theme.colors.border },
+            isSelected && { backgroundColor: theme.colors.primary + '14' },
+          ]}
+          onPress={() => onSelect(account.id, account.name)}
+        >
+          <View style={styles.transferDropdownItemLeft}>
+            <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
+              <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
+            </View>
+            <View>
+              <Text
+                style={[
+                  styles.transferDropdownLabel,
+                  { color: theme.colors.text },
+                  isSelected && { color: theme.colors.primary, fontWeight: '600' },
+                ]}
+              >
+                {account.name}
+              </Text>
+              <Text style={[styles.transferDropdownBalance, { color: theme.colors.textSecondary }]}>
+                {formatCurrency(account.balance)}
+              </Text>
+            </View>
+          </View>
+          {isSelected && <View style={[styles.checkmark, { backgroundColor: theme.colors.primary }]} />}
+        </TouchableOpacity>
+      );
+    };
+
     return (
       <>
         <View style={styles.inputGroup}>
           <Text style={[styles.label, { color: theme.colors.text }]}>From Account</Text>
-          {accounts.length === 0 ? (
-            <View style={[styles.emptyAccounts, { backgroundColor: theme.colors.surface }]}>
-              <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>
-                Loading accounts...
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.accountsGrid}>
-              {accounts.map((account: typeof accounts[0]) => {
-                const isSelected = fromAccount === account.id;
-                const isDisabled = account.id === toAccount;
-                
-                return (
-                  <TouchableOpacity
-                    key={account.id}
-                    style={[
-                      styles.accountCard,
-                      { 
-                        backgroundColor: theme.colors.surface,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                        opacity: isDisabled ? 0.5 : 1,
-                      },
-                    ]}
-                    onPress={() => {
-                      if (!isDisabled) {
-                        setFromAccount(account.id);
-                      }
-                    }}
-                    disabled={isDisabled}
-                  >
-                    <View style={styles.accountCardHeader}>
-                      <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
-                        <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
-                      </View>
-                      <Text style={[
-                        styles.accountName,
-                        { color: theme.colors.text },
-                        isSelected && { color: theme.colors.primary, fontWeight: '600' }
-                      ]}>
-                        {account.name}
-                      </Text>
-                    </View>
-                    <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
-                      {formatCurrency(account.balance)}
-                    </Text>
-                    {isDisabled && (
-                      <Text style={[styles.disabledText, { color: theme.colors.textSecondary }]}>
-                        Same as "To"
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
+          <View
+            style={[
+              styles.transferInputContainer,
+              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+            ]}
+          >
+            <Search size={16} color={theme.colors.textSecondary} />
+            <TextInput
+              style={[styles.transferAccountInput, { color: theme.colors.text }]}
+              value={fromAccountSearch}
+              onChangeText={(text) => {
+                setFromAccountSearch(text);
+                setShowFromAccountDropdown(true);
+                if (selectedFrom && text.trim().toLowerCase() !== selectedFrom.name.toLowerCase()) {
+                  setFromAccount('');
+                }
+              }}
+              onFocus={() => {
+                setShowFromAccountDropdown(true);
+                setShowToAccountDropdown(false);
+              }}
+              placeholder="Type to find source account"
+              placeholderTextColor={theme.colors.textSecondary}
+            />
+            <TouchableOpacity
+              onPress={() => {
+                if (fromAccountSearch) {
+                  setFromAccountSearch('');
+                  setFromAccount('');
+                  setShowFromAccountDropdown(true);
+                } else {
+                  setShowFromAccountDropdown(!showFromAccountDropdown);
+                  setShowToAccountDropdown(false);
+                }
+              }}
+              style={styles.transferInputAction}
+            >
+              {fromAccountSearch ? (
+                <X size={16} color={theme.colors.textSecondary} />
+              ) : showFromAccountDropdown ? (
+                <ChevronUp size={16} color={theme.colors.textSecondary} />
+              ) : (
+                <ChevronDown size={16} color={theme.colors.textSecondary} />
+              )}
+            </TouchableOpacity>
+          </View>
+          {showFromAccountDropdown && (
+            <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+              {accounts.length === 0 ? (
+                <View style={styles.transferEmptyState}>
+                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
+                </View>
+              ) : fromOptions.length === 0 ? (
+                <View style={styles.transferEmptyState}>
+                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>No matching source account</Text>
+                </View>
+              ) : (
+                <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
+                  {fromOptions.map((account: typeof accounts[0]) =>
+                    renderAccountOption(account, fromAccount, (accountId, accountName) => {
+                      setFromAccount(accountId);
+                      setFromAccountSearch(accountName);
+                      setShowFromAccountDropdown(false);
+                    })
+                  )}
+                </ScrollView>
+              )}
             </View>
           )}
         </View>
-        
+
         <View style={styles.inputGroup}>
           <Text style={[styles.label, { color: theme.colors.text }]}>To Account</Text>
-          {accounts.length === 0 ? (
-            <View style={[styles.emptyAccounts, { backgroundColor: theme.colors.surface }]}>
-              <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>
-                Loading accounts...
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.accountsGrid}>
-              {accounts.map((account: typeof accounts[0]) => {
-                const isSelected = toAccount === account.id;
-                const isDisabled = account.id === fromAccount;
-                
-                return (
-                  <TouchableOpacity
-                    key={account.id}
-                    style={[
-                      styles.accountCard,
-                      { 
-                        backgroundColor: theme.colors.surface,
-                        borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                        opacity: isDisabled ? 0.5 : 1,
-                      },
-                    ]}
-                    onPress={() => {
-                      if (!isDisabled) {
-                        setToAccount(account.id);
-                      }
-                    }}
-                    disabled={isDisabled}
-                  >
-                    <View style={styles.accountCardHeader}>
-                      <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
-                        <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
-                      </View>
-                      <Text style={[
-                        styles.accountName,
-                        { color: theme.colors.text },
-                        isSelected && { color: theme.colors.primary, fontWeight: '600' }
-                      ]}>
-                        {account.name}
-                      </Text>
-                    </View>
-                    <Text style={[styles.accountBalance, { color: theme.colors.textSecondary }]}>
-                      {formatCurrency(account.balance)}
-                    </Text>
-                    {isDisabled && (
-                      <Text style={[styles.disabledText, { color: theme.colors.textSecondary }]}>
-                        Same as "From"
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
+          <View
+            style={[
+              styles.transferInputContainer,
+              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+            ]}
+          >
+            <Search size={16} color={theme.colors.textSecondary} />
+            <TextInput
+              style={[styles.transferAccountInput, { color: theme.colors.text }]}
+              value={toAccountSearch}
+              onChangeText={(text) => {
+                setToAccountSearch(text);
+                setShowToAccountDropdown(true);
+                if (selectedTo && text.trim().toLowerCase() !== selectedTo.name.toLowerCase()) {
+                  setToAccount('');
+                }
+              }}
+              onFocus={() => {
+                setShowToAccountDropdown(true);
+                setShowFromAccountDropdown(false);
+              }}
+              placeholder="Type to find destination account"
+              placeholderTextColor={theme.colors.textSecondary}
+            />
+            <TouchableOpacity
+              onPress={() => {
+                if (toAccountSearch) {
+                  setToAccountSearch('');
+                  setToAccount('');
+                  setShowToAccountDropdown(true);
+                } else {
+                  setShowToAccountDropdown(!showToAccountDropdown);
+                  setShowFromAccountDropdown(false);
+                }
+              }}
+              style={styles.transferInputAction}
+            >
+              {toAccountSearch ? (
+                <X size={16} color={theme.colors.textSecondary} />
+              ) : showToAccountDropdown ? (
+                <ChevronUp size={16} color={theme.colors.textSecondary} />
+              ) : (
+                <ChevronDown size={16} color={theme.colors.textSecondary} />
+              )}
+            </TouchableOpacity>
+          </View>
+          {showToAccountDropdown && (
+            <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+              {accounts.length === 0 ? (
+                <View style={styles.transferEmptyState}>
+                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
+                </View>
+              ) : toOptions.length === 0 ? (
+                <View style={styles.transferEmptyState}>
+                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>No matching destination account</Text>
+                </View>
+              ) : (
+                <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
+                  {toOptions.map((account: typeof accounts[0]) =>
+                    renderAccountOption(account, toAccount, (accountId, accountName) => {
+                      setToAccount(accountId);
+                      setToAccountSearch(accountName);
+                      setShowToAccountDropdown(false);
+                    })
+                  )}
+                </ScrollView>
+              )}
             </View>
           )}
         </View>
@@ -841,7 +690,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 From:
               </Text>
               <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
-                {accounts.find((a: typeof accounts[0]) => a.id === fromAccount)?.name || 'Unknown'}
+                {selectedFrom?.name || 'Unknown'}
               </Text>
             </View>
             <View style={styles.transferPreviewRow}>
@@ -849,7 +698,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 To:
               </Text>
               <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
-                {accounts.find((a: typeof accounts[0]) => a.id === toAccount)?.name || 'Unknown'}
+                {selectedTo?.name || 'Unknown'}
               </Text>
             </View>
           </View>
@@ -857,7 +706,6 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       </>
     );
   };
-
   // Render receipt scanning section
   const renderReceiptSection = () => {
     if (type === 'transfer') return null;
@@ -1349,23 +1197,56 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   // Transfer Section Styles
-  accountsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  accountCard: {
-    width: '48%',
+  transferInputContainer: {
     borderRadius: 12,
-    padding: 12,
-    borderWidth: 2,
-    alignItems: 'center',
-  },
-  accountCardHeader: {
+    paddingHorizontal: 12,
+    borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
+  },
+  transferAccountInput: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 14,
+  },
+  transferInputAction: {
+    padding: 4,
+  },
+  transferDropdown: {
+    marginTop: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    maxHeight: 220,
+    overflow: 'hidden',
+  },
+  transferDropdownList: {
+    maxHeight: 220,
+  },
+  transferDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  transferDropdownItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  transferDropdownLabel: {
+    fontSize: 15,
+  },
+  transferDropdownBalance: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  transferEmptyState: {
+    padding: 16,
+    alignItems: 'center',
   },
   accountIcon: {
     width: 40,
@@ -1373,26 +1254,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  accountName: {
-    fontSize: 14,
-    fontWeight: '500',
-    textAlign: 'center',
-    flex: 1,
-  },
-  accountBalance: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  disabledText: {
-    fontSize: 10,
-    marginTop: 4,
-    fontStyle: 'italic',
-  },
-  emptyAccounts: {
-    borderRadius: 12,
-    padding: 24,
-    alignItems: 'center',
   },
   emptyAccountsText: {
     fontSize: 14,
@@ -1594,3 +1455,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+
+

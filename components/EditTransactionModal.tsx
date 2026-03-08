@@ -13,7 +13,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { X, Calendar, Calculator, ArrowLeftRight } from 'lucide-react-native';
+import { X, Calendar, Calculator, ArrowLeftRight, Search } from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactionStore } from '@/store/transaction-store';
@@ -37,6 +37,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
   const [date, setDate] = useState(new Date());
   const [type, setType] = useState<'income' | 'expense' | 'transfer'>('expense');
   const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
+  const [categorySearch, setCategorySearch] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [calculatorDisplay, setCalculatorDisplay] = useState('0');
@@ -63,6 +64,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
         : null;
 
       setSelectedCategory(normalizedCategory);
+      setCategorySearch('');
     }
   }, [transaction]);
 
@@ -77,6 +79,15 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       ? categories
       : [selectedCategory, ...categories];
   }, [categories, selectedCategory, type]);
+
+  const filteredCategories = useMemo(() => {
+    const query = categorySearch.trim().toLowerCase();
+    if (!query) {
+      return displayedCategories;
+    }
+
+    return displayedCategories.filter((category) => category.name.toLowerCase().includes(query));
+  }, [categorySearch, displayedCategories]);
 
   const handleDateChange = (event: any, selectedDate?: Date) => {
     setShowDatePicker(false);
@@ -330,12 +341,27 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
           {type !== 'transfer' && (
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
+              <View style={[styles.categorySearchBox, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+                <Search size={16} color={theme.colors.textSecondary} />
+                <TextInput
+                  style={[styles.categorySearchInput, { color: theme.colors.text }]}
+                  value={categorySearch}
+                  onChangeText={setCategorySearch}
+                  placeholder="Search or scroll categories"
+                  placeholderTextColor={theme.colors.textSecondary}
+                />
+                {categorySearch ? (
+                  <TouchableOpacity onPress={() => setCategorySearch('')}>
+                    <X size={16} color={theme.colors.textSecondary} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesScroll}>
                 <View style={styles.categoriesRow}>
-                  {displayedCategories.map((category) => {
+                  {filteredCategories.map((category) => {
                     const isSelected = selectedCategory?.id === category.id;
                     const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
-                    
+
                     return (
                       <TouchableOpacity
                         key={category.id}
@@ -356,6 +382,11 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   })}
                 </View>
               </ScrollView>
+              {filteredCategories.length === 0 ? (
+                <View style={styles.noResults}>
+                  <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>No categories found</Text>
+                </View>
+              ) : null}
             </View>
           )}
         </ScrollView>
@@ -483,6 +514,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  categorySearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  categorySearchInput: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 14,
+  },
   categoriesScroll: {
     marginHorizontal: -4,
   },
@@ -510,6 +555,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     textAlign: 'center',
+  },
+  noResults: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  noResultsText: {
+    fontSize: 13,
   },
   footer: {
     flexDirection: 'row',

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
+  KeyboardAvoidingView,
   TextInput,
   Switch,
   Alert,
@@ -47,6 +48,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { ALL_CATEGORIES } from '@/constants/categories';
+import { CURRENCY_OPTIONS } from '@/constants/currencies';
+import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
+import { File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 interface UserProfile {
   name: string;
@@ -66,6 +72,7 @@ interface AppSettings {
   biometricAuth: boolean;
   autoBackup: boolean;
   lastBackupDate?: Date;
+  firstUsedAt?: Date;
   privacy: {
     hideAmounts: boolean;
     requireAuth: boolean;
@@ -88,44 +95,59 @@ interface GoogleDriveFile {
 export default function ProfileScreen() {
   const { 
     transactions, 
+    allTransactions,
+    accounts,
+    notes,
     settings, 
+    budgets,
+    budgetAlerts,
+    financialGoals,
+    userProfile,
+    recurringRules,
     updateSettings, 
+    updateUserProfile,
+    restoreBackupSnapshot,
+    importTransactionsBatch,
     formatCurrency, 
     clearAllData 
   } = useTransactionStore();
   const { theme, toggleTheme } = useTheme();
   const insets = useSafeAreaInsets();
   
-  const [userProfile, setUserProfile] = useState<UserProfile>({
-    name: 'Money Manager User',
-    email: 'user@example.com',
-    phone: '+1 (555) 123-4567',
-    location: 'New York, NY',
-    occupation: 'Software Engineer',
-    joinDate: new Date('2024-01-01'),
-    avatar: '👤',
-  });
-
   const [showEditProfile, setShowEditProfile] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showHelpSupport, setShowHelpSupport] = useState<boolean>(false);
   const [showBackupRestore, setShowBackupRestore] = useState<boolean>(false);
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [showPrivacySecurity, setShowPrivacySecurity] = useState<boolean>(false);
   const [showCurrencyPicker, setShowCurrencyPicker] = useState<boolean>(false);
   const [showLanguagePicker, setShowLanguagePicker] = useState<boolean>(false);
   const [showAutoLockPicker, setShowAutoLockPicker] = useState<boolean>(false);
+  const [importFormat, setImportFormat] = useState<'json' | 'csv'>('json');
+  const [importText, setImportText] = useState<string>('');
   const [editForm, setEditForm] = useState<UserProfile>(userProfile);
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState<string>('');
 
-  const currencies = [
-    { code: 'USD', symbol: '$', name: 'US Dollar' },
-    { code: 'EUR', symbol: '€', name: 'Euro' },
-    { code: 'GBP', symbol: '£', name: 'British Pound' },
-    { code: 'JPY', symbol: '¥', name: 'Japanese Yen' },
-    { code: 'CAD', symbol: 'C$', name: 'Canadian Dollar' },
-    { code: 'AUD', symbol: 'A$', name: 'Australian Dollar' },
-  ];
+  const currencies = CURRENCY_OPTIONS;
+
+  const importCategories = useMemo(() => {
+    const map = new Map<string, (typeof ALL_CATEGORIES)[number]>();
+
+    [...ALL_CATEGORIES, ...transactions.map((transaction) => transaction.category), ...budgets.map((budget) => budget.category)]
+      .filter((category): category is (typeof ALL_CATEGORIES)[number] => Boolean(category?.id))
+      .forEach((category) => {
+        if (!map.has(category.id)) {
+          map.set(category.id, category);
+        }
+      });
+
+    return Array.from(map.values());
+  }, [budgets, transactions]);
+
+  useEffect(() => {
+    setEditForm(userProfile);
+  }, [userProfile]);
 
   const languages = [
     { code: 'en', name: 'English' },
@@ -145,109 +167,181 @@ export default function ProfileScreen() {
     { value: -1, label: 'Never' },
   ];
 
-  const handleExportData = async () => {
+  const normalizeAutoLockValue = (value: number | undefined): number => {
+    const match = autoLockOptions.find((option) => option.value === value);
+    return match?.value ?? 5;
+  };
+
+  const getAutoLockLabel = (value: number | undefined, compact = false): string => {
+    const minutes = normalizeAutoLockValue(value);
+
+    if (minutes === -1) {
+      return 'Never';
+    }
+
+    if (minutes === 0) {
+      return compact ? 'Now' : 'Immediately';
+    }
+
+    if (minutes === 1) {
+      return compact ? '1m' : 'After 1 minute';
+    }
+
+    return compact ? `${minutes}m` : `After ${minutes} minutes`;
+  };
+
+  const selectedAutoLockValue = normalizeAutoLockValue(settings.security?.autoLock);
+  const memberSinceDate = settings.firstUsedAt ?? userProfile.joinDate;
+  const selectedCurrencyCode = (settings.currency || 'ZMW').toUpperCase();
+
+  const resetBackupStatus = () => {
+    setTimeout(() => {
+      setBackupStatus('idle');
+    }, 3000);
+  };
+
+  const openImportModal = (format: 'json' | 'csv') => {
+    setImportFormat(format);
+    setImportText('');
+    setShowImportModal(true);
+  };
+
+  const sharePayload = async (
+    title: string,
+    message: string,
+    successMessage: string,
+    onSuccess?: () => void
+  ) => {
     try {
-      setBackupStatus('backingup');
-      setBackupMessage('Preparing data for export...');
+      await Share.share({
+        title,
+        message,
+      });
 
-      const dataToExport = {
-        transactions,
-        userProfile,
-        settings,
-        exportDate: new Date().toISOString(),
-        totalTransactions: transactions.length,
-        appVersion: '1.0.0',
-        schemaVersion: '1.0'
-      };
-
-      const jsonString = JSON.stringify(dataToExport, null, 2);
-      const fileName = `moneymanager-backup-${new Date().toISOString().split('T')[0]}.json`;
-      
-      try {
-        await Share.share({
-          title: 'Money Manager Backup',
-          message: jsonString,
-          url: undefined,
-        });
-      } catch (shareError) {
-        Alert.alert(
-          'Export Data',
-          `Data prepared for export! Total: ${transactions.length} transactions\n\nYou can copy this data manually:`,
-          [
-            {
-              text: 'Copy to Clipboard',
-              onPress: async () => {
-                console.log('Backup Data:', jsonString);
-                Alert.alert('Data Ready', 'Backup data logged to console. In a real app, this would copy to clipboard.');
-              },
-            },
-            { text: 'OK' },
-          ]
-        );
-      }
-
+      onSuccess?.();
       setBackupStatus('success');
-      setBackupMessage('Data exported successfully!');
-      
-      setTimeout(() => {
-        setBackupStatus('idle');
-      }, 3000);
-
+      setBackupMessage(successMessage);
+      resetBackupStatus();
     } catch (error) {
-      console.error('Export error:', error);
+      console.error('Share export error:', error);
       setBackupStatus('error');
-      setBackupMessage('Failed to export data. Please try again.');
+      setBackupMessage('Failed to open the share sheet. Please try again.');
     }
   };
 
-  const handleImportData = () => {
-    Alert.alert(
-      'Import Data',
-      'To import data, paste your backup JSON data in the next screen.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Continue',
-          onPress: () => {
-            setShowBackupRestore(false);
-            setTimeout(() => {
-              Alert.prompt(
-                'Import Backup Data',
-                'Paste your backup JSON data below:',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Import',
-                    onPress: (jsonString?: string) => {
-                      if (jsonString) {
-                        handleJsonImport(jsonString);
-                      }
-                    },
-                  },
-                ],
-                'plain-text'
-              );
-            }, 300);
-          },
-        },
-      ]
+  const shareFilePayload = async (
+    title: string,
+    fileName: string,
+    content: string,
+    mimeType: string,
+    successMessage: string,
+    onSuccess?: () => void
+  ) => {
+    try {
+      const file = new File(Paths.cache, fileName);
+      file.create({ intermediates: true, overwrite: true });
+      file.write(content);
+
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error('File sharing is not available on this device.');
+      }
+
+      await Sharing.shareAsync(file.uri, {
+        dialogTitle: title,
+        mimeType,
+        UTI: mimeType === 'text/csv' ? 'public.comma-separated-values-text' : undefined,
+      });
+
+      onSuccess?.();
+      setBackupStatus('success');
+      setBackupMessage(successMessage);
+      resetBackupStatus();
+    } catch (error) {
+      console.error('File export error:', error);
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Failed to export the file. Please try again.');
+    }
+  };
+  const handleExportData = async () => {
+    setBackupStatus('backingup');
+    setBackupMessage('Preparing JSON backup...');
+
+    const dataToExport = {
+      transactions: allTransactions,
+      accounts,
+      notes,
+      settings,
+      budgets,
+      budgetAlerts,
+      financialGoals,
+      userProfile,
+      recurringRules,
+      exportDate: new Date().toISOString(),
+      totalTransactions: transactions.length,
+      appVersion: '2.0.0',
+      schemaVersion: '2.0',
+    };
+
+    const jsonString = JSON.stringify(dataToExport, null, 2);
+    await sharePayload(
+      'Money Manager Backup',
+      jsonString,
+      'JSON backup exported successfully.',
+      () => updateSettings({ lastBackupDate: new Date() })
     );
   };
 
-  const handleJsonImport = (jsonString: string) => {
+  const handleExportCsv = async () => {
+    setBackupStatus('backingup');
+    setBackupMessage('Preparing CSV export...');
+
+    const exportedAt = new Date();
+    const csvString = exportTransactionsToCsv(transactions);
+    const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+    await shareFilePayload(
+      'Money Manager Transactions CSV',
+      `money-manager-transactions-${timestamp}.csv`,
+      csvString,
+      'text/csv',
+      'CSV file exported successfully.',
+      () => updateSettings({ lastBackupDate: exportedAt })
+    );
+  };
+
+  const handleImportData = () => openImportModal('json');
+  const handleImportCsv = () => openImportModal('csv');
+
+  const handleJsonImport = async (jsonString: string) => {
     try {
-      setBackupStatus('restoring');
-      setBackupMessage('Validating backup data...');
-
       const importedData = JSON.parse(jsonString);
-
-      if (!importedData.transactions || !importedData.settings) {
+      if (!importedData || typeof importedData !== 'object') {
         throw new Error('Invalid backup file format');
       }
 
+      const hasSupportedKeys = [
+        'transactions',
+        'accounts',
+        'notes',
+        'settings',
+        'budgets',
+        'budgetAlerts',
+        'financialGoals',
+        'userProfile',
+        'recurringRules',
+      ].some((key) => key in importedData);
+
+      if (!hasSupportedKeys) {
+        throw new Error('This JSON payload does not contain a Money Manager backup.');
+      }
+
+      const exportDate = importedData.exportDate ? new Date(importedData.exportDate) : null;
+      const exportLabel = exportDate && !Number.isNaN(exportDate.getTime())
+        ? exportDate.toLocaleDateString()
+        : 'the selected backup';
+
       Alert.alert(
         'Restore Backup',
-        `This will replace all current data with the backup data from ${new Date(importedData.exportDate).toLocaleDateString()}. This action cannot be undone.`,
+        `This will replace your current data with ${exportLabel}. This action cannot be undone.`,
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -255,16 +349,20 @@ export default function ProfileScreen() {
             style: 'destructive',
             onPress: async () => {
               try {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                updateSettings(importedData.settings);
+                setBackupStatus('restoring');
+                setBackupMessage('Restoring backup data...');
+                await restoreBackupSnapshot(importedData);
+                setShowImportModal(false);
+                setImportText('');
                 setBackupStatus('success');
-                setBackupMessage(`Successfully restored ${importedData.transactions.length} transactions!`);
-                setTimeout(() => {
-                  setBackupStatus('idle');
-                }, 3000);
-              } catch (restoreError) {
+                setBackupMessage(
+                  `Restored ${Array.isArray(importedData.transactions) ? importedData.transactions.length : 0} transactions from backup.`
+                );
+                resetBackupStatus();
+              } catch (error) {
+                console.error('JSON restore error:', error);
                 setBackupStatus('error');
-                setBackupMessage('Failed to restore data. File might be corrupted.');
+                setBackupMessage('Failed to restore the backup. Please verify the file contents.');
               }
             },
           },
@@ -272,10 +370,59 @@ export default function ProfileScreen() {
       );
     } catch (error) {
       setBackupStatus('error');
-      setBackupMessage('Invalid JSON data. Please check your backup file.');
+      setBackupMessage(error instanceof Error ? error.message : 'Invalid JSON data. Please check your backup file.');
     }
   };
 
+  const handleCsvImport = (csvString: string) => {
+    try {
+      setBackupStatus('restoring');
+      setBackupMessage('Parsing CSV transactions...');
+
+      const parsed = parseTransactionsFromCsv(csvString, importCategories);
+      if (parsed.transactions.length === 0) {
+        throw new Error(parsed.errors[0] ?? 'No valid transactions found in the CSV payload.');
+      }
+
+      const result = importTransactionsBatch(parsed.transactions);
+      const skippedCount = parsed.skippedCount + result.skippedCount;
+      const summaryMessage = skippedCount > 0
+        ? `Imported ${result.importedCount} transactions and skipped ${skippedCount} rows.`
+        : `Imported ${result.importedCount} transactions from CSV.`;
+
+      setShowImportModal(false);
+      setImportText('');
+      setBackupStatus('success');
+      setBackupMessage(summaryMessage);
+      resetBackupStatus();
+
+      if (skippedCount > 0 || parsed.errors.length > 0) {
+        const errorPreview = parsed.errors.slice(0, 3).join('\n');
+        Alert.alert(
+          'CSV Import Complete',
+          errorPreview ? `${summaryMessage}\n\n${errorPreview}` : summaryMessage
+        );
+      }
+    } catch (error) {
+      console.error('CSV import error:', error);
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Failed to import CSV transactions.');
+    }
+  };
+
+  const submitImportPayload = () => {
+    if (!importText.trim()) {
+      Alert.alert('Import Data', `Paste ${importFormat.toUpperCase()} content to continue.`);
+      return;
+    }
+
+    if (importFormat === 'json') {
+      void handleJsonImport(importText);
+      return;
+    }
+
+    handleCsvImport(importText);
+  };
   const handleBackupToGoogleDrive = async () => {
     try {
       setBackupStatus('backingup');
@@ -370,13 +517,15 @@ export default function ProfileScreen() {
   };
 
   const updateSecuritySetting = (key: string, value: any) => {
+    const nextValue = key === 'autoLock' ? normalizeAutoLockValue(value) : value;
+
     updateSettings({
       security: {
         autoLock: 5,
         passwordEnabled: false,
         twoFactorEnabled: false,
         ...settings.security,
-        [key]: value
+        [key]: nextValue
       }
     });
   };
@@ -394,10 +543,10 @@ export default function ProfileScreen() {
   };
 
   const handleAutoLockSelect = (minutes: number) => {
-    updateSecuritySetting('autoLock', minutes);
+    const normalizedMinutes = normalizeAutoLockValue(minutes);
+    updateSecuritySetting('autoLock', normalizedMinutes);
     setShowAutoLockPicker(false);
-    const option = autoLockOptions.find(o => o.value === minutes);
-    Alert.alert('Auto Lock Updated', `Auto lock set to ${option?.label}`);
+    Alert.alert('Auto Lock Updated', `Auto lock set to ${getAutoLockLabel(normalizedMinutes)}`);
   };
 
   const handleBiometricAuthToggle = (value: boolean) => {
@@ -510,9 +659,19 @@ export default function ProfileScreen() {
   };
   
   const handleSaveProfile = () => {
-    setUserProfile(editForm);
+    updateUserProfile(editForm);
     setShowEditProfile(false);
     Alert.alert('Success', 'Profile updated successfully!');
+  };
+
+  const openEditProfile = () => {
+    setEditForm(userProfile);
+    setShowEditProfile(true);
+  };
+
+  const openSettingsDestination = (action: () => void) => {
+    setShowSettings(false);
+    setTimeout(action, 250);
   };
 
   const openEmailSupport = () => {
@@ -542,29 +701,11 @@ export default function ProfileScreen() {
     }, 300);
   };
 
-  const menuItems = [
-    {
-      icon: Edit3,
-      title: 'Edit Profile',
-      onPress: () => {
-        setEditForm(userProfile);
-        setShowEditProfile(true);
-      },
-    },
+  const menuItems: Array<{ icon: typeof Settings; title: string; onPress: () => void; destructive?: boolean }> = [
     {
       icon: Settings,
       title: 'Settings',
       onPress: () => setShowSettings(true),
-    },
-    {
-      icon: Download,
-      title: 'Backup Center',
-      onPress: () => setShowBackupRestore(true),
-    },
-    {
-      icon: Shield,
-      title: 'Privacy',
-      onPress: () => setShowPrivacySecurity(true),
     },
     {
       icon: HelpCircle,
@@ -580,11 +721,6 @@ export default function ProfileScreen() {
       icon: DollarSign,
       title: 'Currency',
       onPress: () => setShowCurrencyPicker(true),
-    },
-    {
-      icon: Globe,
-      title: 'Language',
-      onPress: () => setShowLanguagePicker(true),
     },
     {
       icon: Clock,
@@ -603,6 +739,16 @@ export default function ProfileScreen() {
     },
     {
       icon: Download,
+      title: 'Export CSV',
+      onPress: handleExportCsv,
+    },
+    {
+      icon: Database,
+      title: 'Import CSV',
+      onPress: handleImportCsv,
+    },
+    {
+      icon: Download,
       title: 'Drive Backup',
       onPress: handleBackupToGoogleDrive,
     },
@@ -616,16 +762,10 @@ export default function ProfileScreen() {
       title: 'Email Support',
       onPress: openEmailSupport,
     },
-    {
-      icon: Trash2,
-      title: 'Clear Data',
-      onPress: handleClearData,
-      destructive: true,
-    },
   ];
 
   const MENU_GRID_COLUMNS = 3;
-  const MENU_GRID_ROWS = 5;
+  const MENU_GRID_ROWS = Math.max(1, Math.ceil(menuItems.length / MENU_GRID_COLUMNS));
   const MENU_GRID_SIZE = MENU_GRID_COLUMNS * MENU_GRID_ROWS;
   const menuGridItems = [
     ...menuItems,
@@ -661,7 +801,7 @@ export default function ProfileScreen() {
           <View style={styles.profileDetailItem}>
             <Calendar size={12} color="#666" />
             <Text style={[styles.profileDetailText, { color: theme.colors.textSecondary }]}>
-              Member since {userProfile.joinDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+              Member since {memberSinceDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
             </Text>
           </View>
         </View>
@@ -766,48 +906,27 @@ export default function ProfileScreen() {
                 />
               </View>
             </View>
-            
+
             <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Appearance</Text>
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Moon size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Dark Mode</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Use dark theme</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={theme.isDark}
-                  onValueChange={() => toggleTheme()}
-                  trackColor={{ false: '#e0e0e0', true: theme.colors.primary }}
-                  thumbColor={theme.isDark ? '#fff' : '#f4f3f4'}
-                />
-              </View>
-            </View>
-            
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Localization</Text>
-              
-              <TouchableOpacity 
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Profile</Text>
+
+              <TouchableOpacity
                 style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => setShowCurrencyPicker(true)}
+                onPress={() => openSettingsDestination(openEditProfile)}
               >
                 <View style={styles.settingInfo}>
-                  <DollarSign size={20} color="#667eea" />
+                  <Edit3 size={20} color="#667eea" />
                   <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Currency</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                      {currencies.find(c => c.code === settings.currency)?.name || settings.currency}
-                    </Text>
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Edit Profile</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Update your personal details</Text>
                   </View>
                 </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>{settings.currency}</Text>
+                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
               </TouchableOpacity>
-              
-              <TouchableOpacity 
+
+              <TouchableOpacity
                 style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => setShowLanguagePicker(true)}
+                onPress={() => openSettingsDestination(() => setShowLanguagePicker(true))}
               >
                 <View style={styles.settingInfo}>
                   <Globe size={20} color="#667eea" />
@@ -821,7 +940,56 @@ export default function ProfileScreen() {
                 <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>{settings.language.toUpperCase()}</Text>
               </TouchableOpacity>
             </View>
-            
+
+            <View style={styles.settingsSection}>
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Privacy & Backup</Text>
+
+              <TouchableOpacity
+                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+                onPress={() => openSettingsDestination(() => setShowBackupRestore(true))}
+              >
+                <View style={styles.settingInfo}>
+                  <Download size={20} color="#667eea" />
+                  <View style={styles.settingText}>
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Backup Center</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Manage JSON, CSV, and Drive backups</Text>
+                  </View>
+                </View>
+                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+                onPress={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
+              >
+                <View style={styles.settingInfo}>
+                  <Shield size={20} color="#667eea" />
+                  <View style={styles.settingText}>
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Privacy</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Review privacy and security controls</Text>
+                  </View>
+                </View>
+                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+                onPress={() => {
+                  setShowSettings(false);
+                  setTimeout(handleClearData, 250);
+                }}
+              >
+                <View style={styles.settingInfo}>
+                  <Trash2 size={20} color="#F44336" />
+                  <View style={styles.settingText}>
+                    <Text style={[styles.settingTitle, { color: '#F44336' }]}>Clear Data</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Permanently delete transactions and accounts</Text>
+                  </View>
+                </View>
+                <Text style={[styles.settingValue, { color: '#F44336' }]}>Reset</Text>
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Backup</Text>
               <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
@@ -866,7 +1034,7 @@ export default function ProfileScreen() {
                   <Text style={[styles.pickerItemText, { color: theme.colors.text }]}>
                     {currency.symbol} {currency.name} ({currency.code})
                   </Text>
-                  {settings.currency === currency.code && (
+                  {selectedCurrencyCode === currency.code && (
                     <CheckCircle size={20} color="#4CAF50" />
                   )}
                 </TouchableOpacity>
@@ -931,7 +1099,7 @@ export default function ProfileScreen() {
                       {option.label}
                     </Text>
                   </View>
-                  {settings.security?.autoLock === option.value && (
+                  {selectedAutoLockValue === option.value && (
                     <CheckCircle size={20} color="#4CAF50" />
                   )}
                 </TouchableOpacity>
@@ -1028,7 +1196,7 @@ export default function ProfileScreen() {
                 disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
               >
                 <Download size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Export Data as JSON</Text>
+                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Export Full Backup JSON</Text>
               </TouchableOpacity>
 
               <TouchableOpacity 
@@ -1036,12 +1204,30 @@ export default function ProfileScreen() {
                 onPress={handleImportData}
                 disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
               >
+                <Database size={20} color={theme.colors.primary} />
+                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Import Full Backup JSON</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.backupButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+                onPress={handleExportCsv}
+                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
+              >
                 <Download size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Import from JSON</Text>
+                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Export Transactions CSV</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.backupButton, styles.restoreButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+                onPress={handleImportCsv}
+                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
+              >
+                <Database size={20} color={theme.colors.primary} />
+                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Import Transactions CSV</Text>
               </TouchableOpacity>
               
               <Text style={[styles.backupSubtitle, { color: theme.colors.textSecondary }]}>
-                Export your data as JSON for manual backup or import from existing backup
+                JSON restores the full app snapshot. CSV import is transaction-only from pasted text, and CSV export shares a real .csv file.
               </Text>
             </View>
 
@@ -1056,6 +1242,75 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
+      <Modal visible={showImportModal} animationType="slide" presentationStyle="pageSheet">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}
+        >
+          <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
+            <TouchableOpacity onPress={() => setShowImportModal(false)}>
+              <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Import Data</Text>
+            <TouchableOpacity onPress={submitImportPayload}>
+              <Text style={[styles.saveButton, { color: theme.colors.primary }]}>Import</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            <View style={styles.settingsSection}>
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Import Format</Text>
+              <View style={styles.importFormatRow}>
+                {(['json', 'csv'] as const).map((format) => {
+                  const isActive = importFormat === format;
+                  return (
+                    <TouchableOpacity
+                      key={format}
+                      style={[
+                        styles.importFormatButton,
+                        { borderColor: isActive ? theme.colors.primary : theme.colors.border },
+                        isActive && { backgroundColor: theme.colors.primary + '14' },
+                      ]}
+                      onPress={() => setImportFormat(format)}
+                    >
+                      <Text
+                        style={[
+                          styles.importFormatButtonText,
+                          { color: isActive ? theme.colors.primary : theme.colors.textSecondary },
+                        ]}
+                      >
+                        {format.toUpperCase()}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.importHelpText, { color: theme.colors.textSecondary }]}>
+                {importFormat === 'json'
+                  ? 'Paste a full Money Manager backup payload to replace the current app data.'
+                  : 'Paste CSV rows with a header row. Supported columns include date, type, amount, description, categoryId/categoryName, fromAccountId, toAccountId, and tags.'}
+              </Text>
+
+              <TextInput
+                style={[
+                  styles.textInput,
+                  styles.importTextInput,
+                  { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text },
+                ]}
+                value={importText}
+                onChangeText={setImportText}
+                placeholder={importFormat === 'json' ? 'Paste backup JSON here' : 'Paste transaction CSV here'}
+                placeholderTextColor={theme.colors.textSecondary}
+                multiline
+                textAlignVertical="top"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
       {/* Privacy & Security Modal */}
       <Modal visible={showPrivacySecurity} animationType="slide" presentationStyle="pageSheet">
         <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
@@ -1189,40 +1444,17 @@ export default function ProfileScreen() {
                   <View style={styles.settingText}>
                     <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Auto Lock</Text>
                     <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                      {settings.security?.autoLock === -1 ? 'Never' :
-                       settings.security?.autoLock === 0 ? 'Immediately' :
-                       settings.security?.autoLock === 1 ? 'After 1 minute' :
-                       `After ${settings.security?.autoLock} minutes`}
+                      {getAutoLockLabel(settings.security?.autoLock)}
                     </Text>
                   </View>
                 </View>
                 <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-                  {settings.security?.autoLock === -1 ? 'Never' :
-                   settings.security?.autoLock === 0 ? 'Now' :
-                   `${settings.security?.autoLock}m`}
+                  {getAutoLockLabel(settings.security?.autoLock, true)}
                 </Text>
               </TouchableOpacity>
             </View>
 
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Data Management</Text>
-              
-              <TouchableOpacity 
-                style={[styles.dataActionButton, { backgroundColor: '#ffebee', borderColor: '#f44336' }]}
-                onPress={handleClearData}
-              >
-                <Trash2 size={20} color="#f44336" />
-                <Text style={[styles.dataActionText, { color: '#f44336' }]}>Clear All Data</Text>
-              </TouchableOpacity>
 
-              <TouchableOpacity 
-                style={[styles.dataActionButton, { backgroundColor: '#e8f5e8', borderColor: '#4caf50' }]}
-                onPress={handleExportData}
-              >
-                <Download size={20} color="#4caf50" />
-                <Text style={[styles.dataActionText, { color: '#4caf50' }]}>Export All Data</Text>
-              </TouchableOpacity>
-            </View>
           </ScrollView>
         </View>
       </Modal>
@@ -1840,6 +2072,31 @@ const styles = StyleSheet.create({
   },
   infoValue: {
     fontSize: 16,
+  },
+  importFormatRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  importFormatButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  importFormatButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  importHelpText: {
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  importTextInput: {
+    minHeight: 240,
   },
   legalItem: {
     flexDirection: 'row',

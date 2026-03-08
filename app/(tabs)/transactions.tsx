@@ -1,102 +1,112 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TransactionItem } from '@/components/TransactionItem';
+import { EditTransactionModal } from '@/components/EditTransactionModal';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { Transaction, TransactionType } from '@/types/transaction';
+
+const FILTER_OPTIONS: Array<{ key: 'all' | TransactionType; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'income', label: 'Income' },
+  { key: 'expense', label: 'Expenses' },
+  { key: 'transfer', label: 'Transfers' },
+];
 
 export default function TransactionsScreen() {
-  const { transactions, deleteTransaction } = useTransactionStore();
+  const { transactions, deleteTransaction, formatCurrency } = useTransactionStore();
   const { theme } = useTheme();
-  const [filter, setFilter] = useState<'all' | 'income' | 'expense'>('all');
+  const [filter, setFilter] = useState<'all' | TransactionType>('all');
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const insets = useSafeAreaInsets();
 
-  const filteredTransactions = transactions.filter(transaction => {
-    if (filter === 'all') return true;
-    return transaction.type === filter;
-  });
+  const filteredTransactions = useMemo(
+    () => transactions.filter((transaction) => (filter === 'all' ? true : transaction.type === filter)),
+    [filter, transactions]
+  );
 
-  const handleTransactionPress = (transactionId: string) => {
-    deleteTransaction(transactionId);
+  const totals = useMemo(
+    () => ({
+      income: filteredTransactions
+        .filter((transaction) => transaction.type === 'income')
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+      expenses: filteredTransactions
+        .filter((transaction) => transaction.type === 'expense')
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+      transfers: filteredTransactions
+        .filter((transaction) => transaction.type === 'transfer')
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+    }),
+    [filteredTransactions]
+  );
+
+  const confirmDeleteTransaction = (transaction: Transaction) => {
+    Alert.alert('Delete transaction', `Delete "${transaction.description}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => deleteTransaction(transaction.id),
+      },
+    ]);
   };
-
-  const formatCurrency = (amount: number) => {
-    if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-    }).format(amount);
-  };
-
-  const totalIncome = filteredTransactions
-    .filter(t => t.type === 'income')
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const totalExpenses = filteredTransactions
-    .filter(t => t.type === 'expense')
-    .reduce((sum, t) => sum + t.amount, 0);
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]}>
-      <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
+    <View style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]}> 
+      <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}> 
         <View style={styles.filterContainer}>
-          <TouchableOpacity
-            style={[styles.filterButton, { backgroundColor: filter === 'all' ? theme.colors.primary : theme.colors.background }, filter === 'all' && styles.filterButtonActive]}
-            onPress={() => setFilter('all')}
-          >
-            <Text style={[styles.filterText, { color: filter === 'all' ? 'white' : theme.colors.textSecondary }, filter === 'all' && styles.filterTextActive]}>
-              All
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.filterButton, { backgroundColor: filter === 'income' ? theme.colors.primary : theme.colors.background }, filter === 'income' && styles.filterButtonActive]}
-            onPress={() => setFilter('income')}
-          >
-            <Text style={[styles.filterText, { color: filter === 'income' ? 'white' : theme.colors.textSecondary }, filter === 'income' && styles.filterTextActive]}>
-              Income
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.filterButton, { backgroundColor: filter === 'expense' ? theme.colors.primary : theme.colors.background }, filter === 'expense' && styles.filterButtonActive]}
-            onPress={() => setFilter('expense')}
-          >
-            <Text style={[styles.filterText, { color: filter === 'expense' ? 'white' : theme.colors.textSecondary }, filter === 'expense' && styles.filterTextActive]}>
-              Expenses
-            </Text>
-          </TouchableOpacity>
+          {FILTER_OPTIONS.map((option) => {
+            const isActive = filter === option.key;
+            return (
+              <TouchableOpacity
+                key={option.key}
+                style={[
+                  styles.filterButton,
+                  {
+                    backgroundColor: isActive ? theme.colors.primary : theme.colors.background,
+                    borderColor: isActive ? theme.colors.primary : theme.colors.border,
+                  },
+                ]}
+                onPress={() => setFilter(option.key)}
+              >
+                <Text style={[styles.filterText, { color: isActive ? 'white' : theme.colors.textSecondary }]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         <View style={styles.summaryContainer}>
-          <View style={styles.summaryItem}>
+          <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <Text style={[styles.summaryValue, styles.incomeText]}>
-              {formatCurrency(totalIncome)}
-            </Text>
+            <Text style={[styles.summaryValue, styles.incomeText]}>{formatCurrency(totals.income)}</Text>
           </View>
-          <View style={styles.summaryItem}>
+          <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <Text style={[styles.summaryValue, styles.expenseText]}>
-              {formatCurrency(totalExpenses)}
-            </Text>
+            <Text style={[styles.summaryValue, styles.expenseText]}>{formatCurrency(totals.expenses)}</Text>
+          </View>
+          <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
+            <Text style={[styles.summaryValue, { color: theme.colors.primary }]}>{formatCurrency(totals.transfers)}</Text>
           </View>
         </View>
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {filteredTransactions.length === 0 ? (
-          <View style={[styles.emptyState, { backgroundColor: theme.colors.surface }]}>
+          <View style={[styles.emptyState, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
             <Text style={[styles.emptyStateTitle, { color: theme.colors.text }]}>No transactions found</Text>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
-              {filter === 'all' 
-                ? 'Start adding transactions to see them here'
-                : `No ${filter} transactions found`
-              }
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}> 
+              {filter === 'all' ? 'Start adding transactions to see them here.' : `No ${filter} transactions are available right now.`}
             </Text>
           </View>
         ) : (
@@ -105,12 +115,23 @@ export default function TransactionsScreen() {
               <TransactionItem
                 key={transaction.id}
                 transaction={transaction}
-                onPress={() => handleTransactionPress(transaction.id)}
+                showActions
+                onEdit={() => setEditingTransaction(transaction)}
+                onDelete={() => confirmDeleteTransaction(transaction)}
               />
             ))}
           </View>
         )}
       </ScrollView>
+
+      {editingTransaction ? (
+        <EditTransactionModal
+          visible={true}
+          transaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSave={() => setEditingTransaction(null)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -118,86 +139,79 @@ export default function TransactionsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
   },
   header: {
-    backgroundColor: 'white',
     paddingTop: 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#e9ecef',
   },
   filterContainer: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     paddingHorizontal: 16,
     marginBottom: 16,
     gap: 8,
   },
   filterButton: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#f8f9fa',
-  },
-  filterButtonActive: {
-    backgroundColor: '#667eea',
+    paddingVertical: 9,
+    borderRadius: 999,
+    borderWidth: 1,
   },
   filterText: {
     fontSize: 14,
-    fontWeight: '500',
-    color: '#666',
-  },
-  filterTextActive: {
-    color: 'white',
+    fontWeight: '600',
   },
   summaryContainer: {
     flexDirection: 'row',
     paddingHorizontal: 16,
-    gap: 24,
+    gap: 12,
   },
   summaryItem: {
     flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
   },
   summaryLabel: {
     fontSize: 12,
-    fontWeight: '500',
-    color: '#666',
-    marginBottom: 4,
+    fontWeight: '600',
+    marginBottom: 6,
   },
   summaryValue: {
-    fontSize: 18,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
   },
   incomeText: {
-    color: '#4CAF50',
+    color: '#16A34A',
   },
   expenseText: {
-    color: '#F44336',
+    color: '#DC2626',
   },
   scrollView: {
     flex: 1,
-    paddingTop: 16,
+  },
+  scrollContent: {
+    paddingTop: 12,
+    paddingBottom: 24,
   },
   transactionsList: {
-    gap: 2,
-    paddingBottom: 24,
+    gap: 4,
   },
   emptyState: {
     alignItems: 'center',
     padding: 32,
-    backgroundColor: 'white',
     marginHorizontal: 16,
-    borderRadius: 12,
+    borderRadius: 16,
+    borderWidth: 1,
   },
   emptyStateTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#1a1a1a',
+    fontWeight: '700',
     marginBottom: 8,
   },
   emptyStateText: {
     fontSize: 14,
-    color: '#666',
     textAlign: 'center',
     lineHeight: 20,
   },

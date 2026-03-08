@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Animated,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import {
   Plus,
@@ -21,15 +22,19 @@ import {
   Shield,
   ArrowUpRight,
   ArrowDownRight,
+  PiggyBank,
+  Target,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TransactionItem } from '@/components/TransactionItem';
 import { AddTransactionModal } from '@/components/AddTransactionModal';
+import { EditTransactionModal } from '@/components/EditTransactionModal';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
-import { Insight } from '@/types/transaction';
+import { Insight, Transaction } from '@/types/transaction';
+import { getActiveBudgets } from '@/src/domain/budgeting';
 import * as Haptics from 'expo-haptics';
 
 function SkeletonBlock({ width, height, style }: { width: number | string; height: number; style?: object }) {
@@ -182,12 +187,16 @@ const insightStyles = StyleSheet.create({
 export default function HomeScreen() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const { theme } = useTheme();
   const fabScale = useRef(new Animated.Value(1)).current;
 
   const {
     transactions,
-    balance,
+    accounts,
+    financialGoals,
+    netBalance,
+    lifetimeNetCashFlow,
     getTotalIncome,
     getTotalExpenses,
     healthScore,
@@ -197,6 +206,7 @@ export default function HomeScreen() {
     formatCurrency,
     isLoaded,
     triggerReconciliation,
+    deleteTransaction,
   } = useTransactionStore();
 
   const currentMonth = useMemo(() => new Date().toISOString().slice(0, 7), []);
@@ -206,21 +216,61 @@ export default function HomeScreen() {
 
   const recentTransactions = useMemo(() => transactions.slice(0, 5), [transactions]);
 
+  const activeBudgets = useMemo(() => getActiveBudgets(budgets), [budgets]);
+
+  const savingsAccounts = useMemo(
+    () => accounts.filter((account) => account.isActive && account.type === 'savings'),
+    [accounts]
+  );
+
+  const totalSavings = useMemo(
+    () => savingsAccounts.reduce((sum, account) => sum + account.balance, 0),
+    [savingsAccounts]
+  );
+
+  const goalSummary = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const trackedGoals = financialGoals.filter(
+      (goal) => Number.isFinite(goal.targetAmount) && goal.targetAmount > 0
+    );
+    const activeGoals = trackedGoals.filter((goal) => goal.currentAmount < goal.targetAmount);
+    const completedCount = trackedGoals.length - activeGoals.length;
+    const overdueCount = activeGoals.filter((goal) => {
+      const targetDate = new Date(goal.targetDate);
+      targetDate.setHours(0, 0, 0, 0);
+      return targetDate.getTime() < today.getTime();
+    }).length;
+
+    return {
+      total: trackedGoals.length,
+      activeCount: activeGoals.length,
+      completedCount,
+      overdueCount,
+    };
+  }, [financialGoals]);
+
   const budgetRisk = useMemo(() => {
-    if (budgets.length === 0) return null;
+    if (activeBudgets.length === 0) return null;
 
     let overCount = 0;
     let nearCount = 0;
 
-    for (const budget of budgets) {
+    for (const budget of activeBudgets) {
       const spent = getBudgetSpending(budget.id);
       const pct = budget.amount > 0 ? spent / budget.amount : 0;
       if (pct >= 1) overCount++;
       else if (pct >= 0.8) nearCount++;
     }
 
-    return { overCount, nearCount, total: budgets.length };
-  }, [budgets, getBudgetSpending]);
+    return { overCount, nearCount, total: activeBudgets.length };
+  }, [activeBudgets, getBudgetSpending]);
+
+  const hasHealthData = useMemo(
+    () => transactions.length > 0 || activeBudgets.length > 0 || netBalance !== 0,
+    [activeBudgets.length, netBalance, transactions.length]
+  );
 
   const topInsights = useMemo(() => insights.slice(0, 3), [insights]);
 
@@ -230,6 +280,17 @@ export default function HomeScreen() {
     if (!showFarm) return null;
     return getSeasonalFarmSummary(transactions);
   }, [transactions, showFarm]);
+
+  const confirmDeleteTransaction = useCallback((transaction: Transaction) => {
+    Alert.alert('Delete transaction', `Delete "${transaction.description}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => deleteTransaction(transaction.id),
+      },
+    ]);
+  }, [deleteTransaction]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -256,7 +317,9 @@ export default function HomeScreen() {
         <View style={styles.skeletonWrap}>
           <SkeletonBlock width="100%" height={160} />
           <View style={{ height: 16 }} />
-          <View style={{ flexDirection: 'row', gap: 12 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+            <SkeletonBlock width="48%" height={100} />
+            <SkeletonBlock width="48%" height={100} />
             <SkeletonBlock width="48%" height={100} />
             <SkeletonBlock width="48%" height={100} />
           </View>
@@ -287,8 +350,11 @@ export default function HomeScreen() {
           <View style={styles.heroTop}>
             <View>
               <Text style={styles.heroLabel}>Net Balance</Text>
-              <Text style={[styles.heroBalance, balance < 0 && styles.negativeBalance]}>
-                {balance < 0 ? '-' : ''}{formatCurrency(Math.abs(balance))}
+              <Text style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}>
+                {netBalance < 0 ? '-' : ''}{formatCurrency(Math.abs(netBalance))}
+              </Text>
+              <Text style={[styles.heroMeta, lifetimeNetCashFlow < 0 && styles.heroMetaNegative]}>
+                Lifetime Net Cash Flow {lifetimeNetCashFlow > 0 ? '+' : lifetimeNetCashFlow < 0 ? '-' : ''}{formatCurrency(Math.abs(lifetimeNetCashFlow))}
               </Text>
             </View>
             <View style={styles.cashFlowPill}>
@@ -340,26 +406,31 @@ export default function HomeScreen() {
                 {budgetRisk.overCount > 0 ? (
                   <View style={styles.riskBadge}>
                     <AlertTriangle size={13} color="#EF4444" />
-                    <Text style={[styles.riskText, { color: '#EF4444' }]}>
+                    <Text style={[styles.metricValue, { color: '#EF4444' }]}>
                       {budgetRisk.overCount} over
                     </Text>
                   </View>
                 ) : budgetRisk.nearCount > 0 ? (
                   <View style={styles.riskBadge}>
                     <Zap size={13} color="#F59E0B" />
-                    <Text style={[styles.riskText, { color: '#F59E0B' }]}>
+                    <Text style={[styles.metricValue, { color: '#F59E0B' }]}>
                       {budgetRisk.nearCount} near
                     </Text>
                   </View>
                 ) : (
-                  <Text style={[styles.riskGood, { color: '#10B981' }]}>On track</Text>
+                  <Text style={[styles.metricValue, { color: '#10B981' }]}>On track</Text>
                 )}
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
-                  {budgetRisk.total} {budgetRisk.total === 1 ? 'budget' : 'budgets'}
+                  {budgetRisk.total} {budgetRisk.total === 1 ? 'active budget' : 'active budgets'}
                 </Text>
               </>
             ) : (
-              <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>No budgets</Text>
+              <>
+                <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No budgets</Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
+                  {budgets.length > 0 ? 'No active budgets' : 'Add a budget'}
+                </Text>
+              </>
             )}
           </View>
 
@@ -368,7 +439,75 @@ export default function HomeScreen() {
               <Activity size={16} color={isDark ? '#34D399' : '#059669'} />
             </View>
             <Text style={[styles.metricLabel, { color: theme.colors.textSecondary }]}>Health</Text>
-            <HealthScoreRing score={healthScore} size={52} strokeWidth={5} />
+            {hasHealthData ? (
+              <HealthScoreRing score={healthScore} size={38} strokeWidth={4} />
+            ) : (
+              <>
+                <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No data</Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add transactions</Text>
+              </>
+            )}
+          </View>
+
+          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+            <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#3C2A1120' : '#FEF3C7' }]}>
+              <Target size={16} color={isDark ? '#FBBF24' : '#D97706'} />
+            </View>
+            <Text style={[styles.metricLabel, { color: theme.colors.textSecondary }]}>Financial Goal</Text>
+            {goalSummary.total > 0 ? (
+              <>
+                <Text style={[styles.metricValue, { color: theme.colors.text }]}>
+                  {goalSummary.activeCount === 0 ? 'Done' : String(goalSummary.activeCount)}
+                </Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
+                  {goalSummary.activeCount === 0 ? 'all goals complete' : goalSummary.activeCount === 1 ? 'active goal' : 'active goals'}
+                </Text>
+                <Text
+                  style={[
+                    styles.metricMeta,
+                    { color: goalSummary.overdueCount > 0 ? theme.colors.error : theme.colors.textSecondary },
+                  ]}
+                >
+                  {goalSummary.overdueCount > 0
+                    ? `${goalSummary.overdueCount} overdue`
+                    : `${goalSummary.completedCount} complete`}
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No goals</Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add one in Planning</Text>
+              </>
+            )}
+          </View>
+
+          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+            <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#14332B80' : '#DCFCE7' }]}>
+              <PiggyBank size={16} color={isDark ? '#4ADE80' : '#16A34A'} />
+            </View>
+            <Text style={[styles.metricLabel, { color: theme.colors.textSecondary }]}>Savings</Text>
+            {savingsAccounts.length > 0 ? (
+              <>
+                <Text
+                  style={[styles.metricValue, { color: theme.colors.text }]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                >
+                  {formatCurrency(totalSavings)}
+                </Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
+                  {savingsAccounts.length} {savingsAccounts.length === 1 ? 'account' : 'accounts'}
+                </Text>
+                <Text style={[styles.metricMeta, { color: theme.colors.textSecondary }]}>
+                  {totalSavings > 0 ? 'Saved across accounts' : 'No balance yet'}
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No savings</Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add a savings account</Text>
+              </>
+            )}
           </View>
         </View>
 
@@ -471,7 +610,12 @@ export default function HomeScreen() {
                   {index > 0 && (
                     <View style={[styles.txDivider, { backgroundColor: theme.colors.border }]} />
                   )}
-                  <TransactionItem transaction={transaction} />
+                  <TransactionItem
+                    transaction={transaction}
+                    showActions
+                    onEdit={() => setEditingTransaction(transaction)}
+                    onDelete={() => confirmDeleteTransaction(transaction)}
+                  />
                 </View>
               ))}
             </View>
@@ -497,6 +641,15 @@ export default function HomeScreen() {
         visible={showAddModal}
         onClose={() => setShowAddModal(false)}
       />
+
+      {editingTransaction ? (
+        <EditTransactionModal
+          visible={true}
+          transaction={editingTransaction}
+          onClose={() => setEditingTransaction(null)}
+          onSave={() => setEditingTransaction(null)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -536,6 +689,15 @@ const styles = StyleSheet.create({
     fontWeight: '800' as const,
     marginTop: 4,
     letterSpacing: -0.5,
+  },
+  heroMeta: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    fontWeight: '600' as const,
+    marginTop: 6,
+  },
+  heroMetaNegative: {
+    color: '#FCA5A5',
   },
   negativeBalance: {
     color: '#FCA5A5',
@@ -594,15 +756,19 @@ const styles = StyleSheet.create({
   },
   metricsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     paddingHorizontal: 16,
-    gap: 12,
-    marginTop: 14,
+    gap: 10,
+    marginTop: 12,
   },
   metricCard: {
-    flex: 1,
-    borderRadius: 18,
-    padding: 16,
+    width: '48%',
+    minHeight: 102,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
@@ -610,39 +776,49 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   metricIconBg: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   metricLabel: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700' as const,
-    marginBottom: 8,
+    marginBottom: 6,
     textTransform: 'uppercase' as const,
-    letterSpacing: 0.6,
+    letterSpacing: 0.5,
+  },
+  metricEmpty: {
+    fontSize: 14,
+    fontWeight: '700' as const,
+    marginBottom: 3,
+    textAlign: 'center',
+  },
+  metricValue: {
+    fontSize: 14,
+    fontWeight: '800' as const,
+    marginBottom: 3,
+    textAlign: 'center',
+  },
+  metricMeta: {
+    fontSize: 9,
+    fontWeight: '600' as const,
+    marginTop: 1,
+    textAlign: 'center',
   },
   riskBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginBottom: 4,
-  },
-  riskText: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-  },
-  riskGood: {
-    fontSize: 14,
-    fontWeight: '700' as const,
-    marginBottom: 4,
+    marginBottom: 3,
   },
   metricSub: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '500' as const,
-    marginTop: 2,
+    marginTop: 1,
+    textAlign: 'center',
   },
   section: {
     paddingHorizontal: 16,
@@ -771,3 +947,4 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 });
+

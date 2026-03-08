@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -74,78 +74,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [ocrExtracted, setOcrExtracted] = useState(false);
   const [showImageActions, setShowImageActions] = useState(false);
   
-  const { addTransaction, accounts, formatCurrency, addAccount } = useTransactionStore();
-
-  // Add default accounts on first load
-  useEffect(() => {
-    const addDefaultAccounts = async () => {
-      if (accounts.length === 0) {
-        const defaultAccounts = [
-          {
-            id: '1',
-            name: 'Primary Checking',
-            type: 'checking' as const,
-            balance: 5000,
-            currency: 'USD',
-            color: '#667eea',
-            icon: '💳',
-            isActive: true,
-            createdAt: new Date(),
-          },
-          {
-            id: '2',
-            name: 'Savings Account',
-            type: 'savings' as const,
-            balance: 15000,
-            currency: 'USD',
-            color: '#4CAF50',
-            icon: '💰',
-            isActive: true,
-            createdAt: new Date(),
-          },
-          {
-            id: '3',
-            name: 'Credit Card',
-            type: 'credit' as const,
-            balance: -1200,
-            currency: 'USD',
-            color: '#F44336',
-            icon: '💳',
-            isActive: true,
-            createdAt: new Date(),
-          },
-          {
-            id: '4',
-            name: 'Investment Account',
-            type: 'investment' as const,
-            balance: 25000,
-            currency: 'USD',
-            color: '#FF9800',
-            icon: '📈',
-            isActive: true,
-            createdAt: new Date(),
-          },
-          {
-            id: '5',
-            name: 'Cash Wallet',
-            type: 'cash' as const,
-            balance: 500,
-            currency: 'USD',
-            color: '#9C27B0',
-            icon: '💵',
-            isActive: true,
-            createdAt: new Date(),
-          },
-        ];
-
-        for (const account of defaultAccounts) {
-          await addAccount(account);
-        }
-      }
-    };
-
-    addDefaultAccounts();
-  }, []);
+  const { addTransaction, accounts, formatCurrency } = useTransactionStore();
 
   const categories = type === 'transfer' ? [] : (type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES);
 
@@ -154,42 +83,16 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     category.name.toLowerCase().includes(categorySearch.toLowerCase())
   );
 
-  // Function to simulate OCR scanning (in production, use a real OCR API)
-  const simulateOcrScanning = async (imageUri: string) => {
+  const simulateOcrScanning = async (_imageUri: string) => {
     setIsScanning(true);
     setOcrExtracted(false);
-    
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Mock extracted data from receipt
-    const mockExtractedData = {
-      amount: Math.floor(Math.random() * 100) + 10 + (Math.random() > 0.5 ? 0.99 : 0.00),
-      description: type === 'expense' ? 
-        ['Grocery Store', 'Coffee Shop', 'Restaurant', 'Gas Station', 'Pharmacy'][Math.floor(Math.random() * 5)] :
-        ['Salary Deposit', 'Freelance Payment', 'Investment Return', 'Gift Received'][Math.floor(Math.random() * 4)],
-      category: type === 'expense' ? 
-        ['groceries', 'coffee', 'dining', 'gas', 'shopping'][Math.floor(Math.random() * 5)] :
-        ['salary', 'freelance', 'investment', 'gift'][Math.floor(Math.random() * 4)],
-      date: new Date().toISOString().split('T')[0],
-    };
-    
-    // Update form with extracted data
-    setAmount(mockExtractedData.amount.toString());
-    setDescription(mockExtractedData.description);
-    
-    const foundCategory = categories.find(cat => cat.id === mockExtractedData.category);
-    if (foundCategory) {
-      setSelectedCategory(foundCategory);
-    }
-    
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+
     setIsScanning(false);
-    setOcrExtracted(true);
-    
-    // Show success message
     Alert.alert(
-      'OCR Scan Complete',
-      'Transaction details extracted from receipt!',
+      'OCR Unavailable',
+      'Receipt text extraction is not configured in this build yet. Enter the transaction details manually.',
       [{ text: 'OK' }]
     );
   };
@@ -272,6 +175,19 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setOcrExtracted(false);
   };
 
+  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer') => {
+    setType(nextType);
+    setSelectedCategory(null);
+    setShowCategoryDropdown(false);
+    setCategorySearch('');
+    setFromAccount('');
+    setToAccount('');
+    setFromAccountSearch('');
+    setToAccountSearch('');
+    setShowFromAccountDropdown(false);
+    setShowToAccountDropdown(false);
+  };
+
   const handleSubmit = () => {
     if (!amount || !description) {
       Alert.alert('Error', 'Please fill in amount and description');
@@ -280,6 +196,16 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
 
     if (type !== 'transfer' && !selectedCategory) {
       Alert.alert('Error', 'Please select a category');
+      return;
+    }
+
+    if (type === 'expense' && !fromAccount) {
+      Alert.alert('Error', 'Please select the account used for this expense');
+      return;
+    }
+
+    if (type === 'income' && !toAccount) {
+      Alert.alert('Error', 'Please select the account that received this income');
       return;
     }
 
@@ -308,6 +234,12 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
 
     if (type !== 'transfer') {
       transactionData.category = selectedCategory;
+      if (type === 'expense') {
+        transactionData.fromAccount = fromAccount;
+      }
+      if (type === 'income') {
+        transactionData.toAccount = toAccount;
+      }
     } else {
       transactionData.fromAccount = fromAccount;
       transactionData.toAccount = toAccount;
@@ -466,24 +398,18 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
 
   // Account selection components
   const renderAccountSelection = () => {
-    if (type !== 'transfer') return null;
-
     const selectedFrom = accounts.find((account) => account.id === fromAccount);
     const selectedTo = accounts.find((account) => account.id === toAccount);
     const normalizedFromSearch = fromAccountSearch.trim().toLowerCase();
     const normalizedToSearch = toAccountSearch.trim().toLowerCase();
 
-    const fromOptions = accounts.filter((account) => {
-      if (account.id === toAccount) return false;
-      if (!normalizedFromSearch) return true;
-      return account.name.toLowerCase().includes(normalizedFromSearch);
-    });
-
-    const toOptions = accounts.filter((account) => {
-      if (account.id === fromAccount) return false;
-      if (!normalizedToSearch) return true;
-      return account.name.toLowerCase().includes(normalizedToSearch);
-    });
+    const accountTypeIcons = {
+      checking: Wallet,
+      savings: PiggyBank,
+      credit: CreditCard,
+      investment: TrendingUp,
+      cash: Landmark,
+    } as const;
 
     const renderAccountOption = (
       account: typeof accounts[0],
@@ -491,6 +417,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       onSelect: (accountId: string, accountName: string) => void
     ) => {
       const isSelected = selectedId === account.id;
+      const AccountIcon = accountTypeIcons[account.type] ?? Wallet;
 
       return (
         <TouchableOpacity
@@ -504,7 +431,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
         >
           <View style={styles.transferDropdownItemLeft}>
             <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
-              <Text style={{ fontSize: 16 }}>{account.icon || '💰'}</Text>
+              <AccountIcon size={18} color={account.color || theme.colors.primary} />
             </View>
             <View>
               <Text
@@ -526,186 +453,221 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       );
     };
 
+    const renderPicker = ({
+      label,
+      searchValue,
+      selectedAccount,
+      selectedId,
+      setSearch,
+      setSelected,
+      showDropdown,
+      setShowDropdown,
+      options,
+      emptyLabel,
+      placeholder,
+      onOpen,
+    }: {
+      label: string;
+      searchValue: string;
+      selectedAccount?: typeof accounts[0];
+      selectedId: string;
+      setSearch: (value: string) => void;
+      setSelected: (value: string) => void;
+      showDropdown: boolean;
+      setShowDropdown: (value: boolean) => void;
+      options: typeof accounts;
+      emptyLabel: string;
+      placeholder: string;
+      onOpen?: () => void;
+    }) => (
+      <View style={styles.inputGroup}>
+        <Text style={[styles.label, { color: theme.colors.text }]}>{label}</Text>
+        <View
+          style={[
+            styles.transferInputContainer,
+            { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+          ]}
+        >
+          <Search size={16} color={theme.colors.textSecondary} />
+          <TextInput
+            style={[styles.transferAccountInput, { color: theme.colors.text }]}
+            value={searchValue}
+            onChangeText={(value) => {
+              setSearch(value);
+              setShowDropdown(true);
+              if (selectedAccount && value.trim().toLowerCase() !== selectedAccount.name.toLowerCase()) {
+                setSelected('');
+              }
+            }}
+            onFocus={() => {
+              setShowDropdown(true);
+              onOpen?.();
+            }}
+            placeholder={placeholder}
+            placeholderTextColor={theme.colors.textSecondary}
+          />
+          <TouchableOpacity
+            onPress={() => {
+              if (searchValue) {
+                setSearch('');
+                setSelected('');
+                setShowDropdown(true);
+                onOpen?.();
+              } else {
+                setShowDropdown(!showDropdown);
+                onOpen?.();
+              }
+            }}
+            style={styles.transferInputAction}
+          >
+            {searchValue ? (
+              <X size={16} color={theme.colors.textSecondary} />
+            ) : showDropdown ? (
+              <ChevronUp size={16} color={theme.colors.textSecondary} />
+            ) : (
+              <ChevronDown size={16} color={theme.colors.textSecondary} />
+            )}
+          </TouchableOpacity>
+        </View>
+        {showDropdown && (
+          <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+            {accounts.length === 0 ? (
+              <View style={styles.transferEmptyState}>
+                <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
+              </View>
+            ) : options.length === 0 ? (
+              <View style={styles.transferEmptyState}>
+                <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>{emptyLabel}</Text>
+              </View>
+            ) : (
+              <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
+                {options.map((account: typeof accounts[0]) =>
+                  renderAccountOption(account, selectedId, (accountId, accountName) => {
+                    setSelected(accountId);
+                    setSearch(accountName);
+                    setShowDropdown(false);
+                  })
+                )}
+              </ScrollView>
+            )}
+          </View>
+        )}
+      </View>
+    );
+
+    if (type === 'expense') {
+      const options = accounts.filter((account) => {
+        if (!normalizedFromSearch) return true;
+        return account.name.toLowerCase().includes(normalizedFromSearch);
+      });
+
+      return renderPicker({
+        label: 'Account',
+        searchValue: fromAccountSearch,
+        selectedAccount: selectedFrom,
+        selectedId: fromAccount,
+        setSearch: setFromAccountSearch,
+        setSelected: setFromAccount,
+        showDropdown: showFromAccountDropdown,
+        setShowDropdown: setShowFromAccountDropdown,
+        options,
+        emptyLabel: 'No matching account',
+        placeholder: 'Type to find the account used',
+        onOpen: () => setShowToAccountDropdown(false),
+      });
+    }
+
+    if (type === 'income') {
+      const options = accounts.filter((account) => {
+        if (!normalizedToSearch) return true;
+        return account.name.toLowerCase().includes(normalizedToSearch);
+      });
+
+      return renderPicker({
+        label: 'Account',
+        searchValue: toAccountSearch,
+        selectedAccount: selectedTo,
+        selectedId: toAccount,
+        setSearch: setToAccountSearch,
+        setSelected: setToAccount,
+        showDropdown: showToAccountDropdown,
+        setShowDropdown: setShowToAccountDropdown,
+        options,
+        emptyLabel: 'No matching account',
+        placeholder: 'Type to find the receiving account',
+        onOpen: () => setShowFromAccountDropdown(false),
+      });
+    }
+
+    if (type !== 'transfer') {
+      return null;
+    }
+
+    const fromOptions = accounts.filter((account) => {
+      if (account.id === toAccount) return false;
+      if (!normalizedFromSearch) return true;
+      return account.name.toLowerCase().includes(normalizedFromSearch);
+    });
+
+    const toOptions = accounts.filter((account) => {
+      if (account.id === fromAccount) return false;
+      if (!normalizedToSearch) return true;
+      return account.name.toLowerCase().includes(normalizedToSearch);
+    });
+
     return (
       <>
-        <View style={styles.inputGroup}>
-          <Text style={[styles.label, { color: theme.colors.text }]}>From Account</Text>
-          <View
-            style={[
-              styles.transferInputContainer,
-              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
-            ]}
-          >
-            <Search size={16} color={theme.colors.textSecondary} />
-            <TextInput
-              style={[styles.transferAccountInput, { color: theme.colors.text }]}
-              value={fromAccountSearch}
-              onChangeText={(text) => {
-                setFromAccountSearch(text);
-                setShowFromAccountDropdown(true);
-                if (selectedFrom && text.trim().toLowerCase() !== selectedFrom.name.toLowerCase()) {
-                  setFromAccount('');
-                }
-              }}
-              onFocus={() => {
-                setShowFromAccountDropdown(true);
-                setShowToAccountDropdown(false);
-              }}
-              placeholder="Type to find source account"
-              placeholderTextColor={theme.colors.textSecondary}
-            />
-            <TouchableOpacity
-              onPress={() => {
-                if (fromAccountSearch) {
-                  setFromAccountSearch('');
-                  setFromAccount('');
-                  setShowFromAccountDropdown(true);
-                } else {
-                  setShowFromAccountDropdown(!showFromAccountDropdown);
-                  setShowToAccountDropdown(false);
-                }
-              }}
-              style={styles.transferInputAction}
-            >
-              {fromAccountSearch ? (
-                <X size={16} color={theme.colors.textSecondary} />
-              ) : showFromAccountDropdown ? (
-                <ChevronUp size={16} color={theme.colors.textSecondary} />
-              ) : (
-                <ChevronDown size={16} color={theme.colors.textSecondary} />
-              )}
-            </TouchableOpacity>
-          </View>
-          {showFromAccountDropdown && (
-            <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-              {accounts.length === 0 ? (
-                <View style={styles.transferEmptyState}>
-                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
-                </View>
-              ) : fromOptions.length === 0 ? (
-                <View style={styles.transferEmptyState}>
-                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>No matching source account</Text>
-                </View>
-              ) : (
-                <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
-                  {fromOptions.map((account: typeof accounts[0]) =>
-                    renderAccountOption(account, fromAccount, (accountId, accountName) => {
-                      setFromAccount(accountId);
-                      setFromAccountSearch(accountName);
-                      setShowFromAccountDropdown(false);
-                    })
-                  )}
-                </ScrollView>
-              )}
-            </View>
-          )}
-        </View>
+        {renderPicker({
+          label: 'From Account',
+          searchValue: fromAccountSearch,
+          selectedAccount: selectedFrom,
+          selectedId: fromAccount,
+          setSearch: setFromAccountSearch,
+          setSelected: setFromAccount,
+          showDropdown: showFromAccountDropdown,
+          setShowDropdown: setShowFromAccountDropdown,
+          options: fromOptions,
+          emptyLabel: 'No matching source account',
+          placeholder: 'Type to find source account',
+          onOpen: () => setShowToAccountDropdown(false),
+        })}
 
-        <View style={styles.inputGroup}>
-          <Text style={[styles.label, { color: theme.colors.text }]}>To Account</Text>
-          <View
-            style={[
-              styles.transferInputContainer,
-              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
-            ]}
-          >
-            <Search size={16} color={theme.colors.textSecondary} />
-            <TextInput
-              style={[styles.transferAccountInput, { color: theme.colors.text }]}
-              value={toAccountSearch}
-              onChangeText={(text) => {
-                setToAccountSearch(text);
-                setShowToAccountDropdown(true);
-                if (selectedTo && text.trim().toLowerCase() !== selectedTo.name.toLowerCase()) {
-                  setToAccount('');
-                }
-              }}
-              onFocus={() => {
-                setShowToAccountDropdown(true);
-                setShowFromAccountDropdown(false);
-              }}
-              placeholder="Type to find destination account"
-              placeholderTextColor={theme.colors.textSecondary}
-            />
-            <TouchableOpacity
-              onPress={() => {
-                if (toAccountSearch) {
-                  setToAccountSearch('');
-                  setToAccount('');
-                  setShowToAccountDropdown(true);
-                } else {
-                  setShowToAccountDropdown(!showToAccountDropdown);
-                  setShowFromAccountDropdown(false);
-                }
-              }}
-              style={styles.transferInputAction}
-            >
-              {toAccountSearch ? (
-                <X size={16} color={theme.colors.textSecondary} />
-              ) : showToAccountDropdown ? (
-                <ChevronUp size={16} color={theme.colors.textSecondary} />
-              ) : (
-                <ChevronDown size={16} color={theme.colors.textSecondary} />
-              )}
-            </TouchableOpacity>
-          </View>
-          {showToAccountDropdown && (
-            <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-              {accounts.length === 0 ? (
-                <View style={styles.transferEmptyState}>
-                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
-                </View>
-              ) : toOptions.length === 0 ? (
-                <View style={styles.transferEmptyState}>
-                  <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>No matching destination account</Text>
-                </View>
-              ) : (
-                <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
-                  {toOptions.map((account: typeof accounts[0]) =>
-                    renderAccountOption(account, toAccount, (accountId, accountName) => {
-                      setToAccount(accountId);
-                      setToAccountSearch(accountName);
-                      setShowToAccountDropdown(false);
-                    })
-                  )}
-                </ScrollView>
-              )}
-            </View>
-          )}
-        </View>
+        {renderPicker({
+          label: 'To Account',
+          searchValue: toAccountSearch,
+          selectedAccount: selectedTo,
+          selectedId: toAccount,
+          setSearch: setToAccountSearch,
+          setSelected: setToAccount,
+          showDropdown: showToAccountDropdown,
+          setShowDropdown: setShowToAccountDropdown,
+          options: toOptions,
+          emptyLabel: 'No matching destination account',
+          placeholder: 'Type to find destination account',
+          onOpen: () => setShowFromAccountDropdown(false),
+        })}
 
         {fromAccount && toAccount && fromAccount !== toAccount && (
-          <View style={[styles.transferPreview, { backgroundColor: theme.colors.surface }]}>
+          <View style={[styles.transferPreview, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
             <Text style={[styles.transferPreviewTitle, { color: theme.colors.text }]}>Transfer Preview</Text>
             <View style={styles.transferPreviewRow}>
-              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
-                Amount:
-              </Text>
-              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
-                {formatCurrency(parseFloat(amount) || 0)}
-              </Text>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>Amount:</Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>{formatCurrency(parseFloat(amount) || 0)}</Text>
             </View>
             <View style={styles.transferPreviewRow}>
-              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
-                From:
-              </Text>
-              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
-                {selectedFrom?.name || 'Unknown'}
-              </Text>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>From:</Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>{selectedFrom?.name || 'Unknown'}</Text>
             </View>
             <View style={styles.transferPreviewRow}>
-              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>
-                To:
-              </Text>
-              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
-                {selectedTo?.name || 'Unknown'}
-              </Text>
+              <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>To:</Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>{selectedTo?.name || 'Unknown'}</Text>
             </View>
           </View>
         )}
       </>
     );
   };
+
   // Render receipt scanning section
   const renderReceiptSection = () => {
     if (type === 'transfer') return null;
@@ -802,11 +764,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 styles.typeButton,
                 type === 'expense' && { backgroundColor: theme.colors.surface }
               ]}
-              onPress={() => {
-                setType('expense');
-                setSelectedCategory(null);
-                setShowCategoryDropdown(false);
-              }}
+              onPress={() => handleTypeChange('expense')}
             >
               <Text style={[
                 styles.typeButtonText,
@@ -820,11 +778,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 styles.typeButton,
                 type === 'income' && { backgroundColor: theme.colors.surface }
               ]}
-              onPress={() => {
-                setType('income');
-                setSelectedCategory(null);
-                setShowCategoryDropdown(false);
-              }}
+              onPress={() => handleTypeChange('income')}
             >
               <Text style={[
                 styles.typeButtonText,
@@ -838,11 +792,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 styles.typeButton,
                 type === 'transfer' && { backgroundColor: theme.colors.surface }
               ]}
-              onPress={() => {
-                setType('transfer');
-                setSelectedCategory(null);
-                setShowCategoryDropdown(false);
-              }}
+              onPress={() => handleTypeChange('transfer')}
             >
               <ArrowLeftRight size={16} color={type === 'transfer' ? theme.colors.text : theme.colors.textSecondary} />
               <Text style={[
@@ -928,47 +878,69 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
           </View>
 
           {type !== 'transfer' ? (
-            <View style={styles.inputGroup}>
-              <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
-              <TouchableOpacity
-                style={[styles.categoryDropdownTrigger, { 
-                  backgroundColor: theme.colors.surface, 
-                  borderColor: theme.colors.border 
-                }]}
-                onPress={() => setShowCategoryDropdown(!showCategoryDropdown)}
-              >
-                {selectedCategory ? (
-                  <View style={styles.selectedCategory}>
-                    <View style={[
-                      styles.selectedCategoryIcon, 
-                      { backgroundColor: selectedCategory.color + '20' }
-                    ]}>
-                      {(Icons as any)[selectedCategory.icon] ? 
-                        React.createElement((Icons as any)[selectedCategory.icon], {
-                          size: 16,
-                          color: selectedCategory.color
-                        }) : 
-                        <Icons.Circle size={16} color={selectedCategory.color} />
-                      }
-                    </View>
-                    <Text style={[styles.selectedCategoryText, { color: theme.colors.text }]}>
-                      {selectedCategory.name}
-                    </Text>
+            <>
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
+                <View style={[styles.categorySearchBox, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+                  <Search size={16} color={theme.colors.textSecondary} />
+                  <TextInput
+                    style={[styles.categorySearchInput, { color: theme.colors.text }]}
+                    placeholder="Search or scroll categories"
+                    placeholderTextColor={theme.colors.textSecondary}
+                    value={categorySearch}
+                    onChangeText={setCategorySearch}
+                  />
+                  {categorySearch ? (
+                    <TouchableOpacity onPress={() => setCategorySearch('')}>
+                      <X size={16} color={theme.colors.textSecondary} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.categoryChipScroll}
+                  contentContainerStyle={styles.categoryChipRow}
+                >
+                  {filteredCategories.map((category) => {
+                    const isSelected = selectedCategory?.id === category.id;
+                    const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
+
+                    return (
+                      <TouchableOpacity
+                        key={category.id}
+                        style={[
+                          styles.categoryChip,
+                          {
+                            backgroundColor: theme.colors.surface,
+                            borderColor: isSelected ? theme.colors.primary : category.color,
+                          },
+                        ]}
+                        onPress={() => setSelectedCategory(category)}
+                      >
+                        <View style={[styles.categoryChipIcon, { backgroundColor: category.color + '20' }]}>
+                          <IconComponent size={18} color={category.color} />
+                        </View>
+                        <Text
+                          style={[
+                            styles.categoryChipText,
+                            { color: isSelected ? theme.colors.primary : theme.colors.textSecondary },
+                          ]}
+                        >
+                          {category.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {filteredCategories.length === 0 ? (
+                  <View style={styles.noResults}>
+                    <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>No categories found</Text>
                   </View>
-                ) : (
-                  <Text style={[styles.placeholderText, { color: theme.colors.textSecondary }]}>
-                    Select a category
-                  </Text>
-                )}
-                {showCategoryDropdown ? (
-                  <ChevronUp size={20} color={theme.colors.textSecondary} />
-                ) : (
-                  <ChevronDown size={20} color={theme.colors.textSecondary} />
-                )}
-              </TouchableOpacity>
-              
-              {renderCategoryDropdown()}
-            </View>
+                ) : null}
+              </View>
+              {renderAccountSelection()}
+            </>
           ) : (
             renderAccountSelection()
           )}
@@ -1107,6 +1079,47 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  categorySearchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+  },
+  categorySearchInput: {
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 14,
+  },
+  categoryChipScroll: {
+    marginTop: 12,
+  },
+  categoryChipRow: {
+    gap: 12,
+    paddingVertical: 4,
+    paddingRight: 4,
+  },
+  categoryChip: {
+    borderRadius: 14,
+    padding: 12,
+    alignItems: 'center',
+    minWidth: 92,
+    borderWidth: 2,
+  },
+  categoryChipIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  categoryChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   selectedCategory: {
     flexDirection: 'row',
@@ -1455,5 +1468,4 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
-
 

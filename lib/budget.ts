@@ -1,4 +1,5 @@
 import { Transaction, Budget, BudgetAlert } from '@/types/transaction';
+import { computeBudgetSpendingForDate, getActiveBudgets } from '@/src/domain/budgeting';
 
 export interface BudgetUsage {
   budgetId: string;
@@ -16,17 +17,8 @@ export function computeBudgetSpending(
   transactions: Transaction[],
   month: string
 ): number {
-  if (!budget.category) return 0;
-
-  let total = 0;
-  for (const t of transactions) {
-    if (t.type !== 'expense') continue;
-    if (t.category.id !== budget.category.id) continue;
-    const txMonth = (t.date instanceof Date ? t.date : new Date(t.date)).toISOString().slice(0, 7);
-    if (txMonth !== month) continue;
-    total += t.amount;
-  }
-  return total;
+  const referenceDate = new Date(`${month}-01T00:00:00.000Z`);
+  return computeBudgetSpendingForDate(budget, transactions, referenceDate);
 }
 
 export function computeAllBudgetUsages(
@@ -81,7 +73,12 @@ export function getBudgetRiskSummary(
   let nearCount = 0;
   let safeCount = 0;
 
-  for (const budget of budgets) {
+  const activeBudgets = getActiveBudgets(
+    budgets,
+    new Date(`${month}-01T00:00:00.000Z`)
+  );
+
+  for (const budget of activeBudgets) {
     const spent = computeBudgetSpending(budget, transactions, month);
     const pct = budget.amount > 0 ? spent / budget.amount : 0;
     if (pct >= 1) overCount++;
@@ -89,5 +86,5 @@ export function getBudgetRiskSummary(
     else safeCount++;
   }
 
-  return { overCount, nearCount, safeCount, total: budgets.length };
+  return { overCount, nearCount, safeCount, total: activeBudgets.length };
 }

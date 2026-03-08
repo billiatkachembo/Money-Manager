@@ -18,6 +18,7 @@ export interface AppSettings {
   biometricAuth: boolean;
   autoBackup: boolean;
   lastBackupDate?: Date;
+  firstUsedAt?: Date;
   privacy?: {
     hideAmounts: boolean;
     requireAuth: boolean;
@@ -84,6 +85,11 @@ function parseDate(value: string | Date | undefined): Date | undefined {
   }
 
   return date;
+}
+
+function serializeDate(value: string | Date | undefined, fallback?: Date): string | undefined {
+  const safeDate = parseDate(value) ?? fallback;
+  return safeDate ? safeDate.toISOString() : undefined;
 }
 
 function serializeTransactions(transactions: Transaction[]): unknown[] {
@@ -266,12 +272,18 @@ function deserializeBudgetAlerts(raw: unknown): BudgetAlert[] {
 }
 
 function serializeFinancialGoals(goals: FinancialGoal[]): unknown[] {
-  return goals.map((goal) => ({
-    ...goal,
-    targetDate: goal.targetDate.toISOString(),
-    createdAt: goal.createdAt.toISOString(),
-    updatedAt: goal.updatedAt.toISOString(),
-  }));
+  return goals.map((goal) => {
+    const createdAt = parseDate(goal.createdAt) ?? new Date();
+    const updatedAt = parseDate(goal.updatedAt) ?? createdAt;
+    const targetDate = parseDate(goal.targetDate) ?? createdAt;
+
+    return {
+      ...goal,
+      targetDate: serializeDate(targetDate, createdAt),
+      createdAt: serializeDate(createdAt),
+      updatedAt: serializeDate(updatedAt, createdAt),
+    };
+  });
 }
 
 function deserializeFinancialGoals(raw: unknown): FinancialGoal[] {
@@ -331,6 +343,7 @@ function serializeSettings(settings: AppSettings): unknown {
   return {
     ...settings,
     lastBackupDate: settings.lastBackupDate?.toISOString(),
+    firstUsedAt: settings.firstUsedAt?.toISOString(),
   };
 }
 
@@ -344,6 +357,7 @@ function deserializeSettings(raw: unknown, fallback: AppSettings): AppSettings {
     ...(fallback as AppSettings),
     ...(candidate as unknown as AppSettings),
     lastBackupDate: parseDate(candidate.lastBackupDate as string),
+    firstUsedAt: parseDate(candidate.firstUsedAt as string),
   };
 }
 

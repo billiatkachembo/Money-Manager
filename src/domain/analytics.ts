@@ -1,11 +1,11 @@
 import { Account, Budget, Transaction } from '../../types/transaction';
 import {
   getFarmCostBreakdown,
-  getSeasonalFarmSummary,
   isFarmExpense,
   isFarmIncome,
 } from './farming';
 import { InsightContext } from './insights';
+import { computeBudgetSpendingForDate, getActiveBudgets } from './budgeting';
 
 export interface MonthlySummary {
   month: string;
@@ -20,6 +20,32 @@ export interface BudgetSummary {
   risk: number;
 }
 
+export interface ExpenseCategoryBreakdown {
+  categoryId: string;
+  categoryName: string;
+  color: string;
+  amount: number;
+  share: number;
+  transactionCount: number;
+}
+
+export interface ExpenseDistributionSlice {
+  name: string;
+  amount: number;
+  color: string;
+  share: number;
+}
+
+export interface AnalyticsQuickStats {
+  transactionCount: number;
+  expenseTransactionCount: number;
+  activeCategories: number;
+  averageDailySpend: number;
+  netAmount: number;
+  income: number;
+  expenses: number;
+}
+
 export interface BehaviorMetrics {
   monthly: MonthlySummary[];
   currentMonth: MonthlySummary;
@@ -28,19 +54,14 @@ export interface BehaviorMetrics {
 }
 
 function monthKey(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function buildMonthWindow(months: number, referenceDate: Date): string[] {
-  const entries: string[] = [];
-
-  for (let index = months - 1; index >= 0; index -= 1) {
-    const date = new Date(Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), 1));
-    date.setUTCMonth(date.getUTCMonth() - index);
-    entries.push(monthKey(date));
-  }
-
-  return entries;
+  return Array.from({ length: months }, (_, index) => {
+    const date = new Date(referenceDate.getFullYear(), referenceDate.getMonth() - (months - 1 - index), 1);
+    return monthKey(date);
+  });
 }
 
 function computeMonthlySummaries(
@@ -99,8 +120,7 @@ function computeBudgetSummary(
     };
   }
 
-  const month = monthKey(referenceDate);
-  const activeBudgets = budgets.filter((budget) => monthKey(budget.startDate) === month);
+  const activeBudgets = getActiveBudgets(budgets, referenceDate);
   if (activeBudgets.length === 0) {
     return {
       adherence: 1,
@@ -113,14 +133,7 @@ function computeBudgetSummary(
   let totalSpent = 0;
 
   for (const budget of activeBudgets) {
-    const spent = transactions
-      .filter(
-        (transaction) =>
-          transaction.type === 'expense' &&
-          transaction.category.id === budget.categoryId &&
-          monthKey(transaction.date) === month
-      )
-      .reduce((sum, transaction) => sum + transaction.amount, 0);
+    const spent = computeBudgetSpendingForDate(budget, transactions, referenceDate);
 
     totalBudget += budget.amount;
     totalSpent += spent;
@@ -144,12 +157,42 @@ function ratio(numerator: number, denominator: number): number {
   return numerator / denominator;
 }
 
+function sumTransactions(transactions: Transaction[], type: Transaction['type']): number {
+  return transactions
+    .filter((transaction) => transaction.type === type)
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
+}
+
 function average(values: number[]): number {
   if (values.length === 0) {
     return 0;
   }
 
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function standardDeviation(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const mean = average(values);
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance);
+}
+
+function coefficientOfVariation(values: number[]): number {
+  const meaningful = values.filter((value) => value > 0);
+  if (meaningful.length < 2) {
+    return 0;
+  }
+
+  const mean = average(meaningful);
+  if (mean <= 0) {
+    return 0;
+  }
+
+  return standardDeviation(meaningful) / mean;
 }
 
 function computePositiveNetStreak(monthly: MonthlySummary[]): number {
@@ -164,6 +207,102 @@ function computePositiveNetStreak(monthly: MonthlySummary[]): number {
   }
 
   return streak;
+}
+
+function computeLiquidBalance(accounts: Account[]): number {
+  return accounts
+    .filter((account) => account.type !== 'credit' && account.isActive !== false)
+    .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+}
+
+export function computeExpenseCategoryBreakdown(
+  transactions: Transaction[]
+): ExpenseCategoryBreakdown[] {
+  const expenseTransactions = transactions.filter((transaction) => transaction.type === 'expense');
+  const totalExpenses = expenseTransactions.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const grouped = new Map<string, ExpenseCategoryBreakdown>();
+
+  for (const transaction of expenseTransactions) {
+    const categoryId = transaction.category?.id?.trim() || 'uncategorized';
+    const current = grouped.get(categoryId);
+
+    if (current) {
+      current.amount += transaction.amount;
+      current.transactionCount += 1;
+      continue;
+    }
+
+    grouped.set(categoryId, {
+      categoryId,
+      categoryName: transaction.category?.name?.trim() || 'Uncategorized',
+      color: transaction.category?.color || '#94A3B8',
+      amount: transaction.amount,
+      share: 0,
+      transactionCount: 1,
+    });
+  }
+
+  return Array.from(grouped.values())
+    .map((entry) => ({
+      ...entry,
+      share: ratio(entry.amount, totalExpenses),
+    }))
+    .sort((left, right) => right.amount - left.amount);
+}
+
+export function computeExpenseDistribution(
+  breakdown: ExpenseCategoryBreakdown[],
+  limit = 5
+): ExpenseDistributionSlice[] {
+  if (breakdown.length === 0) {
+    return [];
+  }
+
+  const safeLimit = Math.max(1, limit);
+  const totalExpenses = breakdown.reduce((sum, entry) => sum + entry.amount, 0);
+  const topCategories = breakdown.slice(0, safeLimit).map((entry) => ({
+    name: entry.categoryName,
+    amount: entry.amount,
+    color: entry.color,
+    share: entry.share,
+  }));
+  const otherAmount = breakdown
+    .slice(safeLimit)
+    .reduce((sum, entry) => sum + entry.amount, 0);
+
+  if (otherAmount <= 0) {
+    return topCategories;
+  }
+
+  return [
+    ...topCategories,
+    {
+      name: 'Other',
+      amount: otherAmount,
+      color: '#94A3B8',
+      share: ratio(otherAmount, totalExpenses),
+    },
+  ];
+}
+
+export function computeQuickStats(
+  transactions: Transaction[],
+  elapsedDays = 1
+): AnalyticsQuickStats {
+  const safeElapsedDays = Math.max(1, elapsedDays);
+  const expenses = sumTransactions(transactions, 'expense');
+  const income = sumTransactions(transactions, 'income');
+  const expenseBreakdown = computeExpenseCategoryBreakdown(transactions);
+
+  return {
+    transactionCount: transactions.length,
+    expenseTransactionCount: transactions.filter((transaction) => transaction.type === 'expense').length,
+    activeCategories: expenseBreakdown.length,
+    averageDailySpend: expenses / safeElapsedDays,
+    netAmount: income - expenses,
+    income,
+    expenses,
+  };
 }
 
 export function computeBehaviorMetrics(
@@ -182,19 +321,16 @@ export function computeBehaviorMetrics(
   };
 
   const budget = computeBudgetSummary(budgets, transactions, now);
-
   const previousMonths = monthly.slice(0, Math.max(0, monthly.length - 1));
-  const previousExpenseAverage = average(previousMonths.map((entry) => entry.expenses));
-  const previousIncomeAverage = average(previousMonths.map((entry) => entry.income));
+  const previousExpenseAverage = average(previousMonths.map((entry) => entry.expenses).filter((value) => value > 0));
+  const previousIncomeAverage = average(previousMonths.map((entry) => entry.income).filter((value) => value > 0));
 
-  const recurringExpense = transactions
+  const currentMonthTransactions = transactions.filter((transaction) => monthKey(transaction.date) === currentMonth.month);
+  const recurringExpense = currentMonthTransactions
     .filter((transaction) => transaction.type === 'expense' && transaction.isRecurring)
-    .filter((transaction) => monthKey(transaction.date) === currentMonth.month)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const expenseTransactions = transactions.filter(
-    (transaction) => transaction.type === 'expense' && monthKey(transaction.date) === currentMonth.month
-  );
+  const expenseTransactions = currentMonthTransactions.filter((transaction) => transaction.type === 'expense');
   const microExpenseCount = expenseTransactions.filter((transaction) => transaction.amount <= 10).length;
 
   const mostRecentIncome = transactions
@@ -203,25 +339,22 @@ export function computeBehaviorMetrics(
 
   const daysSinceIncome = mostRecentIncome
     ? Math.floor((now.getTime() - mostRecentIncome.date.getTime()) / (1000 * 60 * 60 * 24))
-    : 365;
+    : -1;
 
   const totalTurnover = currentMonth.income + currentMonth.expenses + currentMonth.transfers;
   const debt = accounts
     .filter((account) => account.type === 'credit')
     .reduce((sum, account) => sum + Math.abs(Math.min(0, account.balance)), 0);
 
-  const seasonalFarmSummary = getSeasonalFarmSummary(transactions, now);
-  const farmExpenseThisMonth = transactions
-    .filter((transaction) => monthKey(transaction.date) === currentMonth.month)
+  const farmExpenseThisMonth = currentMonthTransactions
     .filter(isFarmExpense)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const farmIncomeThisMonth = transactions
-    .filter((transaction) => monthKey(transaction.date) === currentMonth.month)
+  const farmIncomeThisMonth = currentMonthTransactions
     .filter(isFarmIncome)
     .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-  const farmCostBreakdown = getFarmCostBreakdown(transactions);
+  const farmCostBreakdown = getFarmCostBreakdown(currentMonthTransactions);
   const fertilizerShare =
     farmCostBreakdown.find((entry) => entry.categoryName.toLowerCase().includes('fertilizer'))?.ratio ?? 0;
 
@@ -236,32 +369,38 @@ export function computeBehaviorMetrics(
 
   const averagePreviousFarmNet = average(previousFarmNet);
   const currentFarmNet = farmIncomeThisMonth - farmExpenseThisMonth;
+  const farmLossRatio = currentFarmNet < 0
+    ? Math.abs(currentFarmNet) / Math.max(farmIncomeThisMonth > 0 ? farmIncomeThisMonth : farmExpenseThisMonth, 1)
+    : 0;
+  const liquidBalance = computeLiquidBalance(accounts);
+  const savingsRate = currentMonth.income > 0 ? Math.min(currentMonth.net / currentMonth.income, 1) : 0;
+  const debtIncomeBase = currentMonth.income > 0 ? currentMonth.income : previousIncomeAverage;
 
   const insightContext: InsightContext = {
     monthlyIncome: currentMonth.income,
     monthlyExpenses: currentMonth.expenses,
     monthlyNet: currentMonth.net,
     previousMonthlyNet: previousMonths.length > 0 ? previousMonths[previousMonths.length - 1].net : 0,
-    savingsRate: ratio(currentMonth.net, Math.max(currentMonth.income, 1)),
+    savingsRate,
     budgetAdherence: budget.adherence,
     budgetRisk: budget.risk,
-    bufferMonths: ratio(
-      accounts.reduce((sum, account) => sum + account.balance, 0),
-      Math.max(currentMonth.expenses, 1)
-    ),
-    expenseCV: 0,
-    incomeCV: 0,
+    bufferMonths: currentMonth.expenses > 0 ? liquidBalance / currentMonth.expenses : 0,
+    expenseCV: coefficientOfVariation(monthly.map((entry) => entry.expenses)),
+    incomeCV: coefficientOfVariation(monthly.map((entry) => entry.income)),
     transferRatio: ratio(currentMonth.transfers, totalTurnover),
-    recurringCommitmentRatio: ratio(recurringExpense, Math.max(currentMonth.income, 1)),
+    recurringCommitmentRatio: currentMonth.income > 0 ? recurringExpense / currentMonth.income : 0,
     microExpenseRatio: ratio(microExpenseCount, expenseTransactions.length),
-    expenseSpikeRatio: ratio(currentMonth.expenses, Math.max(previousExpenseAverage, 1)),
-    incomeDropRatio: ratio(currentMonth.income, Math.max(previousIncomeAverage, 1)),
+    expenseSpikeRatio: previousExpenseAverage > 0 ? currentMonth.expenses / previousExpenseAverage : 1,
+    incomeDropRatio: previousIncomeAverage > 0 ? currentMonth.income / previousIncomeAverage : 1,
     daysSinceIncome,
-    debtToIncomeRatio: ratio(debt, Math.max(currentMonth.income, 1)),
-    farmProfit: seasonalFarmSummary.farmProfit,
+    debtToIncomeRatio: debtIncomeBase > 0 ? debt / debtIncomeBase : debt > 0 ? 1 : 0,
+    farmProfit: currentFarmNet,
+    farmLossRatio,
     farmExpenseRatio: ratio(farmExpenseThisMonth, Math.max(currentMonth.expenses, 1)),
     farmFertilizerShare: fertilizerShare,
-    seasonalFarmDelta: ratio(currentFarmNet - averagePreviousFarmNet, Math.max(Math.abs(averagePreviousFarmNet), 1)),
+    seasonalFarmDelta: averagePreviousFarmNet !== 0
+      ? (currentFarmNet - averagePreviousFarmNet) / Math.max(Math.abs(averagePreviousFarmNet), 1)
+      : 0,
     positiveNetStreak: computePositiveNetStreak(monthly),
   };
 

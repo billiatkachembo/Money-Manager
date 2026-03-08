@@ -23,6 +23,7 @@ import {
 } from 'lucide-react-native';
 import { Note } from '@/types/transaction';
 import { useTheme } from '@/store/theme-store';
+import { useTransactionStore } from '@/store/transaction-store';
 
 const NOTE_CATEGORIES = [
   { id: 'financial', name: 'Financial', icon: FileText, color: '#667eea' },
@@ -39,7 +40,7 @@ const NOTE_COLORS = [
 
 export default function NotesScreen() {
   const { theme } = useTheme();
-  const [notes, setNotes] = useState<Note[]>([]); // Empty array instead of mock data
+  const { notes, addNote, updateNote, deleteNote } = useTransactionStore();
 
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
@@ -81,18 +82,13 @@ export default function NotesScreen() {
       return;
     }
 
-    const newNote: Note = {
-      id: Date.now().toString(),
+    addNote({
       title: formData.title.trim(),
       content: formData.content.trim(),
       category: formData.category,
       color: formData.color,
       isPinned: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    setNotes(prev => [newNote, ...prev]);
+    });
     setShowAddModal(false);
     resetForm();
   };
@@ -112,11 +108,7 @@ export default function NotesScreen() {
       updatedAt: new Date(),
     };
 
-    setNotes(prev =>
-      prev.map(note =>
-        note.id === editingNote.id ? updatedNote : note
-      )
-    );
+    updateNote(updatedNote);
     setEditingNote(null);
     resetForm();
   };
@@ -131,7 +123,7 @@ export default function NotesScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            setNotes(prev => prev.filter(note => note.id !== noteId));
+            deleteNote(noteId);
           },
         },
       ]
@@ -139,13 +131,16 @@ export default function NotesScreen() {
   };
 
   const togglePin = (noteId: string) => {
-    setNotes(prev =>
-      prev.map(note =>
-        note.id === noteId
-          ? { ...note, isPinned: !note.isPinned, updatedAt: new Date() }
-          : note
-      )
-    );
+    const targetNote = notes.find((note) => note.id === noteId);
+    if (!targetNote) {
+      return;
+    }
+
+    updateNote({
+      ...targetNote,
+      isPinned: !targetNote.isPinned,
+      updatedAt: new Date(),
+    });
   };
 
   const openEditModal = (note: Note) => {

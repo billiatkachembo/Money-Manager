@@ -3,6 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TrendingUp, TrendingDown } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
+import { useTransactionStore } from '@/store/transaction-store';
 
 interface BalanceCardProps {
   balance: number;
@@ -12,13 +13,11 @@ interface BalanceCardProps {
 
 export function BalanceCard({ balance, income, expenses }: BalanceCardProps) {
   const { theme } = useTheme();
-  
+  const { formatCurrency: formatCurrencyWithSettings } = useTransactionStore();
+
   const formatCurrency = (amount: number) => {
-    if (typeof amount !== 'number' || isNaN(amount)) return '$0.00';
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-    }).format(Math.abs(amount));
+    const safeAmount = typeof amount === 'number' && Number.isFinite(amount) ? Math.abs(amount) : 0;
+    return formatCurrencyWithSettings(safeAmount);
   };
 
   return (
@@ -115,3 +114,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

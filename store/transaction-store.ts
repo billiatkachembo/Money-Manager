@@ -172,6 +172,130 @@ function computeNetBalance(transactions: Transaction[]): number {
   ) / 100;
 }
 
+function computeActiveAccountNetBalance(accounts: Account[]): number {
+  return Math.round(
+    accounts
+      .filter((account) => account.isActive)
+      .reduce((sum, account) => sum + account.balance, 0) * 100
+  ) / 100;
+}
+
+function parseOptionalDate(value: Date | string | undefined): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function sortNotesByUpdatedAtDesc(noteList: Note[]): Note[] {
+  return [...noteList].sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
+}
+
+function normalizeAccount(account: Account): Account {
+  return {
+    ...account,
+    balance: Number(account.balance ?? 0),
+    createdAt: parseDate(account.createdAt),
+  };
+}
+
+function normalizeNote(note: Note): Note {
+  return {
+    ...note,
+    createdAt: parseDate(note.createdAt),
+    updatedAt: parseDate(note.updatedAt),
+  };
+}
+
+function normalizeBudget(budget: Budget): Budget {
+  return {
+    ...budget,
+    amount: Number(budget.amount ?? 0),
+    startDate: parseDate(budget.startDate),
+    endDate: parseOptionalDate(budget.endDate),
+    createdAt: parseDate(budget.createdAt),
+    updatedAt: parseDate(budget.updatedAt),
+  };
+}
+
+function normalizeBudgetAlert(alert: BudgetAlert): BudgetAlert {
+  return {
+    ...alert,
+    date: parseDate(alert.date),
+  };
+}
+
+function normalizeFinancialGoal(goal: FinancialGoal): FinancialGoal {
+  return {
+    ...goal,
+    targetAmount: Number(goal.targetAmount ?? 0),
+    currentAmount: Number(goal.currentAmount ?? 0),
+    targetDate: parseDate(goal.targetDate),
+    createdAt: parseDate(goal.createdAt),
+    updatedAt: parseDate(goal.updatedAt),
+  };
+}
+
+function normalizeUserProfileData(profile: Partial<UserProfile> | UserProfile | undefined): UserProfile {
+  const merged = {
+    ...DEFAULT_USER_PROFILE,
+    ...profile,
+  };
+
+  return {
+    ...merged,
+    joinDate: parseDate(profile?.joinDate ?? merged.joinDate),
+  };
+}
+
+function normalizeSettingsData(value: Partial<AppSettings> | AppSettings | undefined): AppSettings {
+  const merged = {
+    ...DEFAULT_SETTINGS,
+    ...value,
+    privacy: {
+      ...DEFAULT_SETTINGS.privacy,
+      ...value?.privacy,
+    },
+    security: {
+      ...DEFAULT_SETTINGS.security,
+      ...value?.security,
+    },
+  };
+
+  return {
+    ...merged,
+    lastBackupDate: parseOptionalDate(value?.lastBackupDate),
+    firstUsedAt: parseOptionalDate(value?.firstUsedAt),
+  };
+}
+
+function buildTransactionImportKey(
+  transaction: Pick<
+    Transaction,
+    'amount' | 'date' | 'description' | 'type' | 'category' | 'fromAccount' | 'toAccount' | 'fromAccountId' | 'toAccountId'
+  >
+): string {
+  const fromAccountId = transaction.fromAccountId ?? transaction.fromAccount ?? '';
+  const toAccountId = transaction.toAccountId ?? transaction.toAccount ?? '';
+  const categoryId = transaction.type === 'transfer' ? TRANSFER_CATEGORY.id : transaction.category?.id ?? '';
+
+  return [
+    transaction.type,
+    transaction.amount.toFixed(2),
+    parseDate(transaction.date).toISOString(),
+    transaction.description.trim().toLowerCase(),
+    categoryId,
+    fromAccountId,
+    toAccountId,
+  ].join('|');
+}
+
 function normalizeRule(rule: RecurringRule): RecurringRule {
   return {
     ...rule,
@@ -206,7 +330,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [ledgerTransactions, setLedgerTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
-  const [balance, setBalance] = useState<number>(0);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [budgetAlerts, setBudgetAlerts] = useState<BudgetAlert[]>([]);
   const [financialGoals, setFinancialGoals] = useState<FinancialGoal[]>([]);
@@ -219,6 +342,16 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const visibleTransactions = useMemo(
     () => sortByDateDesc(ledgerTransactions.filter(isVisibleTransaction)),
     [ledgerTransactions]
+  );
+
+  const lifetimeNetCashFlow = useMemo(
+    () => computeNetBalance(ledgerTransactions),
+    [ledgerTransactions]
+  );
+
+  const netBalance = useMemo(
+    () => computeActiveAccountNetBalance(accounts),
+    [accounts]
   );
 
   const persistPatch = useCallback(async (patch: Partial<PersistedState>) => {
@@ -242,7 +375,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       setLedgerTransactions(normalized);
       setAccounts(recomputedAccounts);
-      setBalance(computeNetBalance(normalized));
       setRecurringRules(nextRecurringRules);
       setLedgerIssues(integrity.issues);
 
@@ -493,7 +625,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         setLedgerTransactions(mergedTransactions);
         setAccounts(recomputedAccounts);
         setNotes(loaded.notes);
-        setBalance(computeNetBalance(mergedTransactions));
         setBudgets(loaded.budgets);
         setBudgetAlerts(loaded.budgetAlerts);
         setFinancialGoals(loaded.financialGoals);
@@ -877,43 +1008,62 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [persistPatch, settings]
   );
 
-  const addAccount = useCallback(
-    (accountData: Omit<Account, 'id' | 'createdAt'>) => {
-      const id = generateId();
-      const openingBalance = Number(accountData.balance ?? 0);
+  const addAccountsBatch = useCallback(
+    (accountDataList: Array<Omit<Account, 'id' | 'createdAt'>>) => {
+      if (accountDataList.length === 0) {
+        return;
+      }
 
-      const account: Account = {
-        ...accountData,
-        id,
-        balance: 0,
-        createdAt: new Date(),
-      };
+      const nextAccounts: Account[] = [];
+      const openingTransactions: Transaction[] = [];
 
-      let nextTransactions = [...ledgerTransactions];
+      for (const accountData of accountDataList) {
+        const id = generateId();
+        const createdAt = new Date();
+        const openingBalanceRaw = Number(accountData.balance ?? 0);
+        const openingBalance = Number.isFinite(openingBalanceRaw) ? openingBalanceRaw : 0;
 
-      if (openingBalance !== 0) {
-        const opening: Transaction = {
+        nextAccounts.push({
+          ...accountData,
+          id,
+          balance: 0,
+          createdAt,
+        });
+
+        if (openingBalance === 0) {
+          continue;
+        }
+
+        openingTransactions.push({
           id: generateId(),
           amount: Math.abs(openingBalance),
           description: 'Opening balance',
           category: OPENING_BALANCE_CATEGORY,
           type: openingBalance >= 0 ? 'income' : 'expense',
-          date: new Date(),
-          createdAt: new Date(),
+          date: createdAt,
+          createdAt,
           fromAccount: openingBalance < 0 ? id : undefined,
           toAccount: openingBalance >= 0 ? id : undefined,
           fromAccountId: openingBalance < 0 ? id : undefined,
           toAccountId: openingBalance >= 0 ? id : undefined,
           isHidden: true,
-        };
-
-        nextTransactions = [opening, ...nextTransactions];
+        });
       }
 
-      const nextAccounts = [account, ...accounts];
-      applyLedgerState(nextTransactions, nextAccounts, recurringRules);
+      applyLedgerState(
+        [...openingTransactions, ...ledgerTransactions],
+        [...nextAccounts, ...accounts],
+        recurringRules
+      );
     },
     [accounts, applyLedgerState, ledgerTransactions, recurringRules]
+  );
+
+  const addAccount = useCallback(
+    (accountData: Omit<Account, 'id' | 'createdAt'>) => {
+      addAccountsBatch([accountData]);
+    },
+    [addAccountsBatch]
   );
 
   const updateAccount = useCallback(
@@ -955,11 +1105,215 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         updatedAt: new Date(),
       };
 
-      const next = [note, ...notes];
+      const next = sortNotesByUpdatedAtDesc([note, ...notes]);
       setNotes(next);
       void persistPatch({ notes: next });
     },
     [notes, persistPatch]
+  );
+
+  const updateNote = useCallback(
+    (updatedNote: Note) => {
+      const next = sortNotesByUpdatedAtDesc(
+        notes.map((note) =>
+          note.id === updatedNote.id
+            ? {
+                ...note,
+                ...normalizeNote(updatedNote),
+                createdAt: note.createdAt,
+                updatedAt: new Date(),
+              }
+            : note
+        )
+      );
+
+      setNotes(next);
+      void persistPatch({ notes: next });
+    },
+    [notes, persistPatch]
+  );
+
+  const deleteNote = useCallback(
+    (noteId: string) => {
+      const next = notes.filter((note) => note.id !== noteId);
+      setNotes(next);
+      void persistPatch({ notes: next });
+    },
+    [notes, persistPatch]
+  );
+
+  const importTransactionsBatch = useCallback(
+    (transactionDataList: Array<Omit<Transaction, 'id' | 'createdAt'>>) => {
+      if (transactionDataList.length === 0) {
+        return { importedCount: 0, skippedCount: 0 };
+      }
+
+      const existingKeys = new Set(
+        visibleTransactions
+          .filter((transaction) => transaction.type !== 'transfer' || transaction.transferLeg !== 'credit')
+          .map((transaction) => buildTransactionImportKey(transaction))
+      );
+
+      let nextTransactions = [...ledgerTransactions];
+      let nextRecurringRules = [...recurringRules];
+      let importedCount = 0;
+      let skippedCount = 0;
+
+      for (const transactionData of transactionDataList) {
+        const amount = Number(transactionData.amount);
+        const date = parseDate(transactionData.date);
+        const description = transactionData.description?.trim() || 'Imported transaction';
+        const fromAccountId = transactionData.fromAccountId ?? transactionData.fromAccount;
+        const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
+        const recurringEndDate = parseOptionalDate(transactionData.recurringEndDate);
+        const updatedAt = parseOptionalDate(transactionData.updatedAt) ?? date;
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+          skippedCount += 1;
+          continue;
+        }
+
+        if (
+          transactionData.type === 'transfer' &&
+          (!fromAccountId || !toAccountId || fromAccountId === toAccountId)
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        if (transactionData.type !== 'transfer' && !transactionData.category) {
+          skippedCount += 1;
+          continue;
+        }
+
+        const importKey = buildTransactionImportKey({
+          ...transactionData,
+          amount,
+          date,
+          description,
+          category: transactionData.category ?? TRANSFER_CATEGORY,
+          fromAccount: fromAccountId,
+          toAccount: toAccountId,
+          fromAccountId,
+          toAccountId,
+        });
+
+        if (existingKeys.has(importKey)) {
+          skippedCount += 1;
+          continue;
+        }
+
+        existingKeys.add(importKey);
+        let primaryTransaction: Transaction;
+
+        if (transactionData.type === 'transfer') {
+          const pair = createTransferLegs({
+            amount,
+            date,
+            description,
+            category: transactionData.category ?? TRANSFER_CATEGORY,
+            fromAccountId: fromAccountId!,
+            toAccountId: toAccountId!,
+            createdAt: date,
+            updatedAt,
+            recurringId: transactionData.recurringId,
+            recurringFrequency: transactionData.recurringFrequency,
+            recurringEndDate,
+            isRecurring: transactionData.isRecurring,
+            parentTransactionId: transactionData.parentTransactionId,
+            materializedForDate: transactionData.materializedForDate,
+            tags: transactionData.tags,
+          });
+
+          nextTransactions = [pair.debit, pair.credit, ...nextTransactions];
+          primaryTransaction = pair.debit;
+        } else {
+          primaryTransaction = normalizeTransaction({
+            ...transactionData,
+            id: generateId(),
+            amount,
+            description,
+            date,
+            createdAt: date,
+            updatedAt,
+            recurringEndDate,
+            category: transactionData.category!,
+            fromAccount: fromAccountId,
+            toAccount: toAccountId,
+            fromAccountId,
+            toAccountId,
+          });
+
+          nextTransactions = [primaryTransaction, ...nextTransactions];
+        }
+
+        const recurringRule = createRecurringRuleFromTransaction(primaryTransaction, generateId);
+        if (recurringRule) {
+          nextRecurringRules = [recurringRule, ...nextRecurringRules];
+        }
+
+        importedCount += 1;
+      }
+
+      if (importedCount > 0) {
+        applyLedgerState(nextTransactions, accounts, nextRecurringRules);
+      }
+
+      return { importedCount, skippedCount };
+    },
+    [accounts, applyLedgerState, ledgerTransactions, recurringRules, visibleTransactions]
+  );
+
+  const restoreBackupSnapshot = useCallback(
+    async (snapshot: Partial<PersistedState>) => {
+      const defaults = buildDefaults();
+      const nextTransactions = sortByDateDesc(
+        (Array.isArray(snapshot.transactions) ? snapshot.transactions : defaults.transactions).map(normalizeTransaction)
+      );
+      const nextAccounts = recomputeAllBalances(
+        (Array.isArray(snapshot.accounts) ? snapshot.accounts : defaults.accounts).map(normalizeAccount),
+        nextTransactions
+      );
+      const nextNotes = sortNotesByUpdatedAtDesc(
+        (Array.isArray(snapshot.notes) ? snapshot.notes : defaults.notes).map(normalizeNote)
+      );
+      const nextSettings = normalizeSettingsData(snapshot.settings ?? defaults.settings);
+      const nextBudgets = (Array.isArray(snapshot.budgets) ? snapshot.budgets : defaults.budgets).map(normalizeBudget);
+      const nextBudgetAlerts = (Array.isArray(snapshot.budgetAlerts) ? snapshot.budgetAlerts : defaults.budgetAlerts).map(normalizeBudgetAlert);
+      const nextFinancialGoals = (
+        Array.isArray(snapshot.financialGoals) ? snapshot.financialGoals : defaults.financialGoals
+      ).map(normalizeFinancialGoal);
+      const nextUserProfile = normalizeUserProfileData(snapshot.userProfile ?? defaults.userProfile);
+      const nextRecurringRules = (
+        Array.isArray(snapshot.recurringRules) ? snapshot.recurringRules : defaults.recurringRules
+      ).map(normalizeRule);
+      const integrity = validateLedgerIntegrity(nextTransactions);
+
+      setLedgerTransactions(nextTransactions);
+      setAccounts(nextAccounts);
+      setNotes(nextNotes);
+      setBudgets(nextBudgets);
+      setBudgetAlerts(nextBudgetAlerts);
+      setFinancialGoals(nextFinancialGoals);
+      setUserProfile(nextUserProfile);
+      setSettings(nextSettings);
+      setRecurringRules(nextRecurringRules);
+      setLedgerIssues(integrity.issues);
+      setIsHydrated(true);
+
+      await savePersistedPatch({
+        transactions: nextTransactions,
+        accounts: nextAccounts,
+        notes: nextNotes,
+        settings: nextSettings,
+        budgets: nextBudgets,
+        budgetAlerts: nextBudgetAlerts,
+        financialGoals: nextFinancialGoals,
+        userProfile: nextUserProfile,
+        recurringRules: nextRecurringRules,
+      });
+    },
+    []
   );
 
   const updateAccountBalance = useCallback(
@@ -1010,7 +1364,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setLedgerTransactions(defaults.transactions);
       setAccounts(defaults.accounts);
       setNotes(defaults.notes);
-      setBalance(0);
       setBudgets(defaults.budgets);
       setBudgetAlerts(defaults.budgetAlerts);
       setFinancialGoals(defaults.financialGoals);
@@ -1062,9 +1415,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         monthlyIncome: behaviorMetrics.monthly.map((entry) => entry.income),
         monthlyExpenses: behaviorMetrics.monthly.map((entry) => entry.expenses),
         budgetAdherence: behaviorMetrics.budget.adherence,
-        liquidBalance: balance,
+        liquidBalance: netBalance,
       }),
-    [balance, behaviorMetrics]
+    [behaviorMetrics, netBalance]
   );
 
   const financialHealthScore = useMemo(
@@ -1100,14 +1453,15 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
   const homeSnapshot: HomeSnapshot = useMemo(
     () => ({
-      netBalance: balance,
+      netBalance,
+      lifetimeNetCashFlow,
       monthlyCashFlow: behaviorMetrics.currentMonth.net,
       budgetRisk: behaviorMetrics.budget.risk,
       financialHealthScore,
       insightOfWeek: insights[0] ?? null,
       recentTransactions: visibleTransactions.slice(0, 5),
     }),
-    [balance, behaviorMetrics, financialHealthScore, insights, visibleTransactions]
+    [behaviorMetrics, financialHealthScore, insights, lifetimeNetCashFlow, netBalance, visibleTransactions]
   );
 
   return {
@@ -1115,7 +1469,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     allTransactions: ledgerTransactions,
     accounts,
     notes,
-    balance,
+    balance: lifetimeNetCashFlow,
+    netBalance,
+    lifetimeNetCashFlow,
     settings,
     budgets,
     budgetAlerts,
@@ -1145,11 +1501,16 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     formatCurrency,
     backupToGoogleDrive,
     restoreFromGoogleDrive,
+    restoreBackupSnapshot,
+    importTransactionsBatch,
     updateSettings,
+    addAccountsBatch,
     addAccount,
     updateAccount,
     deleteAccount,
     addNote,
+    updateNote,
+    deleteNote,
     clearAllData,
     updateAccountBalance,
     addBudget,
@@ -1164,4 +1525,19 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     updateUserProfile,
   };
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

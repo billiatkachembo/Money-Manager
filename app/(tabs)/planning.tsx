@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -29,6 +29,8 @@ import {
 } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { EXPENSE_CATEGORIES } from '@/constants/categories';
+import { TransactionCategory } from '@/types/transaction';
 
 interface CalculatorForm {
   loanAmount: string;
@@ -46,11 +48,28 @@ interface CalculatorForm {
   extraPayment: string;
 }
 
+interface BudgetFormState {
+  categoryId: string;
+  amount: string;
+  period: 'weekly' | 'monthly' | 'yearly';
+  startDate: string;
+}
+
 export default function PlanningScreen() {
   const { theme } = useTheme();
-  const { financialGoals, addFinancialGoal, deleteFinancialGoal, budgets, formatCurrency, getBudgetSpending } = useTransactionStore();
+  const {
+    transactions,
+    financialGoals,
+    addFinancialGoal,
+    deleteFinancialGoal,
+    budgets,
+    addBudget,
+    formatCurrency,
+    getBudgetSpending,
+  } = useTransactionStore();
   const [activeSection, setActiveSection] = useState<'goals' | 'budgets' | 'calculator'>('goals');
   const [showAddGoal, setShowAddGoal] = useState(false);
+  const [showAddBudget, setShowAddBudget] = useState(false);
   const [activeCalculator, setActiveCalculator] = useState<string | null>(null);
   const [calculatorResult, setCalculatorResult] = useState<any>(null);
   const [newGoal, setNewGoal] = useState({
@@ -75,6 +94,98 @@ export default function PlanningScreen() {
     monthlyPayment: '',
     extraPayment: '',
   });
+
+  const [newBudget, setNewBudget] = useState<BudgetFormState>({
+    categoryId: '',
+    amount: '',
+    period: 'monthly' as const,
+    startDate: new Date().toISOString().slice(0, 10),
+  });
+
+  const budgetCategories = useMemo(() => {
+    const categoriesFromTransactions = transactions
+      .filter((transaction) => transaction.type === 'expense')
+      .map((transaction) => transaction.category)
+      .filter((category): category is TransactionCategory => !!category?.id);
+
+    const categoriesFromBudgets = budgets
+      .map((budget) => budget.category)
+      .filter((category): category is TransactionCategory => !!category?.id);
+
+    const map = new Map<string, TransactionCategory>();
+
+    [...EXPENSE_CATEGORIES, ...categoriesFromTransactions, ...categoriesFromBudgets].forEach((category) => {
+      if (!map.has(category.id)) {
+        map.set(category.id, category);
+      }
+    });
+
+    return Array.from(map.values());
+  }, [budgets, transactions]);
+
+  const toggleAddBudgetForm = () => {
+    setShowAddBudget((previous) => {
+      const next = !previous;
+
+      if (next) {
+        setNewBudget((current) => ({
+          ...current,
+          categoryId: current.categoryId || budgetCategories[0]?.id || '',
+          startDate: current.startDate || new Date().toISOString().slice(0, 10),
+        }));
+      }
+
+      return next;
+    });
+  };
+
+  const addNewBudget = () => {
+    if (!newBudget.categoryId || !newBudget.amount || !newBudget.startDate) {
+      Alert.alert('Error', 'Please provide category, amount, and start date');
+      return;
+    }
+
+    const amount = parseFloat(newBudget.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Error', 'Please enter a valid budget amount');
+      return;
+    }
+
+    const startDate = new Date(newBudget.startDate);
+    if (Number.isNaN(startDate.getTime())) {
+      Alert.alert('Error', 'Please enter a valid date in YYYY-MM-DD format');
+      return;
+    }
+
+    const selectedCategory = budgetCategories.find((category) => category.id === newBudget.categoryId);
+    if (!selectedCategory) {
+      Alert.alert('Error', 'Please select a budget category');
+      return;
+    }
+
+    try {
+      addBudget({
+        categoryId: selectedCategory.id,
+        category: selectedCategory,
+        amount,
+        period: newBudget.period,
+        startDate,
+        alertAt80Percent: true,
+        alertAtLimit: true,
+      });
+
+      setNewBudget({
+        categoryId: budgetCategories[0]?.id || '',
+        amount: '',
+        period: 'monthly',
+        startDate: new Date().toISOString().slice(0, 10),
+      });
+      setShowAddBudget(false);
+      Alert.alert('Success', 'Budget created successfully');
+    } catch {
+      Alert.alert('Error', 'Failed to create budget');
+    }
+  };
 
   const getCategoryIcon = (category: string) => {
     switch (category) {
@@ -104,18 +215,62 @@ export default function PlanningScreen() {
     return Math.min((current / target) * 100, 100);
   };
 
+  const parseGoalTargetDate = (value: string): Date | null => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) {
+      return null;
+    }
+
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const parsed = new Date(year, monthIndex, day);
+
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== monthIndex ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+
+    parsed.setHours(0, 0, 0, 0);
+    return parsed;
+  };
+
   const addGoal = () => {
-    if (!newGoal.title || !newGoal.targetAmount || !newGoal.targetDate) {
+    const trimmedTitle = newGoal.title.trim();
+    const trimmedDate = newGoal.targetDate.trim();
+    const targetAmount = parseFloat(newGoal.targetAmount);
+
+    if (!trimmedTitle || !newGoal.targetAmount || !trimmedDate) {
       Alert.alert('Error', 'Please fill in all required fields');
+      return;
+    }
+
+    if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+      Alert.alert('Error', 'Please enter a valid target amount');
+      return;
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
+      Alert.alert('Error', 'Enter the target date as YYYY-MM-DD');
+      return;
+    }
+
+    const parsedTargetDate = parseGoalTargetDate(trimmedDate);
+    if (!parsedTargetDate) {
+      Alert.alert('Error', 'Please enter a valid target date');
       return;
     }
 
     try {
       addFinancialGoal({
-        title: newGoal.title,
-        targetAmount: parseFloat(newGoal.targetAmount),
+        title: trimmedTitle,
+        targetAmount,
         currentAmount: 0,
-        targetDate: new Date(newGoal.targetDate),
+        targetDate: parsedTargetDate,
         category: newGoal.category,
         priority: 'medium',
       });
@@ -561,15 +716,104 @@ export default function PlanningScreen() {
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
         <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Budget Tracking</Text>
-        <TouchableOpacity style={styles.addButton}>
+        <TouchableOpacity style={styles.addButton} onPress={toggleAddBudgetForm}>
           <Plus size={20} color={theme.colors.primary} />
         </TouchableOpacity>
       </View>
 
+      {showAddBudget && (
+        <View style={[styles.addGoalForm, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <Text style={[styles.formLabel, { color: theme.colors.text }]}>Category</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryChipsScroll}>
+            <View style={styles.categoryChipsRow}>
+              {budgetCategories.map((category) => {
+                const isSelected = newBudget.categoryId === category.id;
+                return (
+                  <TouchableOpacity
+                    key={category.id}
+                    style={[
+                      styles.categoryChip,
+                      { borderColor: isSelected ? theme.colors.primary : theme.colors.border },
+                      isSelected && { backgroundColor: theme.colors.primary + '14' },
+                    ]}
+                    onPress={() => setNewBudget((current) => ({ ...current, categoryId: category.id }))}
+                  >
+                    <Text
+                      style={[
+                        styles.categoryChipText,
+                        { color: isSelected ? theme.colors.primary : theme.colors.textSecondary },
+                      ]}
+                    >
+                      {category.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </ScrollView>
+
+          <TextInput
+            style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
+            placeholder="Budget amount"
+            placeholderTextColor={theme.colors.textSecondary}
+            value={newBudget.amount}
+            onChangeText={(text) => setNewBudget((current) => ({ ...current, amount: text }))}
+            keyboardType="numeric"
+          />
+
+          <Text style={[styles.formLabel, { color: theme.colors.text }]}>Period</Text>
+          <View style={styles.periodButtonsRow}>
+            {(['weekly', 'monthly', 'yearly'] as const).map((period) => {
+              const isSelected = newBudget.period === period;
+              return (
+                <TouchableOpacity
+                  key={period}
+                  style={[
+                    styles.periodButton,
+                    { borderColor: isSelected ? theme.colors.primary : theme.colors.border },
+                    isSelected && { backgroundColor: theme.colors.primary + '14' },
+                  ]}
+                  onPress={() => setNewBudget((current) => ({ ...current, period }))}
+                >
+                  <Text
+                    style={[
+                      styles.periodButtonText,
+                      { color: isSelected ? theme.colors.primary : theme.colors.textSecondary },
+                    ]}
+                  >
+                    {period.charAt(0).toUpperCase() + period.slice(1)}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <TextInput
+            style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
+            placeholder="Start date (YYYY-MM-DD)"
+            placeholderTextColor={theme.colors.textSecondary}
+            value={newBudget.startDate}
+            onChangeText={(text) => setNewBudget((current) => ({ ...current, startDate: text }))}
+          />
+
+          <View style={styles.buttonRow}>
+            <TouchableOpacity style={[styles.saveButton, { backgroundColor: theme.colors.primary }]} onPress={addNewBudget}>
+              <Text style={styles.saveButtonText}>Add Budget</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.cancelButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+              onPress={() => setShowAddBudget(false)}
+            >
+              <Text style={[styles.cancelButtonText, { color: theme.colors.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {budgets.length === 0 ? (
         <View style={[styles.emptyState, { backgroundColor: theme.colors.surface }]}>
           <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
-            No budgets set. Create budgets in Analytics tab!
+            No budgets set yet. Tap + to create one.
           </Text>
         </View>
       ) : (
@@ -577,7 +821,7 @@ export default function PlanningScreen() {
           const spent = getBudgetSpending(budget.id);
           const percentage = (spent / budget.amount) * 100;
           const isOverBudget = percentage > 100;
-          
+
           return (
             <View key={budget.id} style={[styles.budgetCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
               <View style={styles.budgetHeader}>
@@ -844,6 +1088,47 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginBottom: 16,
     borderWidth: 1,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  categoryChipsScroll: {
+    marginBottom: 12,
+  },
+  categoryChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingRight: 8,
+  },
+  categoryChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  categoryChipText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  periodButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  periodButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  periodButtonText: {
+    fontSize: 13,
+    fontWeight: '500',
   },
   input: {
     borderWidth: 1,

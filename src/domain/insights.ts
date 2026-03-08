@@ -19,6 +19,7 @@ export interface InsightContext {
   daysSinceIncome: number;
   debtToIncomeRatio: number;
   farmProfit: number;
+  farmLossRatio: number;
   farmExpenseRatio: number;
   farmFertilizerShare: number;
   seasonalFarmDelta: number;
@@ -43,12 +44,63 @@ function createInsight(
   };
 }
 
+function hasMeaningfulInsightData(data: InsightContext): boolean {
+  return (
+    data.monthlyIncome > 0 ||
+    data.monthlyExpenses > 0 ||
+    data.transferRatio > 0 ||
+    data.budgetRisk > 0 ||
+    data.daysSinceIncome >= 0 ||
+    data.debtToIncomeRatio > 0 ||
+    data.farmProfit !== 0 ||
+    data.farmExpenseRatio > 0 ||
+    data.positiveNetStreak > 0
+  );
+}
+
+function normalizeRoundedPercent(value: number): number {
+  const rounded = Math.round(value * 1000) / 10;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatPercent(
+  value: number,
+  options: { allowNegative?: boolean; signed?: boolean } = {}
+): string {
+  const rawPercent = value * 100;
+  const safePercent = options.allowNegative ? rawPercent : Math.max(0, rawPercent);
+  const rounded = normalizeRoundedPercent(safePercent);
+  const prefix = options.signed && rounded > 0 ? '+' : '';
+
+  return Number.isInteger(rounded) ? `${prefix}${rounded}%` : `${prefix}${rounded.toFixed(1)}%`;
+}
+
+function formatPercentDelta(value: number): string {
+  return formatPercent(Math.abs(value));
+}
+
+function getNegativeCashFlowRatio(data: InsightContext): number {
+  if (data.monthlyNet >= 0) {
+    return 0;
+  }
+
+  if (data.monthlyIncome > 0) {
+    return Math.abs(data.monthlyNet) / data.monthlyIncome;
+  }
+
+  if (data.monthlyExpenses > 0) {
+    return Math.abs(data.monthlyNet) / data.monthlyExpenses;
+  }
+
+  return 0;
+}
+
 export const negativeCashFlowRule: InsightRule = (data) => {
   if (data.monthlyNet < 0) {
     return createInsight(
       'negative-cashflow',
       'Negative cash flow',
-      'Your expenses exceeded income this month.',
+      `Your cash flow is ${formatPercent(getNegativeCashFlowRatio(data))} below break-even this month.`,
       'warning',
       0.9
     );
@@ -72,11 +124,15 @@ const severeNegativeCashFlowRule: InsightRule = (data) => {
 };
 
 const lowSavingsRateRule: InsightRule = (data) => {
+  if (data.monthlyIncome <= 0) {
+    return null;
+  }
+
   if (data.savingsRate < 0.1) {
     return createInsight(
       'low-savings-rate',
       'Low savings rate',
-      'Try to save at least 10% of monthly income.',
+      `Your savings rate is ${formatPercent(data.savingsRate, { allowNegative: true })} this month. Try to reach at least 10%.`,
       'warning',
       0.85
     );
@@ -86,11 +142,17 @@ const lowSavingsRateRule: InsightRule = (data) => {
 };
 
 const strongSavingsRateRule: InsightRule = (data) => {
+  if (data.monthlyIncome <= 0) {
+    return null;
+  }
+
   if (data.savingsRate >= 0.2) {
+    const savingsPercent = formatPercent(data.savingsRate);
+
     return createInsight(
       'strong-savings-rate',
       'Savings momentum',
-      'You are saving at least 20% of income. Keep this habit.',
+      `You saved ${savingsPercent} of income this month. Keep this habit.`,
       'info',
       0.75
     );
@@ -104,7 +166,7 @@ const budgetOverrunRule: InsightRule = (data) => {
     return createInsight(
       'budget-overrun',
       'Budget overrun',
-      'Current spending is above your monthly budget limits.',
+      `Current spending is ${formatPercent(data.budgetRisk)} of budget, or ${formatPercent(data.budgetRisk - 1)} over limit.`,
       'warning',
       0.9
     );
@@ -128,11 +190,15 @@ const budgetCriticalRule: InsightRule = (data) => {
 };
 
 const thinEmergencyBufferRule: InsightRule = (data) => {
+  if (data.monthlyExpenses <= 0) {
+    return null;
+  }
+
   if (data.bufferMonths < 1) {
     return createInsight(
       'thin-buffer',
       'Emergency buffer is thin',
-      'You currently have less than one month of expense coverage.',
+      `You currently have ${formatPercent(data.bufferMonths)} of one month of expense coverage.`,
       'warning',
       0.86
     );
@@ -142,6 +208,10 @@ const thinEmergencyBufferRule: InsightRule = (data) => {
 };
 
 const noEmergencyBufferRule: InsightRule = (data) => {
+  if (data.monthlyExpenses <= 0) {
+    return null;
+  }
+
   if (data.bufferMonths < 0.25) {
     return createInsight(
       'no-buffer',
@@ -156,11 +226,15 @@ const noEmergencyBufferRule: InsightRule = (data) => {
 };
 
 const expenseVolatilityRule: InsightRule = (data) => {
+  if (data.monthlyExpenses <= 0 || data.expenseCV <= 0) {
+    return null;
+  }
+
   if (data.expenseCV > 0.5) {
     return createInsight(
       'expense-volatility',
       'Expenses are unstable',
-      'Large swings in spending make planning difficult.',
+      `Expense volatility is ${formatPercent(data.expenseCV)} around your monthly average.`,
       'warning',
       0.8
     );
@@ -170,11 +244,15 @@ const expenseVolatilityRule: InsightRule = (data) => {
 };
 
 const incomeVolatilityRule: InsightRule = (data) => {
+  if (data.monthlyIncome <= 0 || data.incomeCV <= 0) {
+    return null;
+  }
+
   if (data.incomeCV > 0.5) {
     return createInsight(
       'income-volatility',
       'Income is unstable',
-      'Income swings are high. Build a larger safety buffer.',
+      `Income volatility is ${formatPercent(data.incomeCV)} around your monthly average.`,
       'warning',
       0.78
     );
@@ -188,7 +266,7 @@ const incomeDropRule: InsightRule = (data) => {
     return createInsight(
       'income-drop',
       'Income dropped',
-      'This month income is materially below recent levels.',
+      `This month income is ${formatPercentDelta(1 - data.incomeDropRatio)} below your recent average.`,
       'warning',
       0.87
     );
@@ -202,7 +280,7 @@ const expenseSpikeRule: InsightRule = (data) => {
     return createInsight(
       'expense-spike',
       'Expense spike detected',
-      'Spending jumped above your recent baseline.',
+      `Spending is ${formatPercentDelta(data.expenseSpikeRatio - 1)} above your recent baseline.`,
       'warning',
       0.82
     );
@@ -226,11 +304,15 @@ const transferHeavyRule: InsightRule = (data) => {
 };
 
 const recurringLoadRule: InsightRule = (data) => {
+  if (data.monthlyIncome <= 0) {
+    return null;
+  }
+
   if (data.recurringCommitmentRatio > 0.65) {
     return createInsight(
       'recurring-load',
       'Recurring commitments are high',
-      'Fixed recurring transactions are taking a large share of income.',
+      `Fixed recurring transactions consume ${formatPercent(data.recurringCommitmentRatio)} of income.`,
       'warning',
       0.84
     );
@@ -240,6 +322,10 @@ const recurringLoadRule: InsightRule = (data) => {
 };
 
 const microExpenseLeakRule: InsightRule = (data) => {
+  if (data.monthlyExpenses <= 0) {
+    return null;
+  }
+
   if (data.microExpenseRatio > 0.35) {
     return createInsight(
       'micro-expense-leak',
@@ -254,13 +340,13 @@ const microExpenseLeakRule: InsightRule = (data) => {
 };
 
 const noRecentIncomeRule: InsightRule = (data) => {
-  if (data.daysSinceIncome > 45) {
+  if (data.daysSinceIncome >= 0 && data.daysSinceIncome > 45) {
     return createInsight(
       'no-recent-income',
       'No recent income',
       'No income has been recorded for over 45 days.',
       'critical',
-      0.9
+      0.96
     );
   }
 
@@ -268,11 +354,15 @@ const noRecentIncomeRule: InsightRule = (data) => {
 };
 
 const debtPressureRule: InsightRule = (data) => {
+  if (data.debtToIncomeRatio <= 0) {
+    return null;
+  }
+
   if (data.debtToIncomeRatio > 0.5) {
     return createInsight(
       'debt-pressure',
       'Debt pressure is high',
-      'Outstanding debt relative to income is elevated.',
+      `Outstanding debt equals ${formatPercent(data.debtToIncomeRatio)} of income.`,
       'warning',
       0.81
     );
@@ -286,7 +376,7 @@ const farmProfitNegativeRule: InsightRule = (data) => {
     return createInsight(
       'farm-negative-profit',
       'Farm operations are in loss',
-      'Farm-related expenses are currently above farm income.',
+      `Farm operations are currently running at a ${formatPercent(data.farmLossRatio)} loss versus farm income.`,
       'warning',
       0.88
     );
@@ -314,7 +404,7 @@ const fertilizerConcentrationRule: InsightRule = (data) => {
     return createInsight(
       'fertilizer-concentration',
       'High fertilizer concentration',
-      'A large share of farm costs is concentrated in fertilizers.',
+      `Fertilizers make up ${formatPercent(data.farmFertilizerShare)} of current farm costs.`,
       'warning',
       0.73
     );
@@ -328,7 +418,7 @@ const seasonalFarmDownturnRule: InsightRule = (data) => {
     return createInsight(
       'seasonal-farm-downturn',
       'Seasonal farm dip',
-      'Farm performance is down versus the previous comparable season.',
+      `Farm performance is ${formatPercentDelta(data.seasonalFarmDelta)} below the previous comparable season.`,
       'warning',
       0.74
     );
@@ -388,6 +478,10 @@ function severityRank(severity: InsightSeverity): number {
 }
 
 export function computeInsights(data: InsightContext, limit = 5): Insight[] {
+  if (!hasMeaningfulInsightData(data)) {
+    return [];
+  }
+
   const map = new Map<string, Insight>();
 
   for (const rule of INSIGHT_RULES) {
@@ -413,3 +507,4 @@ export function computeInsights(data: InsightContext, limit = 5): Insight[] {
     })
     .slice(0, Math.max(1, limit));
 }
+

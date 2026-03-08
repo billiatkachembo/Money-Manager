@@ -5,159 +5,165 @@ import {
   StyleSheet,
   ScrollView,
   useWindowDimensions,
-  TouchableOpacity,
 } from 'react-native';
-import { PieChart, LineChart, BarChart } from 'react-native-chart-kit';
-import { TrendingUp, TrendingDown, DollarSign, Target } from 'lucide-react-native';
+import { PieChart, LineChart } from 'react-native-chart-kit';
+import { DollarSign } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
-import { EXPENSE_CATEGORIES } from '@/constants/categories';
-import { Transaction } from '@/types/transaction';
+import {
+  computeExpenseCategoryBreakdown,
+  computeExpenseDistribution,
+  computeQuickStats,
+} from '@/src/domain/analytics';
+
+function toMonthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function toDayKey(date: Date): string {
+  return `${toMonthKey(date)}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function buildRecentDays(length: number): Date[] {
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (length - 1));
+  return Array.from({ length }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return date;
+  });
+}
+
+function buildRecentMonths(length: number): Date[] {
+  const today = new Date();
+  return Array.from({ length }, (_, index) => new Date(today.getFullYear(), today.getMonth() - (length - 1 - index), 1));
+}
+
+function formatPercentage(value: number): string {
+  const percent = value * 100;
+  const rounded = percent >= 10 ? Math.round(percent) : Math.round(percent * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
+}
 
 export default function AnalyticsScreen() {
-  const { transactions, getTotalIncome, getTotalExpenses, getCategorySpending } = useTransactionStore();
+  const { transactions, getTotalIncome, getTotalExpenses, formatCurrency } = useTransactionStore();
   const { theme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
-  
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthlyIncome = getTotalIncome(currentMonth);
-  const monthlyExpenses = getTotalExpenses(currentMonth);
-  
-  const formatCurrency = (amount: number) => {
-    if (typeof amount !== 'number' || isNaN(amount) || amount < 0 || amount > 1000000) return '$0.00';
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-    }).format(amount);
-  };
 
-  const categorySpending = EXPENSE_CATEGORIES.map(category => ({
-    ...category,
-    amount: getCategorySpending(category.id, currentMonth),
-  })).filter(category => category.amount > 0)
-    .sort((a, b) => b.amount - a.amount);
+  const chartWidth = Math.max(screenWidth - 56, 280);
+  const today = new Date();
+  const currentMonth = toMonthKey(today);
+  const elapsedDays = Math.max(1, today.getDate());
 
-  const maxSpending = Math.max(...categorySpending.map(c => c.amount), 1);
-  
-  // Prepare enhanced pie chart data
+  const currentMonthTransactions = useMemo(
+    () => transactions.filter((transaction) => toMonthKey(transaction.date) === currentMonth),
+    [currentMonth, transactions]
+  );
+
+  const quickStats = useMemo(
+    () => computeQuickStats(currentMonthTransactions, elapsedDays),
+    [currentMonthTransactions, elapsedDays]
+  );
+
+  const monthlyIncome = quickStats.income;
+  const monthlyExpenses = quickStats.expenses;
+
+  const categorySpending = useMemo(
+    () => computeExpenseCategoryBreakdown(currentMonthTransactions),
+    [currentMonthTransactions]
+  );
+
   const pieChartData = useMemo(() => {
-    if (categorySpending.length === 0) return [];
-    
-    const topCategories = categorySpending.slice(0, 5);
-    const otherAmount = categorySpending.slice(5).reduce((sum, cat) => sum + cat.amount, 0);
-    
-    const chartData = topCategories.map((category) => ({
-      name: category.name,
-      amount: category.amount,
-      color: category.color,
-      legendFontColor: '#333',
+    if (categorySpending.length === 0) {
+      return [];
+    }
+
+    const legendColor = theme.isDark ? '#E5E7EB' : '#374151';
+    return computeExpenseDistribution(categorySpending, 5).map((entry) => ({
+      name: entry.name,
+      amount: entry.amount,
+      color: entry.color,
+      legendFontColor: legendColor,
       legendFontSize: 11,
     }));
-    
-    if (otherAmount > 0) {
-      chartData.push({
-        name: 'Other',
-        amount: otherAmount,
-        color: '#95a5a6',
-        legendFontColor: '#333',
-        legendFontSize: 11,
-      });
-    }
-    
-    return chartData;
-  }, [categorySpending]);
-  
-  // Prepare enhanced trend line data for the last 14 days
+  }, [categorySpending, theme.isDark]);
+
   const trendData = useMemo(() => {
-    const last14Days = Array.from({ length: 14 }, (_, i) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (13 - i));
-      return date;
-    });
-    
-    const dailyExpenses: number[] = last14Days.map(date => {
-      const dayTransactions = transactions.filter(t => {
-        const transactionDate = new Date(t.date);
-        return transactionDate.toDateString() === date.toDateString() && t.type === 'expense';
-      });
-      return dayTransactions.reduce((sum: number, t: Transaction) => sum + t.amount, 0);
-    });
-    
-    const dailyIncome: number[] = last14Days.map(date => {
-      const dayTransactions = transactions.filter(t => {
-        const transactionDate = new Date(t.date);
-        return transactionDate.toDateString() === date.toDateString() && t.type === 'income';
-      });
-      return dayTransactions.reduce((sum: number, t: Transaction) => sum + t.amount, 0);
-    });
-    
-    const dailyNet: number[] = dailyIncome.map((income, index) => income - dailyExpenses[index]);
-    
+    const recentDays = buildRecentDays(14);
+    const expenses = recentDays.map((date) =>
+      transactions
+        .filter((transaction) => transaction.type === 'expense' && toDayKey(transaction.date) === toDayKey(date))
+        .reduce((sum, transaction) => sum + transaction.amount, 0)
+    );
+    const income = recentDays.map((date) =>
+      transactions
+        .filter((transaction) => transaction.type === 'income' && toDayKey(transaction.date) === toDayKey(date))
+        .reduce((sum, transaction) => sum + transaction.amount, 0)
+    );
+
     return {
-      labels: last14Days.map(date => {
-        const day = date.getDate();
-        const month = date.getMonth() + 1;
-        return `${month}/${day}`;
-      }),
+      labels: recentDays.map((date, index) => (index % 2 === 0 ? `${date.getMonth() + 1}/${date.getDate()}` : '')),
       datasets: [
         {
-          data: dailyExpenses,
-          color: (opacity = 1) => `rgba(244, 67, 54, ${opacity})`,
+          data: expenses,
+          color: (opacity = 1) => `rgba(220, 38, 38, ${opacity})`,
           strokeWidth: 2,
         },
         {
-          data: dailyIncome,
-          color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
+          data: income,
+          color: (opacity = 1) => `rgba(22, 163, 74, ${opacity})`,
           strokeWidth: 2,
         },
         {
-          data: dailyNet,
+          data: income.map((value, index) => value - expenses[index]),
           color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
           strokeWidth: 2,
         },
       ],
-      legend: ['Expenses', 'Income', 'Net'],
     };
   }, [transactions]);
-  
-  // Prepare monthly comparison data
+
   const monthlyComparisonData = useMemo(() => {
-    const last6Months = Array.from({ length: 6 }, (_, i) => {
-      const date = new Date();
-      date.setMonth(date.getMonth() - (5 - i));
-      return date.toISOString().slice(0, 7);
-    });
-    
-    const monthlyExpenses = last6Months.map(month => getTotalExpenses(month));
-    const monthlyIncome = last6Months.map(month => getTotalIncome(month));
-    
+    const recentMonths = buildRecentMonths(6);
+    const labels = recentMonths.map((month) => month.toLocaleDateString('en-US', { month: 'short' }));
+    const expenses = recentMonths.map((month) => getTotalExpenses(toMonthKey(month)));
+    const income = recentMonths.map((month) => getTotalIncome(toMonthKey(month)));
+
     return {
-      labels: last6Months.map(month => {
-        const [year, monthNum] = month.split('-');
-        const date = new Date(parseInt(year), parseInt(monthNum) - 1);
-        return date.toLocaleDateString('en-US', { month: 'short' });
-      }),
+      labels,
       datasets: [
         {
-          data: monthlyExpenses,
-          color: (opacity = 1) => `rgba(244, 67, 54, ${opacity})`,
+          data: expenses,
+          color: (opacity = 1) => `rgba(220, 38, 38, ${opacity})`,
+          strokeWidth: 2,
         },
         {
-          data: monthlyIncome,
-          color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
+          data: income,
+          color: (opacity = 1) => `rgba(22, 163, 74, ${opacity})`,
+          strokeWidth: 2,
         },
       ],
-      legend: ['Expenses', 'Income'],
     };
-  }, [transactions, getTotalExpenses, getTotalIncome]);
-  
+  }, [getTotalExpenses, getTotalIncome, transactions]);
+
+  const hasTrendData = useMemo(
+    () => trendData.datasets.some((dataset) => dataset.data.some((value) => value !== 0)),
+    [trendData]
+  );
+
+  const hasComparisonData = useMemo(
+    () => monthlyComparisonData.datasets.some((dataset) => dataset.data.some((value) => value !== 0)),
+    [monthlyComparisonData]
+  );
+
   const chartConfig = {
     backgroundColor: theme.colors.surface,
     backgroundGradientFrom: theme.colors.surface,
     backgroundGradientTo: theme.colors.surface,
     decimalPlaces: 0,
     color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
-    labelColor: (opacity = 1) => theme.isDark ? `rgba(255, 255, 255, ${opacity})` : `rgba(51, 51, 51, ${opacity})`,
+    labelColor: (opacity = 1) =>
+      theme.isDark ? `rgba(255, 255, 255, ${opacity})` : `rgba(51, 51, 51, ${opacity})`,
     style: {
       borderRadius: 16,
     },
@@ -172,64 +178,37 @@ export default function AnalyticsScreen() {
       strokeWidth: 1,
     },
     fillShadowGradient: theme.colors.primary,
-    fillShadowGradientOpacity: 0.1,
-  };
-  
-  const barChartConfig = {
-    backgroundColor: theme.colors.surface,
-    backgroundGradientFrom: theme.colors.surface,
-    backgroundGradientTo: theme.colors.surface,
-    decimalPlaces: 0,
-    color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
-    labelColor: (opacity = 1) => theme.isDark ? `rgba(255, 255, 255, ${opacity})` : `rgba(51, 51, 51, ${opacity})`,
-    style: {
-      borderRadius: 16,
-    },
-    propsForBackgroundLines: {
-      strokeDasharray: '',
-      stroke: theme.colors.border,
-      strokeWidth: 1,
-    },
+    fillShadowGradientOpacity: 0.08,
   };
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface }]}>
+      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>This Month</Text>
         <View style={styles.summaryRow}>
           <View style={styles.summaryItem}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <Text style={[styles.summaryValue, styles.incomeText]}>
-              {formatCurrency(monthlyIncome)}
-            </Text>
+            <Text style={[styles.summaryValue, styles.incomeText]}>{formatCurrency(monthlyIncome)}</Text>
           </View>
           <View style={styles.summaryItem}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <Text style={[styles.summaryValue, styles.expenseText]}>
-              {formatCurrency(monthlyExpenses)}
-            </Text>
+            <Text style={[styles.summaryValue, styles.expenseText]}>{formatCurrency(monthlyExpenses)}</Text>
           </View>
         </View>
-        <View style={styles.netIncomeContainer}>
+        <View style={[styles.netIncomeContainer, { borderTopColor: theme.colors.border }]}> 
           <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Income</Text>
-          <Text style={[
-            styles.netIncomeValue,
-            monthlyIncome - monthlyExpenses >= 0 ? styles.incomeText : styles.expenseText
-          ]}>
-            {formatCurrency(monthlyIncome - monthlyExpenses)}
+          <Text style={[styles.netIncomeValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
+            {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
           </Text>
         </View>
       </View>
 
-      {/* Enhanced Pie Chart */}
-      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
           <View style={styles.cardSubtitle}>
-            <DollarSign size={16} color="#666" />
-            <Text style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}>
-              {formatCurrency(monthlyExpenses)} total
-            </Text>
+            <DollarSign size={16} color={theme.colors.textSecondary} />
+            <Text style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}>{formatCurrency(monthlyExpenses)} total</Text>
           </View>
         </View>
         {pieChartData.length === 0 ? (
@@ -240,40 +219,38 @@ export default function AnalyticsScreen() {
           <View style={styles.chartContainer}>
             <PieChart
               data={pieChartData}
-              width={screenWidth - 72}
+              width={chartWidth}
               height={240}
               chartConfig={chartConfig}
               accessor="amount"
               backgroundColor="transparent"
-              paddingLeft="15"
-              center={[0, 0]}
+              paddingLeft="10"
               absolute
               hasLegend={true}
             />
           </View>
         )}
       </View>
-      
-      {/* Enhanced Trend Line Chart */}
-      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>14-Day Trend</Text>
-          <View style={styles.trendIndicators}>
-            <View style={styles.trendIndicator}>
-              <View style={[styles.trendDot, { backgroundColor: '#F44336' }]} />
-              <Text style={[styles.trendLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+          <View style={styles.legendRow}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
+              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
             </View>
-            <View style={styles.trendIndicator}>
-              <View style={[styles.trendDot, { backgroundColor: '#4CAF50' }]} />
-              <Text style={[styles.trendLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
+              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
             </View>
-            <View style={styles.trendIndicator}>
-              <View style={[styles.trendDot, { backgroundColor: '#667eea' }]} />
-              <Text style={[styles.trendLabel, { color: theme.colors.textSecondary }]}>Net</Text>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#667eea' }]} />
+              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
             </View>
           </View>
         </View>
-        {trendData.datasets[0].data.every(val => val === 0) && trendData.datasets[1].data.every(val => val === 0) ? (
+        {!hasTrendData ? (
           <View style={styles.emptyState}>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No transactions in the last 14 days</Text>
           </View>
@@ -281,50 +258,53 @@ export default function AnalyticsScreen() {
           <View style={styles.chartContainer}>
             <LineChart
               data={trendData}
-              width={screenWidth - 72}
+              width={chartWidth}
               height={240}
               chartConfig={chartConfig}
-              bezier
               style={styles.lineChartStyle}
               withDots={true}
               withShadow={true}
-              withScrollableDot={true}
+              bezier
             />
           </View>
         )}
       </View>
-      
-      {/* Monthly Comparison Bar Chart */}
-      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>6-Month Comparison</Text>
-          <TouchableOpacity style={styles.viewMoreButton}>
-            <Text style={[styles.viewMoreText, { color: theme.colors.primary }]}>View More</Text>
-            <TrendingUp size={14} color="#667eea" />
-          </TouchableOpacity>
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>6-Month Income vs Expenses</Text>
+          <View style={styles.legendRow}>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
+              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+            </View>
+            <View style={styles.legendItem}>
+              <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
+              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
+            </View>
+          </View>
         </View>
-        {monthlyComparisonData.datasets[0].data.every(val => val === 0) && monthlyComparisonData.datasets[1].data.every(val => val === 0) ? (
+        {!hasComparisonData ? (
           <View style={styles.emptyState}>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No data for comparison</Text>
           </View>
         ) : (
           <View style={styles.chartContainer}>
-            <BarChart
+            <LineChart
               data={monthlyComparisonData}
-              width={screenWidth - 72}
+              width={chartWidth}
               height={220}
-              chartConfig={barChartConfig}
-              style={styles.barChartStyle}
-              showValuesOnTopOfBars={false}
+              chartConfig={chartConfig}
+              style={styles.lineChartStyle}
+              withDots={true}
+              withShadow={false}
               fromZero={true}
-              yAxisLabel="$"
-              yAxisSuffix=""
             />
           </View>
         )}
       </View>
-      
-      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
         {categorySpending.length === 0 ? (
           <View style={styles.emptyState}>
@@ -333,28 +313,20 @@ export default function AnalyticsScreen() {
         ) : (
           <View style={styles.categoriesList}>
             {categorySpending.map((category) => {
-              const percentage = (category.amount / maxSpending) * 100;
-              
+              const percentage = Math.max(category.share * 100, 2);
               return (
-                <View key={category.id} style={styles.categoryRow}>
+                <View key={category.categoryId} style={styles.categoryRow}>
                   <View style={styles.categoryInfo}>
                     <View style={[styles.categoryDot, { backgroundColor: category.color }]} />
-                    <Text style={[styles.categoryName, { color: theme.colors.text }]}>{category.name}</Text>
+                    <Text style={[styles.categoryName, { color: theme.colors.text }]}>{category.categoryName}</Text>
                   </View>
                   <View style={styles.categoryAmount}>
-                    <Text style={[styles.categoryAmountText, { color: theme.colors.text }]}>
-                      {formatCurrency(category.amount)}
-                    </Text>
-                    <View style={styles.progressBarContainer}>
-                      <View
-                        style={[
-                          styles.progressBar,
-                          {
-                            width: `${percentage}%`,
-                            backgroundColor: category.color,
-                          }
-                        ]}
-                      />
+                    <View style={styles.categoryMeta}>
+                      <Text style={[styles.categoryAmountText, { color: theme.colors.text }]}>{formatCurrency(category.amount)}</Text>
+                      <Text style={[styles.categoryShareText, { color: theme.colors.textSecondary }]}>{formatPercentage(category.share)}</Text>
+                    </View>
+                    <View style={[styles.progressBarContainer, { backgroundColor: theme.isDark ? theme.colors.background : '#f0f0f0' }]}>
+                      <View style={[styles.progressBar, { width: `${percentage}%`, backgroundColor: category.color }]} />
                     </View>
                   </View>
                 </View>
@@ -364,29 +336,24 @@ export default function AnalyticsScreen() {
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface }]}>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
         <View style={styles.statsGrid}>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{transactions.length}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Total Transactions</Text>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Transactions This Month</Text>
           </View>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>
-              {formatCurrency(monthlyExpenses / Math.max(new Date().getDate(), 1))}
-            </Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Daily Average</Text>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{formatCurrency(quickStats.averageDailySpend)}</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Daily Spend</Text>
           </View>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{categorySpending.length}</Text>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.activeCategories}</Text>
             <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Active Categories</Text>
           </View>
-          <View style={styles.statItem}>
-            <Text style={[
-              styles.statValue,
-              monthlyIncome - monthlyExpenses >= 0 ? styles.incomeText : styles.expenseText
-            ]}>
-              {monthlyIncome - monthlyExpenses >= 0 ? '+' : ''}{formatCurrency(monthlyIncome - monthlyExpenses)}
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.statValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
+              {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
             </Text>
             <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Net This Month</Text>
           </View>
@@ -399,47 +366,30 @@ export default function AnalyticsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
   },
   summaryCard: {
-    backgroundColor: 'white',
     margin: 16,
     padding: 20,
     borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    borderWidth: 1,
   },
   card: {
-    backgroundColor: 'white',
     marginHorizontal: 16,
     marginBottom: 16,
     padding: 20,
     borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    borderWidth: 1,
   },
   cardTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#1a1a1a',
     marginBottom: 16,
   },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 16,
+    gap: 16,
   },
   summaryItem: {
     flex: 1,
@@ -447,7 +397,6 @@ const styles = StyleSheet.create({
   summaryLabel: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#666',
     marginBottom: 4,
   },
   summaryValue: {
@@ -455,20 +404,62 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   incomeText: {
-    color: '#4CAF50',
+    color: '#16A34A',
   },
   expenseText: {
-    color: '#F44336',
+    color: '#DC2626',
   },
   netIncomeContainer: {
     alignItems: 'center',
     paddingTop: 16,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
   },
   netIncomeValue: {
     fontSize: 24,
     fontWeight: '700',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 12,
+  },
+  cardSubtitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  cardSubtitleText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  legendRow: {
+    flexDirection: 'row',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendText: {
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  chartContainer: {
+    alignItems: 'center',
+    marginVertical: 8,
+  },
+  lineChartStyle: {
+    marginVertical: 8,
+    borderRadius: 16,
   },
   categoriesList: {
     gap: 16,
@@ -477,6 +468,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 16,
   },
   categoryInfo: {
     flexDirection: 'row',
@@ -492,23 +484,29 @@ const styles = StyleSheet.create({
   categoryName: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#1a1a1a',
     flex: 1,
   },
   categoryAmount: {
-    alignItems: 'flex-end',
-    minWidth: 80,
+    minWidth: 120,
+  },
+  categoryMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 4,
   },
   categoryAmountText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 4,
+  },
+  categoryShareText: {
+    fontSize: 12,
+    fontWeight: '500',
   },
   progressBarContainer: {
-    width: 60,
+    width: 120,
     height: 4,
-    backgroundColor: '#f0f0f0',
     borderRadius: 2,
     overflow: 'hidden',
   },
@@ -522,7 +520,6 @@ const styles = StyleSheet.create({
   },
   emptyStateText: {
     fontSize: 14,
-    color: '#666',
   },
   statsGrid: {
     flexDirection: 'row',
@@ -534,80 +531,17 @@ const styles = StyleSheet.create({
     minWidth: '45%',
     alignItems: 'center',
     padding: 16,
-    backgroundColor: '#f8f9fa',
     borderRadius: 12,
+    borderWidth: 1,
   },
   statValue: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1a1a1a',
     marginBottom: 4,
   },
   statLabel: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#666',
     textAlign: 'center',
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  cardSubtitle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  cardSubtitleText: {
-    fontSize: 12,
-    color: '#666',
-    fontWeight: '500',
-  },
-  trendIndicators: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  trendIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  trendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  trendLabel: {
-    fontSize: 10,
-    color: '#666',
-    fontWeight: '500',
-  },
-  viewMoreButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    backgroundColor: '#667eea20',
-  },
-  viewMoreText: {
-    fontSize: 12,
-    color: '#667eea',
-    fontWeight: '600',
-  },
-  chartContainer: {
-    alignItems: 'center',
-    marginVertical: 8,
-  },
-  lineChartStyle: {
-    marginVertical: 8,
-    borderRadius: 16,
-  },
-  barChartStyle: {
-    marginVertical: 8,
-    borderRadius: 16,
   },
 });

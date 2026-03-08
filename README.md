@@ -316,3 +316,5 @@ For mobile apps, you'll configure your app's deep linking scheme in `app.json`.
 Rork builds fully native mobile apps using React Native and Expo - the same technology stack used by Discord, Shopify, Coinbase, Instagram, and nearly 30% of the top 100 apps on the App Store.
 
 Your Rork app is production-ready and can be published to both the App Store and Google Play Store. You can also export your app to run on the web, making it truly cross-platform.
+#   M o n e y - M a n a g e r  
+ 

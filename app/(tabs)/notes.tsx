@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
+  FlatList,
+  ListRenderItemInfo,
   ScrollView,
   TouchableOpacity,
   Modal,
   TextInput,
   Alert,
 } from 'react-native';
+import Swipeable from 'react-native-gesture-handler/Swipeable';
 import {
   FileText,
   Plus,
@@ -38,6 +41,10 @@ const NOTE_COLORS = [
   '#F8BBD9', '#FFCCBC', '#D7CCC8', '#CFD8DC', '#B39DDB'
 ];
 
+type NoteListItem =
+  | { type: 'header'; id: string; title: string }
+  | { type: 'note'; id: string; note: Note };
+
 export default function NotesScreen() {
   const { theme } = useTheme();
   const { notes, addNote, updateNote, deleteNote } = useTransactionStore();
@@ -57,15 +64,42 @@ export default function NotesScreen() {
     return NOTE_CATEGORIES.find(c => c.id === category) || NOTE_CATEGORIES[0];
   };
 
-  const filteredNotes = notes.filter(note => {
-    const matchesSearch = note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                         note.content.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === 'all' || note.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  const filteredNotes = useMemo(
+    () =>
+      notes.filter((note) => {
+        const matchesSearch =
+          note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          note.content.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesCategory = selectedCategory === 'all' || note.category === selectedCategory;
+        return matchesSearch && matchesCategory;
+      }),
+    [notes, searchQuery, selectedCategory]
+  );
 
-  const pinnedNotes = filteredNotes.filter(note => note.isPinned);
-  const unpinnedNotes = filteredNotes.filter(note => !note.isPinned);
+  const pinnedNotes = useMemo(() => filteredNotes.filter((note) => note.isPinned), [filteredNotes]);
+  const unpinnedNotes = useMemo(() => filteredNotes.filter((note) => !note.isPinned), [filteredNotes]);
+
+  const listData = useMemo<NoteListItem[]>(() => {
+    const sections: NoteListItem[] = [];
+
+    if (pinnedNotes.length > 0) {
+      sections.push({ type: 'header', id: 'section-pinned', title: 'Pinned' });
+      pinnedNotes.forEach((note) => {
+        sections.push({ type: 'note', id: note.id, note });
+      });
+    }
+
+    if (unpinnedNotes.length > 0) {
+      if (pinnedNotes.length > 0) {
+        sections.push({ type: 'header', id: 'section-notes', title: 'Notes' });
+      }
+      unpinnedNotes.forEach((note) => {
+        sections.push({ type: 'note', id: note.id, note });
+      });
+    }
+
+    return sections;
+  }, [pinnedNotes, unpinnedNotes]);
 
   const resetForm = () => {
     setFormData({
@@ -167,62 +201,114 @@ export default function NotesScreen() {
     }).format(date);
   };
 
+  const renderSwipeActions = (note: Note, closeSwipe: () => void) => (
+    <View style={styles.swipeActions}>
+      <TouchableOpacity
+        style={[styles.swipeActionButton, styles.swipePinAction]}
+        onPress={() => {
+          closeSwipe();
+          togglePin(note.id);
+        }}
+      >
+        <Pin
+          size={16}
+          color={note.isPinned ? '#8a6d00' : '#5f5f5f'}
+          fill={note.isPinned ? '#8a6d00' : 'none'}
+        />
+        <Text style={styles.swipeActionText}>{note.isPinned ? 'Unpin' : 'Pin'}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.swipeActionButton, styles.swipeDeleteAction]}
+        onPress={() => {
+          closeSwipe();
+          handleDeleteNote(note.id);
+        }}
+      >
+        <Trash2 size={16} color="#fff" />
+        <Text style={[styles.swipeActionText, styles.swipeDeleteText]}>Delete</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   const renderNote = (note: Note) => {
     const categoryInfo = getCategoryInfo(note.category);
     const IconComponent = categoryInfo.icon;
+    let swipeRef: Swipeable | null = null;
 
     return (
-      <TouchableOpacity
-        key={note.id}
-        style={[styles.noteCard, { backgroundColor: note.color }]}
-        onPress={() => openEditModal(note)}
+      <Swipeable
+        ref={(ref) => {
+          swipeRef = ref;
+        }}
+        overshootRight={false}
+        renderRightActions={() => renderSwipeActions(note, () => swipeRef?.close())}
       >
-        <View style={styles.noteHeader}>
-          <View style={styles.categoryBadge}>
-            <IconComponent size={12} color={categoryInfo.color} />
-            <Text style={[styles.categoryText, { color: categoryInfo.color }]}>
-              {categoryInfo.name}
-            </Text>
-          </View>
-          <View style={styles.noteActions}>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => togglePin(note.id)}
-            >
-              <Pin
-                size={16}
-                color={note.isPinned ? '#FF9800' : '#999'}
-                fill={note.isPinned ? '#FF9800' : 'none'}
-              />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={() => handleDeleteNote(note.id)}
-            >
-              <Trash2 size={16} color="#F44336" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <Text style={styles.noteTitle}>{note.title}</Text>
-        {note.content && (
-          <Text style={styles.noteContent} numberOfLines={3}>
-            {note.content}
-          </Text>
-        )}
-
-        <View style={styles.noteFooter}>
-          <Text style={styles.noteDate}>
-            {formatDate(note.updatedAt)}
-          </Text>
-          {note.isPinned && (
-            <View style={styles.pinnedIndicator}>
-              <Pin size={12} color="#FF9800" fill="#FF9800" />
+        <View style={[styles.noteCard, { backgroundColor: note.color }]}>
+          <View style={styles.noteHeader}>
+            <View style={styles.categoryBadge}>
+              <IconComponent size={12} color={categoryInfo.color} />
+              <Text style={[styles.categoryText, { color: categoryInfo.color }]}>
+                {categoryInfo.name}
+              </Text>
             </View>
+            <View style={styles.noteActions}>
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={() => togglePin(note.id)}
+              >
+                <Pin
+                  size={16}
+                  color={note.isPinned ? '#FF9800' : '#999'}
+                  fill={note.isPinned ? '#FF9800' : 'none'}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={() => openEditModal(note)}
+              >
+                <Edit3 size={16} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionButton}
+                onPress={() => handleDeleteNote(note.id)}
+              >
+                <Trash2 size={16} color="#F44336" />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <Text style={styles.noteTitle}>{note.title}</Text>
+          {note.content && (
+            <Text style={styles.noteContent} numberOfLines={3}>
+              {note.content}
+            </Text>
           )}
+
+          <View style={styles.noteFooter}>
+            <Text style={styles.noteDate}>
+              {formatDate(note.updatedAt)}
+            </Text>
+            {note.isPinned && (
+              <View style={styles.pinnedIndicator}>
+                <Pin size={12} color="#FF9800" fill="#FF9800" />
+              </View>
+            )}
+          </View>
         </View>
-      </TouchableOpacity>
+      </Swipeable>
     );
+  };
+
+  const renderListItem = ({ item }: ListRenderItemInfo<NoteListItem>) => {
+    if (item.type === 'header') {
+      return (
+        <View style={styles.sectionHeader}>
+          <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>{item.title}</Text>
+        </View>
+      );
+    }
+
+    return renderNote(item.note);
   };
 
   return (
@@ -285,28 +371,19 @@ export default function NotesScreen() {
         </ScrollView>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {pinnedNotes.length > 0 && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Pinned</Text>
-            <View style={styles.notesGrid}>
-              {pinnedNotes.map(renderNote)}
-            </View>
-          </View>
-        )}
-
-        {unpinnedNotes.length > 0 && (
-          <View style={styles.section}>
-            {pinnedNotes.length > 0 && (
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Notes</Text>
-            )}
-            <View style={styles.notesGrid}>
-              {unpinnedNotes.map(renderNote)}
-            </View>
-          </View>
-        )}
-
-        {filteredNotes.length === 0 && (
+      <FlatList
+        data={listData}
+        keyExtractor={(item) => item.id}
+        renderItem={renderListItem}
+        style={styles.content}
+        contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
+        removeClippedSubviews
+        initialNumToRender={10}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        updateCellsBatchingPeriod={50}
+        ListEmptyComponent={
           <View style={styles.emptyState}>
             <FileText size={48} color={theme.colors.border} />
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
@@ -320,8 +397,8 @@ export default function NotesScreen() {
                 : 'Tap the + button to create your first note'}
             </Text>
           </View>
-        )}
-      </ScrollView>
+        }
+      />
 
       <TouchableOpacity
         style={[styles.fab, { backgroundColor: theme.colors.primary }]}
@@ -464,22 +541,23 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 16,
   },
-  section: {
-    marginBottom: 24,
+  listContent: {
+    padding: 16,
+    paddingBottom: 24,
+  },
+  sectionHeader: {
+    marginBottom: 12,
+    marginTop: 8,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '600',
-    marginBottom: 12,
-  },
-  notesGrid: {
-    gap: 12,
   },
   noteCard: {
     borderRadius: 16,
     padding: 16,
+    marginBottom: 12,
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
@@ -556,6 +634,36 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
     paddingHorizontal: 32,
+  },
+  swipeActions: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    marginBottom: 12,
+  },
+  swipeActionButton: {
+    minWidth: 86,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+  },
+  swipePinAction: {
+    backgroundColor: '#FFE082',
+    borderTopLeftRadius: 12,
+    borderBottomLeftRadius: 12,
+  },
+  swipeDeleteAction: {
+    backgroundColor: '#F44336',
+    borderTopRightRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  swipeActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4a4a4a',
+  },
+  swipeDeleteText: {
+    color: '#fff',
   },
   fab: {
     position: 'absolute',

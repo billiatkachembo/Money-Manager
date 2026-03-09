@@ -6,6 +6,7 @@ import {
 } from './farming';
 import { InsightContext } from './insights';
 import { computeBudgetSpendingForDate, getActiveBudgets } from './budgeting';
+import { deriveAccountBalance, roundCurrency } from './ledger';
 
 export interface MonthlySummary {
   month: string;
@@ -46,6 +47,30 @@ export interface AnalyticsQuickStats {
   expenses: number;
 }
 
+export interface NetWorthPoint {
+  month: string;
+  label: string;
+  netWorth: number;
+  assets: number;
+  liabilities: number;
+}
+
+export interface NetWorthProgress {
+  labels: string[];
+  netWorth: number[];
+  cumulativeGrowth: number[];
+  monthOverMonthChange: number[];
+  assets: number[];
+  liabilities: number[];
+  points: NetWorthPoint[];
+  baselineNetWorth: number;
+  currentNetWorth: number;
+  currentCumulativeGrowth: number;
+  previousNetWorth: number;
+  monthlyChange: number;
+  monthlyChangeRate: number | null;
+}
+
 export interface BehaviorMetrics {
   monthly: MonthlySummary[];
   currentMonth: MonthlySummary;
@@ -62,6 +87,14 @@ function buildMonthWindow(months: number, referenceDate: Date): string[] {
     const date = new Date(referenceDate.getFullYear(), referenceDate.getMonth() - (months - 1 - index), 1);
     return monthKey(date);
   });
+}
+
+function parseMonthKey(key: string): { year: number; month: number } {
+  const [yearPart, monthPart] = key.split('-');
+  return {
+    year: Number(yearPart),
+    month: Number(monthPart),
+  };
 }
 
 function computeMonthlySummaries(
@@ -213,6 +246,94 @@ function computeLiquidBalance(accounts: Account[]): number {
   return accounts
     .filter((account) => account.type !== 'credit' && account.isActive !== false)
     .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+}
+
+export function computeNetWorthProgress(
+  accounts: Account[],
+  transactions: Transaction[],
+  months = 6,
+  referenceDate: Date = new Date()
+): NetWorthProgress {
+  const normalizedMonths = Number.isFinite(months) ? Math.floor(months) : 6;
+  const safeMonths = Math.max(1, Math.min(24, normalizedMonths || 1));
+  const activeAccounts = accounts.filter((account) => account.isActive !== false);
+  const monthKeys = buildMonthWindow(safeMonths, referenceDate);
+  const labels = monthKeys.map((key) => {
+    const { year, month } = parseMonthKey(key);
+    return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short' });
+  });
+
+  const orderedTransactions = [...transactions].sort((left, right) => left.date.getTime() - right.date.getTime());
+  const scopedTransactions: Transaction[] = [];
+  let transactionIndex = 0;
+
+  const points: NetWorthPoint[] = monthKeys.map((key, index) => {
+    const { year, month } = parseMonthKey(key);
+    const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
+    const periodCutoff = index === monthKeys.length - 1 ? referenceDate : monthEnd;
+    const monthEndTime = periodCutoff.getTime();
+
+    while (
+      transactionIndex < orderedTransactions.length &&
+      orderedTransactions[transactionIndex].date.getTime() <= monthEndTime
+    ) {
+      scopedTransactions.push(orderedTransactions[transactionIndex]);
+      transactionIndex += 1;
+    }
+
+    let assets = 0;
+    let liabilities = 0;
+
+    for (const account of activeAccounts) {
+      const balance = deriveAccountBalance(account.id, scopedTransactions);
+      if (balance >= 0) {
+        assets += balance;
+      } else {
+        liabilities += Math.abs(balance);
+      }
+    }
+
+    assets = roundCurrency(assets);
+    liabilities = roundCurrency(liabilities);
+
+    return {
+      month: key,
+      label: labels[index],
+      netWorth: roundCurrency(assets - liabilities),
+      assets,
+      liabilities,
+    };
+  });
+
+  const netWorth = points.map((point) => point.netWorth);
+  const baselineNetWorth = netWorth[0] ?? 0;
+  const cumulativeGrowth = netWorth.map((value) => roundCurrency(value - baselineNetWorth));
+  const monthOverMonthChange = netWorth.map((value, index) =>
+    index === 0 ? 0 : roundCurrency(value - netWorth[index - 1])
+  );
+  const assets = points.map((point) => point.assets);
+  const liabilities = points.map((point) => point.liabilities);
+  const currentNetWorth = netWorth[netWorth.length - 1] ?? 0;
+  const currentCumulativeGrowth = cumulativeGrowth[cumulativeGrowth.length - 1] ?? 0;
+  const previousNetWorth = netWorth[netWorth.length - 2] ?? 0;
+  const monthlyChange = roundCurrency(currentNetWorth - previousNetWorth);
+  const monthlyChangeRate = previousNetWorth !== 0 ? monthlyChange / Math.abs(previousNetWorth) : null;
+
+  return {
+    labels,
+    netWorth,
+    cumulativeGrowth,
+    monthOverMonthChange,
+    assets,
+    liabilities,
+    points,
+    baselineNetWorth,
+    currentNetWorth,
+    currentCumulativeGrowth,
+    previousNetWorth,
+    monthlyChange,
+    monthlyChangeRate,
+  };
 }
 
 export function computeExpenseCategoryBreakdown(

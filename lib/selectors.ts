@@ -1,9 +1,11 @@
-import { Transaction, Budget, Account, FinancialGoal, HealthMetrics } from '@/types/transaction';
+import { Transaction, Budget, Account, FinancialGoal, FinancialHealthMetrics } from '@/types/transaction';
 import { deriveNetBalance, getMonthlyIncome, getMonthlyExpenses } from './ledger';
 import { computeFinancialHealthScore, deriveHealthMetrics } from './health-score';
 import { getBudgetRiskSummary } from './budget';
 import { hasFarmActivity, getSeasonalFarmSummary, getFarmProfitEstimate, FARM_EXPENSE_CATEGORY_IDS, FARM_INCOME_CATEGORY_IDS } from './farming';
 import { generateInsights } from './insights';
+
+type HealthMetrics = FinancialHealthMetrics;
 
 export interface HomeSnapshot {
   netBalance: number;

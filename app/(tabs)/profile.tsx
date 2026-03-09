@@ -13,8 +13,6 @@ import {
   Alert,
   Linking,
   Platform,
-  ActivityIndicator,
-  Share,
 } from 'react-native';
 import { 
   User, 
@@ -36,7 +34,6 @@ import {
   MessageCircle,
   ExternalLink,
   CheckCircle,
-  AlertCircle,
   Lock,
   Eye,
   Key,
@@ -53,6 +50,7 @@ import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupRestoreModal';
 
 interface UserProfile {
   name: string;
@@ -128,6 +126,7 @@ export default function ProfileScreen() {
   const [editForm, setEditForm] = useState<UserProfile>(userProfile);
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState<string>('');
+  const [backupHistory, setBackupHistory] = useState<BackupHistoryItem[]>([]);
 
   const currencies = CURRENCY_OPTIONS;
 
@@ -189,8 +188,10 @@ export default function ProfileScreen() {
 
     return compact ? `${minutes}m` : `After ${minutes} minutes`;
   };
-
+  const twoFactorEnabled = settings?.security?.twoFactorEnabled ?? false;
   const selectedAutoLockValue = normalizeAutoLockValue(settings.security?.autoLock);
+  const autoLockLabel = getAutoLockLabel(selectedAutoLockValue);
+  const autoLockShort = getAutoLockLabel(selectedAutoLockValue, true);
   const memberSinceDate = settings.firstUsedAt ?? userProfile.joinDate;
   const selectedCurrencyCode = (settings.currency || 'ZMW').toUpperCase();
 
@@ -203,30 +204,16 @@ export default function ProfileScreen() {
   const openImportModal = (format: 'json' | 'csv') => {
     setImportFormat(format);
     setImportText('');
-    setShowImportModal(true);
-  };
 
-  const sharePayload = async (
-    title: string,
-    message: string,
-    successMessage: string,
-    onSuccess?: () => void
-  ) => {
-    try {
-      await Share.share({
-        title,
-        message,
-      });
-
-      onSuccess?.();
-      setBackupStatus('success');
-      setBackupMessage(successMessage);
-      resetBackupStatus();
-    } catch (error) {
-      console.error('Share export error:', error);
-      setBackupStatus('error');
-      setBackupMessage('Failed to open the share sheet. Please try again.');
+    if (showBackupRestore) {
+      setShowBackupRestore(false);
+      setTimeout(() => {
+        setShowImportModal(true);
+      }, 180);
+      return;
     }
+
+    setShowImportModal(true);
   };
 
   const shareFilePayload = async (
@@ -249,7 +236,12 @@ export default function ProfileScreen() {
       await Sharing.shareAsync(file.uri, {
         dialogTitle: title,
         mimeType,
-        UTI: mimeType === 'text/csv' ? 'public.comma-separated-values-text' : undefined,
+        UTI:
+          mimeType === 'text/csv'
+            ? 'public.comma-separated-values-text'
+            : mimeType === 'application/json'
+              ? 'public.json'
+              : undefined,
       });
 
       onSuccess?.();
@@ -266,6 +258,7 @@ export default function ProfileScreen() {
     setBackupStatus('backingup');
     setBackupMessage('Preparing JSON backup...');
 
+    const exportedAt = new Date();
     const dataToExport = {
       transactions: allTransactions,
       accounts,
@@ -276,18 +269,28 @@ export default function ProfileScreen() {
       financialGoals,
       userProfile,
       recurringRules,
-      exportDate: new Date().toISOString(),
+      exportDate: exportedAt.toISOString(),
       totalTransactions: transactions.length,
       appVersion: '2.0.0',
       schemaVersion: '2.0',
     };
 
     const jsonString = JSON.stringify(dataToExport, null, 2);
-    await sharePayload(
-      'Money Manager Backup',
+    const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+    const backupFileName = `money-manager-backup-${timestamp}.json`;
+    await shareFilePayload(
+      'Money Manager Backup JSON',
+      backupFileName,
       jsonString,
-      'JSON backup exported successfully.',
-      () => updateSettings({ lastBackupDate: new Date() })
+      'application/json',
+      'JSON file exported successfully.',
+      () => {
+        updateSettings({ lastBackupDate: exportedAt });
+        setBackupHistory((previous) => [
+          { timestamp: exportedAt.getTime(), filename: backupFileName },
+          ...previous,
+        ].slice(0, 5));
+      }
     );
   };
 
@@ -298,18 +301,38 @@ export default function ProfileScreen() {
     const exportedAt = new Date();
     const csvString = exportTransactionsToCsv(transactions);
     const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+    const backupFileName = `money-manager-transactions-${timestamp}.csv`;
     await shareFilePayload(
       'Money Manager Transactions CSV',
-      `money-manager-transactions-${timestamp}.csv`,
+      backupFileName,
       csvString,
       'text/csv',
       'CSV file exported successfully.',
-      () => updateSettings({ lastBackupDate: exportedAt })
+      () => {
+        updateSettings({ lastBackupDate: exportedAt });
+        setBackupHistory((previous) => [
+          { timestamp: exportedAt.getTime(), filename: backupFileName },
+          ...previous,
+        ].slice(0, 5));
+      }
     );
   };
 
   const handleImportData = () => openImportModal('json');
   const handleImportCsv = () => openImportModal('csv');
+  const handleRestoreFromHistoryItem = (_item: BackupHistoryItem) => {
+    Alert.alert(
+      'Restore Backup',
+      'Use Import JSON and paste the selected backup payload to restore data.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Open Import',
+          onPress: () => openImportModal('json'),
+        },
+      ]
+    );
+  };
 
   const handleJsonImport = async (jsonString: string) => {
     try {
@@ -380,8 +403,10 @@ export default function ProfileScreen() {
       setBackupMessage('Parsing CSV transactions...');
 
       const parsed = parseTransactionsFromCsv(csvString, importCategories);
+
       if (parsed.transactions.length === 0) {
-        throw new Error(parsed.errors[0] ?? 'No valid transactions found in the CSV payload.');
+        const errorMessage = parsed.errors[0]?.message ?? 'No valid transactions found in the CSV payload.';
+        throw new Error(errorMessage);
       }
 
       const result = importTransactionsBatch(parsed.transactions);
@@ -397,7 +422,11 @@ export default function ProfileScreen() {
       resetBackupStatus();
 
       if (skippedCount > 0 || parsed.errors.length > 0) {
-        const errorPreview = parsed.errors.slice(0, 3).join('\n');
+        const errorPreview = parsed.errors
+          .slice(0, 3)
+          .map((error) => `Row ${error.row}: ${error.message}`)
+          .join('\n');
+
         Alert.alert(
           'CSV Import Complete',
           errorPreview ? `${summaryMessage}\n\n${errorPreview}` : summaryMessage
@@ -407,6 +436,11 @@ export default function ProfileScreen() {
       console.error('CSV import error:', error);
       setBackupStatus('error');
       setBackupMessage(error instanceof Error ? error.message : 'Failed to import CSV transactions.');
+
+      Alert.alert(
+        'Import Failed',
+        error instanceof Error ? error.message : 'Failed to import CSV transactions.'
+      );
     }
   };
 
@@ -442,6 +476,10 @@ export default function ProfileScreen() {
       console.log('Google Drive Backup Data:', JSON.stringify(dataToExport, null, 2));
       
       updateSettings({ lastBackupDate: new Date() });
+      setBackupHistory((previous) => [
+        { timestamp: Date.now(), filename: 'Google Drive backup' },
+        ...previous,
+      ].slice(0, 5));
       setBackupStatus('success');
       setBackupMessage(`Backup completed! ${transactions.length} transactions saved to Google Drive.`);
       
@@ -474,7 +512,7 @@ export default function ProfileScreen() {
             onPress: async () => {
               try {
                 setBackupMessage('Downloading and restoring data...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await new Promise(resolve => setTimeout(resolve, 5000));
                 setBackupStatus('success');
                 setBackupMessage('Data restored successfully from Google Drive!');
                 setTimeout(() => {
@@ -876,148 +914,246 @@ export default function ProfileScreen() {
         <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Made with Billiat</Text>
       </View>
       
-      {/* App Settings Modal */}
-      <Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet">
-        <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-          <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
-            <TouchableOpacity onPress={() => setShowSettings(false)}>
-              <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>Done</Text>
-            </TouchableOpacity>
-            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>App Settings</Text>
-            <View style={styles.spacer} />
+{/* App Settings Modal */}
+<Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet">
+  <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
+    
+    <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
+      <TouchableOpacity onPress={() => setShowSettings(false)}>
+        <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>
+          Done
+        </Text>
+      </TouchableOpacity>
+
+      <Text style={[styles.modalTitle, { color: theme.colors.text }]}>
+        App Settings
+      </Text>
+                
+      <View style={styles.spacer} />
+    </View>
+
+    <ScrollView style={styles.modalContent}>
+
+      {/* Notifications Section */}
+<View style={styles.settingsSection}>
+  <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
+    Notifications
+  </Text>
+
+  <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
+    <View style={styles.settingInfo}>
+      <Bell size={20} color="#667eea" />
+
+      <View style={styles.settingText}>
+        <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+          Push Notifications
+        </Text>
+        <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+          Receive alerts for transactions
+        </Text>
+      </View>
+    </View>
+
+    <Switch
+      value={!!settings.notifications}
+      onValueChange={(value) => updateSetting("notifications", value)}
+      trackColor={{ false: "#e0e0e0", true: "#667eea" }}
+      thumbColor={settings.notifications ? "#fff" : "#f4f3f4"}
+      ios_backgroundColor="#e0e0e0"
+    />
+  </View>
+</View>
+
+      {/* Profile */}
+      <View style={styles.settingsSection}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
+          Profile
+        </Text>
+
+        <TouchableOpacity
+          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+          onPress={() => openSettingsDestination(openEditProfile)}
+        >
+          <View style={styles.settingInfo}>
+            <Edit3 size={20} color="#667eea" />
+
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                Edit Profile
+              </Text>
+
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                Update your personal details
+              </Text>
+            </View>
           </View>
-          
-          <ScrollView style={styles.modalContent}>
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Notifications</Text>
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Bell size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Push Notifications</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Receive alerts for transactions</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.notifications}
-                  onValueChange={(value) => updateSetting('notifications', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                  thumbColor={settings.notifications ? '#fff' : '#f4f3f4'}
-                />
-              </View>
+
+          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
+            Open
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+          onPress={() => openSettingsDestination(() => setShowLanguagePicker(true))}
+        >
+          <View style={styles.settingInfo}>
+            <Globe size={20} color="#667eea" />
+
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                Language
+              </Text>
+
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                {languages.find(l => l.code === settings.language)?.name ?? settings.language}
+              </Text>
             </View>
+          </View>
 
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Profile</Text>
+          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
+            {settings.language?.toUpperCase()}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => openSettingsDestination(openEditProfile)}
-              >
-                <View style={styles.settingInfo}>
-                  <Edit3 size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Edit Profile</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Update your personal details</Text>
-                  </View>
-                </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
-              </TouchableOpacity>
+      {/* Privacy & Backup */}
+      <View style={styles.settingsSection}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
+          Privacy & Backup
+        </Text>
 
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => openSettingsDestination(() => setShowLanguagePicker(true))}
-              >
-                <View style={styles.settingInfo}>
-                  <Globe size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Language</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                      {languages.find(l => l.code === settings.language)?.name || settings.language}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>{settings.language.toUpperCase()}</Text>
-              </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+          onPress={() => openSettingsDestination(() => setShowBackupRestore(true))}
+        >
+          <View style={styles.settingInfo}>
+            <Download size={20} color="#667eea" />
+
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                Backup Center
+              </Text>
+
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                Manage JSON, CSV, and Drive backups
+              </Text>
             </View>
+          </View>
 
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Privacy & Backup</Text>
+          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
+            Open
+          </Text>
+        </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => openSettingsDestination(() => setShowBackupRestore(true))}
-              >
-                <View style={styles.settingInfo}>
-                  <Download size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Backup Center</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Manage JSON, CSV, and Drive backups</Text>
-                  </View>
-                </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
-              </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+          onPress={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
+        >
+          <View style={styles.settingInfo}>
+            <Shield size={20} color="#667eea" />
 
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
-              >
-                <View style={styles.settingInfo}>
-                  <Shield size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Privacy</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Review privacy and security controls</Text>
-                  </View>
-                </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>Open</Text>
-              </TouchableOpacity>
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                Privacy
+              </Text>
 
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => {
-                  setShowSettings(false);
-                  setTimeout(handleClearData, 250);
-                }}
-              >
-                <View style={styles.settingInfo}>
-                  <Trash2 size={20} color="#F44336" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: '#F44336' }]}>Clear Data</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Permanently delete transactions and accounts</Text>
-                  </View>
-                </View>
-                <Text style={[styles.settingValue, { color: '#F44336' }]}>Reset</Text>
-              </TouchableOpacity>
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                Review privacy and security controls
+              </Text>
             </View>
+          </View>
 
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Backup</Text>
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Download size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Auto Backup</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Automatically backup to Google Drive</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.autoBackup}
-                  onValueChange={(value) => updateSetting('autoBackup', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                  thumbColor={settings.autoBackup ? '#fff' : '#f4f3f4'}
-                />
-              </View>
-              {settings.lastBackupDate && (
-                <View style={styles.lastBackupInfo}>
-                  <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>
-                    Last backup: {settings.lastBackupDate.toLocaleDateString()} at {settings.lastBackupDate.toLocaleTimeString()}
-                  </Text>
-                </View>
-              )}
+          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
+            Open
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+          onPress={() => {
+            setShowSettings(false);
+            setTimeout(handleClearData, 250);
+          }}
+        >
+          <View style={styles.settingInfo}>
+            <Trash2 size={20} color="#F44336" />
+
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: "#F44336" }]}>
+                Clear Data
+              </Text>
+
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                Permanently delete transactions and accounts
+              </Text>
             </View>
-          </ScrollView>
+          </View>
+
+          <Text style={[styles.settingValue, { color: "#F44336" }]}>
+            Reset
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Backup */}
+      <View style={styles.settingsSection}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
+          Backup
+        </Text>
+
+        <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
+          <View style={styles.settingInfo}>
+            <Download size={20} color="#667eea" />
+
+            <View style={styles.settingText}>
+              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                Auto Backup
+              </Text>
+
+              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                Automatically backup to Google Drive
+              </Text>
+            </View>
+          </View>
+
+          <Switch
+            value={!!settings.autoBackup}
+            onValueChange={(value) => updateSetting("autoBackup", value)}
+            trackColor={{ false: "#e0e0e0", true: "#667eea" }}
+            thumbColor={settings.autoBackup ? "#fff" : "#f4f3f4"}
+          />
         </View>
-      </Modal>
+
+        {settings.lastBackupDate && (
+          <View style={styles.lastBackupInfo}>
+            <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>
+              Last backup: {settings.lastBackupDate.toLocaleDateString()} at{" "}
+              {settings.lastBackupDate.toLocaleTimeString()}
+            </Text>
+          </View>
+        )}
+      </View>
+
+    </ScrollView>
+  </View>
+</Modal>
+
+      <BackupRestoreModal
+        show={showBackupRestore}
+        setShow={setShowBackupRestore}
+        theme={theme}
+        backupStatus={backupStatus}
+        backupMessage={backupMessage}
+        onExportData={handleExportData}
+        onImportData={handleImportData}
+        onExportCsv={handleExportCsv}
+        onImportCsv={handleImportCsv}
+        onBackupToGoogleDrive={handleBackupToGoogleDrive}
+        onRestoreFromGoogleDrive={handleRestoreFromGoogleDrive}
+        backupHistory={backupHistory}
+        onRestoreHistoryItem={handleRestoreFromHistoryItem}
+      />
 
       {/* Currency Picker Modal */}
       <Modal visible={showCurrencyPicker} animationType="slide" transparent={true}>
@@ -1114,134 +1250,6 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
-
-      {/* Backup & Restore Modal */}
-      <Modal visible={showBackupRestore} animationType="slide" presentationStyle="pageSheet">
-        <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-          <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
-            <TouchableOpacity onPress={() => setShowBackupRestore(false)}>
-              <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Backup & Restore</Text>
-            <View style={styles.spacer} />
-          </View>
-          
-          <ScrollView style={styles.modalContent}>
-            {/* Backup Status Display */}
-            {backupStatus !== 'idle' && (
-              <View style={[
-                styles.statusContainer,
-                backupStatus === 'success' && styles.statusSuccess,
-                backupStatus === 'error' && styles.statusError,
-                (backupStatus === 'backingup' || backupStatus === 'restoring') && styles.statusProcessing
-              ]}>
-                {backupStatus === 'success' && <CheckCircle size={24} color="#4CAF50" />}
-                {backupStatus === 'error' && <AlertCircle size={24} color="#F44336" />}
-                {(backupStatus === 'backingup' || backupStatus === 'restoring') && (
-                  <ActivityIndicator size="small" color="#667eea" />
-                )}
-                <Text style={[
-                  styles.statusText,
-                  { color: backupStatus === 'success' ? '#4CAF50' : backupStatus === 'error' ? '#F44336' : theme.colors.text }
-                ]}>
-                  {backupMessage}
-                </Text>
-              </View>
-            )}
-
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Google Drive Backup</Text>
-              
-              <TouchableOpacity 
-                style={[styles.backupButton, { backgroundColor: theme.colors.primary }]}
-                onPress={handleBackupToGoogleDrive}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Download size={20} color="#fff" />
-                <Text style={styles.backupButtonText}>Backup to Google Drive</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={[styles.backupButton, styles.restoreButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-                onPress={handleRestoreFromGoogleDrive}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Download size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Restore from Google Drive</Text>
-              </TouchableOpacity>
-
-              <View style={styles.backupInfo}>
-                <Text style={[styles.backupInfoTitle, { color: theme.colors.text }]}>What gets backed up?</Text>
-                <View style={styles.backupInfoItem}>
-                  <CheckCircle size={16} color="#4CAF50" />
-                  <Text style={[styles.backupInfoText, { color: theme.colors.textSecondary }]}>All transactions</Text>
-                </View>
-                <View style={styles.backupInfoItem}>
-                  <CheckCircle size={16} color="#4CAF50" />
-                  <Text style={[styles.backupInfoText, { color: theme.colors.textSecondary }]}>User profile</Text>
-                </View>
-                <View style={styles.backupInfoItem}>
-                  <CheckCircle size={16} color="#4CAF50" />
-                  <Text style={[styles.backupInfoText, { color: theme.colors.textSecondary }]}>App settings</Text>
-                </View>
-              </View>
-            </View>
-
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Local Backup</Text>
-              
-              <TouchableOpacity 
-                style={[styles.backupButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-                onPress={handleExportData}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Download size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Export Full Backup JSON</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[styles.backupButton, styles.restoreButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-                onPress={handleImportData}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Database size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Import Full Backup JSON</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[styles.backupButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-                onPress={handleExportCsv}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Download size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Export Transactions CSV</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={[styles.backupButton, styles.restoreButton, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-                onPress={handleImportCsv}
-                disabled={backupStatus === 'backingup' || backupStatus === 'restoring'}
-              >
-                <Database size={20} color={theme.colors.primary} />
-                <Text style={[styles.backupButtonText, { color: theme.colors.primary }]}>Import Transactions CSV</Text>
-              </TouchableOpacity>
-              
-              <Text style={[styles.backupSubtitle, { color: theme.colors.textSecondary }]}>
-                JSON restores the full app snapshot. CSV import is transaction-only from pasted text, and CSV export shares a real .csv file.
-              </Text>
-            </View>
-
-            {settings.lastBackupDate && (
-              <View style={styles.lastBackupInfo}>
-                <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>
-                  Last backup: {settings.lastBackupDate.toLocaleDateString()} at {settings.lastBackupDate.toLocaleTimeString()}
-                </Text>
-              </View>
-            )}
-          </ScrollView>
-        </View>
-      </Modal>
-
       <Modal visible={showImportModal} animationType="slide" presentationStyle="pageSheet">
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -1420,36 +1428,63 @@ export default function ProfileScreen() {
                 />
               </View>
 
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <ShieldIcon size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Two-Factor Authentication</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Add extra security to your account</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.security?.twoFactorEnabled || false}
-                  onValueChange={handleTwoFactorToggle}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
+              
 
-              <TouchableOpacity 
+<View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
+  <View style={styles.settingInfo}>
+    <ShieldIcon size={20} color="#667eea" />
+
+    <View style={styles.settingText}>
+      <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+        Two-Factor Authentication
+      </Text>
+
+      <Text
+        style={[
+          styles.settingSubtitle,
+          { color: theme.colors.textSecondary }
+        ]}
+      >
+        Add extra security to your account
+      </Text>
+    </View>
+  </View>
+
+  <Switch
+    value={twoFactorEnabled}
+    onValueChange={handleTwoFactorToggle}
+    trackColor={{ false: "#e0e0e0", true: "#667eea" }}
+  />
+</View>
+
+              <TouchableOpacity
                 style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
                 onPress={() => setShowAutoLockPicker(true)}
               >
                 <View style={styles.settingInfo}>
                   <Clock size={20} color="#667eea" />
                   <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Auto Lock</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                      {getAutoLockLabel(settings.security?.autoLock)}
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
+                      Auto Lock
+                    </Text>
+                    <Text
+                      style={[
+                        styles.settingSubtitle,
+                        { color: theme.colors.textSecondary },
+                      ]}
+                    >
+                      {autoLockLabel}
                     </Text>
                   </View>
                 </View>
-                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-                  {getAutoLockLabel(settings.security?.autoLock, true)}
+
+                <Text
+                  style={[
+                    styles.settingValue,
+                    { color: theme.colors.textSecondary },
+                  ]}
+                >
+                  {autoLockShort}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -2027,6 +2062,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     gap: 12,
     borderWidth: 1,
+  },
+  dataActionButtonDisabled: {
+    opacity: 0.6,
   },
   dataActionText: {
     fontSize: 16,

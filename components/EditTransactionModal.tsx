@@ -30,7 +30,7 @@ interface EditTransactionModalProps {
 
 export function EditTransactionModal({ visible, transaction, onClose, onSave }: EditTransactionModalProps) {
   const { theme } = useTheme();
-  const { updateTransaction } = useTransactionStore();
+  const { updateTransaction, formatCurrency, transactions } = useTransactionStore();
   
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
@@ -88,6 +88,85 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
 
     return displayedCategories.filter((category) => category.name.toLowerCase().includes(query));
   }, [categorySearch, displayedCategories]);
+
+  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer') => {
+    setType(nextType);
+    setSelectedCategory(null);
+    setCategorySearch('');
+  };
+
+  const handleCategorySelect = (category: TransactionCategory) => {
+    setSelectedCategory(category);
+    setCategorySearch(category.name);
+  };
+
+  const spendingInsight = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+    const today = Math.max(1, Math.min(now.getDate(), totalDays));
+    const remainingDays = Math.max(totalDays - today + 1, 1);
+
+    const monthStart = new Date(year, month, 1);
+    monthStart.setHours(0, 0, 0, 0);
+    const nextMonthStart = new Date(year, month + 1, 1);
+    nextMonthStart.setHours(0, 0, 0, 0);
+
+    const parsedDraftAmount = Number.parseFloat(amount);
+    const draftAmount = Number.isFinite(parsedDraftAmount) ? Math.abs(parsedDraftAmount) : 0;
+    const draftDate = Number.isNaN(date.getTime()) ? now : date;
+
+    let netBalance = 0;
+    let monthExpenses = 0;
+
+    for (const entry of transactions) {
+      const isEditedTransaction = entry.id === transaction.id;
+      const effectiveType = isEditedTransaction ? type : entry.type;
+      const rawAmount = isEditedTransaction ? draftAmount : Number(entry.amount);
+      const effectiveAmount = Number.isFinite(rawAmount) ? Math.abs(rawAmount) : 0;
+      const effectiveDate = isEditedTransaction ? draftDate : entry.date;
+
+      if (effectiveAmount <= 0 || Number.isNaN(effectiveDate.getTime())) {
+        continue;
+      }
+
+      if (effectiveType === 'income') {
+        netBalance += effectiveAmount;
+        continue;
+      }
+
+      if (effectiveType === 'expense') {
+        netBalance -= effectiveAmount;
+        if (effectiveDate >= monthStart && effectiveDate < nextMonthStart && effectiveDate <= now) {
+          monthExpenses += effectiveAmount;
+        }
+      }
+    }
+
+    const dailySafeSpend = netBalance > 0 ? netBalance / remainingDays : 0;
+    const dailyExpenseRate = monthExpenses / today;
+    const daysUntilBroke = dailyExpenseRate > 0 ? Math.max(netBalance, 0) / dailyExpenseRate : Infinity;
+
+    return {
+      remainingDays,
+      dailySafeSpend,
+      daysUntilBroke,
+    };
+  }, [amount, date, transaction.id, transactions, type]);
+
+  const formattedDailySafeSpend = useMemo(
+    () => formatCurrency(Math.max(0, spendingInsight.dailySafeSpend)),
+    [formatCurrency, spendingInsight.dailySafeSpend]
+  );
+
+  const daysUntilBrokeLabel = useMemo(() => {
+    if (!Number.isFinite(spendingInsight.daysUntilBroke)) {
+      return '∞';
+    }
+
+    return Math.max(0, Math.floor(spendingInsight.daysUntilBroke)).toString();
+  }, [spendingInsight.daysUntilBroke]);
 
   const handleDateChange = (event: any, selectedDate?: Date) => {
     setShowDatePicker(false);
@@ -197,10 +276,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   styles.typeButton,
                   type === 'expense' && { backgroundColor: theme.colors.surface }
                 ]}
-                onPress={() => {
-                  setType('expense');
-                  setSelectedCategory(null);
-                }}
+                onPress={() => handleTypeChange('expense')}
               >
                 <Text style={[
                   styles.typeButtonText,
@@ -214,10 +290,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   styles.typeButton,
                   type === 'income' && { backgroundColor: theme.colors.surface }
                 ]}
-                onPress={() => {
-                  setType('income');
-                  setSelectedCategory(null);
-                }}
+                onPress={() => handleTypeChange('income')}
               >
                 <Text style={[
                   styles.typeButtonText,
@@ -231,7 +304,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   styles.typeButton,
                   type === 'transfer' && { backgroundColor: theme.colors.surface }
                 ]}
-                onPress={() => setType('transfer')}
+                onPress={() => handleTypeChange('transfer')}
               >
                 <ArrowLeftRight size={16} color={type === 'transfer' ? theme.colors.text : theme.colors.textSecondary} />
                 <Text style={[
@@ -323,7 +396,26 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
               </View>
             )}
           </View>
-
+          {/* Spending Insights */}
+          <View style={[styles.spendingInsightContainer, { backgroundColor: theme.colors.surface }]}>
+            <View style={styles.spendingInsightContent}>
+              <Text style={[styles.spendingInsightLabel, { color: theme.colors.textSecondary }]}>Daily Safe Spend</Text>
+              <Text style={[styles.spendingInsightValue, { color: theme.colors.text }]}>
+                {formattedDailySafeSpend} / day
+              </Text>
+              <Text style={[styles.spendingInsightHint, { color: theme.colors.textSecondary }]}>
+                {spendingInsight.remainingDays} days left this month
+              </Text>
+              <Text
+                style={[
+                  styles.spendingInsightDays,
+                  { color: spendingInsight.daysUntilBroke <= 7 ? '#FF5252' : theme.colors.text },
+                ]}
+              >
+                {daysUntilBrokeLabel} days until balance reaches zero
+              </Text>
+            </View>
+          </View>
           {/* Description */}
           <View style={styles.inputGroup}>
             <Text style={[styles.label, { color: theme.colors.text }]}>Description</Text>
@@ -369,7 +461,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                           styles.categoryItem,
                           { backgroundColor: theme.colors.surface, borderColor: isSelected ? theme.colors.primary : category.color }
                         ]}
-                        onPress={() => setSelectedCategory(category)}
+                        onPress={() => handleCategorySelect(category)}
                       >
                         <View style={[styles.categoryIcon, { backgroundColor: category.color + '20' }]}>
                           <IconComponent size={20} color={category.color} />
@@ -419,6 +511,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  
   closeButton: {
     padding: 4,
   },
@@ -428,6 +521,39 @@ const styles = StyleSheet.create({
   },
   inputGroup: {
     marginBottom: 24,
+  },
+  spendingInsightContainer: {
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.1)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  spendingInsightContent: {
+    borderRadius: 12,
+    padding: 12,
+  },
+  spendingInsightLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  spendingInsightValue: {
+    marginTop: 2,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  spendingInsightHint: {
+    fontSize: 12,
+  },
+  spendingInsightDays: {
+    marginTop: 8,
+    fontSize: 14,
+    fontWeight: '500',
   },
   label: {
     fontSize: 16,
@@ -591,4 +717,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-

@@ -29,6 +29,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { TransactionItem } from '@/components/TransactionItem';
 import { AddTransactionModal } from '@/components/AddTransactionModal';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
+import { SmartInsightsCard } from '@/components/dashboard/SmartInsightsCard';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
@@ -394,6 +395,12 @@ export default function HomeScreen() {
             </View>
           </View>
         </LinearGradient>
+
+        <SmartInsightsCard
+          balance={netBalance}
+          income={monthlyIncome}
+          expenses={monthlyExpenses}
+        />
 
         <View style={styles.metricsRow}>
           <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>

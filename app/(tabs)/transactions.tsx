@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   View,
   Text,
   StyleSheet,
@@ -27,6 +28,20 @@ export default function TransactionsScreen() {
   const [filter, setFilter] = useState<'all' | TransactionType>('all');
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const insets = useSafeAreaInsets();
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  const hasMountedRef = useRef(false);
+
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+
+    Animated.sequence([
+      Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+    ]).start();
+  }, [fadeAnim, filter]);
 
   const filteredTransactions = useMemo(
     () => transactions.filter((transaction) => (filter === 'all' ? true : transaction.type === filter)),
@@ -68,11 +83,14 @@ export default function TransactionsScreen() {
             return (
               <TouchableOpacity
                 key={option.key}
+                activeOpacity={0.7}
                 style={[
                   styles.filterButton,
                   {
                     backgroundColor: isActive ? theme.colors.primary : theme.colors.background,
                     borderColor: isActive ? theme.colors.primary : theme.colors.border,
+                    paddingHorizontal: 20,
+                    paddingVertical: 10,
                   },
                 ]}
                 onPress={() => setFilter(option.key)}
@@ -102,26 +120,28 @@ export default function TransactionsScreen() {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        {filteredTransactions.length === 0 ? (
-          <View style={[styles.emptyState, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-            <Text style={[styles.emptyStateTitle, { color: theme.colors.text }]}>No transactions found</Text>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}> 
-              {filter === 'all' ? 'Start adding transactions to see them here.' : `No ${filter} transactions are available right now.`}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.transactionsList}>
-            {filteredTransactions.map((transaction) => (
-              <TransactionItem
-                key={transaction.id}
-                transaction={transaction}
-                showActions
-                onEdit={() => setEditingTransaction(transaction)}
-                onDelete={() => confirmDeleteTransaction(transaction)}
-              />
-            ))}
-          </View>
-        )}
+        <Animated.View style={{ opacity: fadeAnim }}>
+          {filteredTransactions.length === 0 ? (
+            <View style={[styles.emptyState, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+              <Text style={[styles.emptyStateTitle, { color: theme.colors.text }]}>No transactions found</Text>
+              <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}> 
+                {filter === 'all' ? 'Start adding transactions to see them here.' : `No ${filter} transactions are available right now.`}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.transactionsList}>
+              {filteredTransactions.map((transaction) => (
+                <TransactionItem
+                  key={transaction.id}
+                  transaction={transaction}
+                  showActions
+                  onEdit={() => setEditingTransaction(transaction)}
+                  onDelete={() => confirmDeleteTransaction(transaction)}
+                />
+              ))}
+            </View>
+          )}
+        </Animated.View>
       </ScrollView>
 
       {editingTransaction ? (
@@ -153,10 +173,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   filterText: {
     fontSize: 14,

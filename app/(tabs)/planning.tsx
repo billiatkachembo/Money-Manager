@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Pressable,
   TouchableOpacity,
   TextInput,
   Alert,
@@ -55,6 +56,77 @@ interface BudgetFormState {
   startDate: string;
 }
 
+type CalculatorResult = {
+  title: string;
+  [key: string]: string | number;
+};
+
+const GOAL_ICON_CONFIG = {
+  emergency: { Icon: PiggyBank, color: '#e74c3c' },
+  investment: { Icon: TrendingUp, color: '#27ae60' },
+  debt: { Icon: DollarSign, color: '#f39c12' },
+  savings: { Icon: Target, color: '#3498db' },
+} as const;
+
+const PRIORITY_COLORS: Record<string, string> = {
+  high: '#e74c3c',
+  medium: '#f39c12',
+  low: '#95a5a6',
+};
+
+function parsePositiveNumber(value: string): number | null {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+}
+
+function parseIsoDateInput(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(year, monthIndex, day);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== monthIndex ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+}
+
+function simulateDebtPayoff(principal: number, monthlyPayment: number, annualRate: number) {
+  let balance = principal;
+  let totalMonths = 0;
+  let totalInterest = 0;
+  const monthlyRate = annualRate / 12;
+
+  while (balance > 0 && totalMonths < 600) {
+    const interest = balance * monthlyRate;
+    const principalPayment = monthlyPayment - interest;
+    if (principalPayment <= 0) {
+      return { totalMonths, totalInterest, paidOff: false };
+    }
+
+    balance = Math.max(0, balance - principalPayment);
+    totalInterest += interest;
+    totalMonths += 1;
+  }
+
+  return { totalMonths, totalInterest, paidOff: balance <= 0 };
+}
+
 export default function PlanningScreen() {
   const { theme } = useTheme();
   const {
@@ -71,7 +143,7 @@ export default function PlanningScreen() {
   const [showAddGoal, setShowAddGoal] = useState(false);
   const [showAddBudget, setShowAddBudget] = useState(false);
   const [activeCalculator, setActiveCalculator] = useState<string | null>(null);
-  const [calculatorResult, setCalculatorResult] = useState<any>(null);
+  const [calculatorResult, setCalculatorResult] = useState<CalculatorResult | null>(null);
   const [newGoal, setNewGoal] = useState({
     title: '',
     targetAmount: '',
@@ -145,14 +217,14 @@ export default function PlanningScreen() {
       return;
     }
 
-    const amount = parseFloat(newBudget.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amount = parsePositiveNumber(newBudget.amount);
+    if (!amount) {
       Alert.alert('Error', 'Please enter a valid budget amount');
       return;
     }
 
-    const startDate = new Date(newBudget.startDate);
-    if (Number.isNaN(startDate.getTime())) {
+    const startDate = parseIsoDateInput(newBudget.startDate.trim());
+    if (!startDate) {
       Alert.alert('Error', 'Please enter a valid date in YYYY-MM-DD format');
       return;
     }
@@ -188,68 +260,31 @@ export default function PlanningScreen() {
   };
 
   const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'emergency':
-        return <PiggyBank size={20} color="#e74c3c" />;
-      case 'investment':
-        return <TrendingUp size={20} color="#27ae60" />;
-      case 'debt':
-        return <DollarSign size={20} color="#f39c12" />;
-      default:
-        return <Target size={20} color="#3498db" />;
-    }
+    const config =
+      GOAL_ICON_CONFIG[category as keyof typeof GOAL_ICON_CONFIG] ?? GOAL_ICON_CONFIG.savings;
+    const IconComponent = config.Icon;
+    return <IconComponent size={20} color={config.color} />;
   };
 
   const getPriorityColor = (priority: string) => {
-    switch (priority) {
-      case 'high':
-        return '#e74c3c';
-      case 'medium':
-        return '#f39c12';
-      default:
-        return '#95a5a6';
-    }
+    return PRIORITY_COLORS[priority] ?? PRIORITY_COLORS.low;
   };
 
   const calculateProgress = (current: number, target: number) => {
     return Math.min((current / target) * 100, 100);
   };
 
-  const parseGoalTargetDate = (value: string): Date | null => {
-    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-    if (!match) {
-      return null;
-    }
-
-    const year = Number(match[1]);
-    const monthIndex = Number(match[2]) - 1;
-    const day = Number(match[3]);
-    const parsed = new Date(year, monthIndex, day);
-
-    if (
-      Number.isNaN(parsed.getTime()) ||
-      parsed.getFullYear() !== year ||
-      parsed.getMonth() !== monthIndex ||
-      parsed.getDate() !== day
-    ) {
-      return null;
-    }
-
-    parsed.setHours(0, 0, 0, 0);
-    return parsed;
-  };
-
   const addGoal = () => {
     const trimmedTitle = newGoal.title.trim();
     const trimmedDate = newGoal.targetDate.trim();
-    const targetAmount = parseFloat(newGoal.targetAmount);
+    const targetAmount = parsePositiveNumber(newGoal.targetAmount);
 
     if (!trimmedTitle || !newGoal.targetAmount || !trimmedDate) {
       Alert.alert('Error', 'Please fill in all required fields');
       return;
     }
 
-    if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+    if (!targetAmount) {
       Alert.alert('Error', 'Please enter a valid target amount');
       return;
     }
@@ -259,7 +294,7 @@ export default function PlanningScreen() {
       return;
     }
 
-    const parsedTargetDate = parseGoalTargetDate(trimmedDate);
+    const parsedTargetDate = parseIsoDateInput(trimmedDate);
     if (!parsedTargetDate) {
       Alert.alert('Error', 'Please enter a valid target date');
       return;
@@ -308,16 +343,19 @@ export default function PlanningScreen() {
   };
 
   const calculateInvestment = () => {
-    const principal = parseFloat(calculatorForm.principal);
-    const annualRate = parseFloat(calculatorForm.rateOfReturn) / 100;
-    const years = parseFloat(calculatorForm.years);
+    const principal = parsePositiveNumber(calculatorForm.principal);
+    const annualRatePercent = parsePositiveNumber(calculatorForm.rateOfReturn);
+    const years = parsePositiveNumber(calculatorForm.years);
 
-    if (!principal || !annualRate || !years) {
+    if (!principal || !annualRatePercent || !years) {
       Alert.alert('Error', 'Please enter all investment details');
       return;
     }
 
-    const futureValue = principal * Math.pow(1 + annualRate, years);
+    const annualRate = annualRatePercent / 100;
+    const monthlyRate = annualRate / 12;
+    const totalMonths = years * 12;
+    const futureValue = principal * Math.pow(1 + monthlyRate, totalMonths);
     const totalInterest = futureValue - principal;
     const annualGrowth = (futureValue / principal) ** (1 / years) - 1;
 
@@ -327,6 +365,7 @@ export default function PlanningScreen() {
       totalInterest: formatCurrency(totalInterest),
       annualGrowth: `${(annualGrowth * 100).toFixed(2)}%`,
       years: years,
+      compounding: 'Monthly',
     });
   };
 
@@ -370,8 +409,8 @@ export default function PlanningScreen() {
   };
 
   const calculateDebtPayoff = () => {
-    const principal = parseFloat(calculatorForm.debtAmount);
-    const monthly = parseFloat(calculatorForm.monthlyPayment);
+    const principal = parsePositiveNumber(calculatorForm.debtAmount);
+    const monthly = parsePositiveNumber(calculatorForm.monthlyPayment);
     const annualRate = 0.18; // 18% average credit card interest
     const extra = parseFloat(calculatorForm.extraPayment) || 0;
 
@@ -380,18 +419,12 @@ export default function PlanningScreen() {
       return;
     }
 
-    let balance = principal;
-    let totalMonths = 0;
-    let totalInterest = 0;
-    const monthlyRate = annualRate / 12;
-    const totalPayment = monthly + extra;
-
-    while (balance > 0 && totalMonths < 600) { // Cap at 50 years
-      const interest = balance * monthlyRate;
-      const principalPayment = Math.min(totalPayment - interest, balance);
-      balance -= principalPayment;
-      totalInterest += interest;
-      totalMonths++;
+    const extraPayment = Number.isFinite(extra) && extra > 0 ? extra : 0;
+    const totalPayment = monthly + extraPayment;
+    const minimumInterestOnlyPayment = principal * (annualRate / 12);
+    if (totalPayment <= minimumInterestOnlyPayment) {
+      Alert.alert('Error', 'Monthly payment is too low to reduce this debt balance');
+      return;
     }
 
     type DebtPayoffResult = {
@@ -405,18 +438,34 @@ export default function PlanningScreen() {
       monthsSaved?: number;
     };
 
-    let result: DebtPayoffResult = {
+    const scenarioWithExtra = simulateDebtPayoff(principal, totalPayment, annualRate);
+    if (!scenarioWithExtra.paidOff) {
+      Alert.alert('Error', 'Unable to calculate payoff with the entered values');
+      return;
+    }
+
+    const baselineScenario = simulateDebtPayoff(principal, monthly, annualRate);
+
+    const result: DebtPayoffResult = {
       title: 'Debt Payoff Analysis',
-      totalMonths: totalMonths,
-      totalYears: (totalMonths / 12).toFixed(1),
-      totalInterest: formatCurrency(totalInterest),
-      totalPaid: formatCurrency(principal + totalInterest),
-      payoffDate: new Date(new Date().setMonth(new Date().getMonth() + totalMonths)).toLocaleDateString(),
+      totalMonths: scenarioWithExtra.totalMonths,
+      totalYears: (scenarioWithExtra.totalMonths / 12).toFixed(1),
+      totalInterest: formatCurrency(scenarioWithExtra.totalInterest),
+      totalPaid: formatCurrency(principal + scenarioWithExtra.totalInterest),
+      payoffDate: new Date(
+        new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths)
+      ).toLocaleDateString(),
     };
 
-    if (extra > 0) {
-      result.interestSaved = formatCurrency(principal * 0.18 * (totalMonths / 12) - totalInterest);
-      result.monthsSaved = Math.round((principal * 0.18 * (10/12)) / monthly - totalMonths);
+    if (extraPayment > 0 && baselineScenario.paidOff) {
+      const interestSaved = baselineScenario.totalInterest - scenarioWithExtra.totalInterest;
+      const monthsSaved = baselineScenario.totalMonths - scenarioWithExtra.totalMonths;
+      if (interestSaved > 0) {
+        result.interestSaved = formatCurrency(interestSaved);
+      }
+      if (monthsSaved > 0) {
+        result.monthsSaved = monthsSaved;
+      }
     }
 
     setCalculatorResult(result);
@@ -966,8 +1015,14 @@ export default function PlanningScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <View style={[styles.tabContainer, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
-        <TouchableOpacity
-          style={[styles.tab, activeSection === 'goals' && styles.activeTab]}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Goals tab"
+          style={({ pressed }) => [
+            styles.tab,
+            activeSection === 'goals' && styles.activeTab,
+            pressed && styles.tabPressed,
+          ]}
           onPress={() => setActiveSection('goals')}
         >
           <Target size={20} color={activeSection === 'goals' ? theme.colors.primary : theme.colors.textSecondary} />
@@ -980,10 +1035,16 @@ export default function PlanningScreen() {
           >
             Goals
           </Text>
-        </TouchableOpacity>
+        </Pressable>
 
-        <TouchableOpacity
-          style={[styles.tab, activeSection === 'budgets' && styles.activeTab]}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Budgets tab"
+          style={({ pressed }) => [
+            styles.tab,
+            activeSection === 'budgets' && styles.activeTab,
+            pressed && styles.tabPressed,
+          ]}
           onPress={() => setActiveSection('budgets')}
         >
           <PiggyBank size={20} color={activeSection === 'budgets' ? theme.colors.primary : theme.colors.textSecondary} />
@@ -996,10 +1057,16 @@ export default function PlanningScreen() {
           >
             Budgets
           </Text>
-        </TouchableOpacity>
+        </Pressable>
 
-        <TouchableOpacity
-          style={[styles.tab, activeSection === 'calculator' && styles.activeTab]}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Tools tab"
+          style={({ pressed }) => [
+            styles.tab,
+            activeSection === 'calculator' && styles.activeTab,
+            pressed && styles.tabPressed,
+          ]}
           onPress={() => setActiveSection('calculator')}
         >
           <Calculator size={20} color={activeSection === 'calculator' ? theme.colors.primary : theme.colors.textSecondary} />
@@ -1012,7 +1079,7 @@ export default function PlanningScreen() {
           >
             Tools
           </Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
@@ -1050,6 +1117,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(102, 126, 234, 0.1)',
     borderWidth: 1,
     borderColor: 'rgba(102, 126, 234, 0.3)',
+  },
+  tabPressed: {
+    opacity: 0.75,
   },
   tabText: {
     fontSize: 14,

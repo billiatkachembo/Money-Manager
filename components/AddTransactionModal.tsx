@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,13 +8,14 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
+  FlatList,
   Switch,
   Alert,
   Image,
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { 
+import {
   X, 
   Calculator, 
   Repeat, 
@@ -36,13 +37,349 @@ import {
   CheckCircle,
 } from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
-import { TransactionCategory } from '@/types/transaction';
+import { Transaction, TransactionCategory } from '@/types/transaction';
 import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
+import { normalizeReceiptDate, runReceiptOcr } from '@/utils/receiptOcr';
+
+type NewTransactionInput = Omit<Transaction, 'id' | 'createdAt'>;
+
+const TRANSFER_CATEGORY: TransactionCategory = {
+  id: 'transfer',
+  name: 'Transfer',
+  icon: 'ArrowLeftRight',
+  color: '#667eea',
+};
+
+type MerchantRule = {
+  categoryId: string;
+  keywords: string[];
+};
+
+const CATEGORY_CHIP_ESTIMATED_WIDTH = 108;
+
+const createEmptyOcrDetections = () => ({
+  amount: false,
+  merchant: false,
+  date: false,
+});
+
+const EXPENSE_MERCHANT_RULES: MerchantRule[] = [
+  {
+    categoryId: 'groceries',
+    keywords: ['walmart', 'target', 'costco', 'kroger', 'safeway', 'whole foods', 'trader joe', 'aldi', 'publix'],
+  },
+  {
+    categoryId: 'gas',
+    keywords: ['shell', 'chevron', 'exxon', 'mobil', 'bp', 'sunoco', 'arco', 'circle k'],
+  },
+  {
+    categoryId: 'coffee',
+    keywords: ['starbucks', 'dunkin', 'tim hortons', 'peets', 'costa'],
+  },
+  {
+    categoryId: 'dining',
+    keywords: ['mcdonald', 'burger king', 'kfc', 'taco bell', 'chipotle', 'subway', 'doordash', 'ubereats', 'grubhub', 'restaurant', 'pizza'],
+  },
+  {
+    categoryId: 'transport',
+    keywords: ['uber', 'lyft', 'metro', 'transit', 'amtrak'],
+  },
+  {
+    categoryId: 'subscriptions',
+    keywords: ['netflix', 'spotify', 'youtube', 'hulu', 'adobe', 'apple.com/bill', 'subscription'],
+  },
+  {
+    categoryId: 'shopping',
+    keywords: ['amazon', 'best buy', 'etsy', 'ebay', 'ikea', 'macys'],
+  },
+  {
+    categoryId: 'health',
+    keywords: ['cvs', 'walgreens', 'rite aid', 'pharmacy', 'clinic', 'hospital'],
+  },
+  {
+    categoryId: 'utilities',
+    keywords: ['comcast', 'xfinity', 'verizon', 'at&t', 't-mobile', 'electric', 'water bill', 'internet'],
+  },
+  {
+    categoryId: 'travel',
+    keywords: ['airbnb', 'booking', 'expedia', 'delta', 'united airlines', 'southwest'],
+  },
+];
+
+const INCOME_MERCHANT_RULES: MerchantRule[] = [
+  {
+    categoryId: 'salary',
+    keywords: ['payroll', 'salary', 'wages', 'adp', 'paychex'],
+  },
+  {
+    categoryId: 'bonus',
+    keywords: ['bonus'],
+  },
+  {
+    categoryId: 'commission',
+    keywords: ['commission'],
+  },
+  {
+    categoryId: 'refund',
+    keywords: ['refund', 'return credit', 'chargeback', 'reversal'],
+  },
+  {
+    categoryId: 'interest',
+    keywords: ['interest'],
+  },
+  {
+    categoryId: 'dividends',
+    keywords: ['dividend'],
+  },
+  {
+    categoryId: 'rental',
+    keywords: ['rent payment', 'tenant'],
+  },
+  {
+    categoryId: 'gift',
+    keywords: ['gift'],
+  },
+  {
+    categoryId: 'business',
+    keywords: ['stripe', 'square', 'shopify payout'],
+  },
+  {
+    categoryId: 'freelance',
+    keywords: ['upwork', 'fiverr', 'freelance', 'contract'],
+  },
+  {
+    categoryId: 'social-security',
+    keywords: ['social security', 'ssa'],
+  },
+  {
+    categoryId: 'pension',
+    keywords: ['pension'],
+  },
+  {
+    categoryId: 'side-hustle',
+    keywords: ['doordash', 'uber', 'lyft', 'instacart'],
+  },
+];
+
+function normalizeMerchantText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9/& ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function suggestCategoryFromMerchant(
+  merchant: string | undefined,
+  transactionType: 'income' | 'expense' | 'transfer',
+  availableCategories: TransactionCategory[]
+): TransactionCategory | null {
+  if (!merchant || transactionType === 'transfer' || availableCategories.length === 0) {
+    return null;
+  }
+
+  const normalizedMerchant = normalizeMerchantText(merchant);
+  if (!normalizedMerchant) {
+    return null;
+  }
+
+  const rules = transactionType === 'income' ? INCOME_MERCHANT_RULES : EXPENSE_MERCHANT_RULES;
+
+  let bestMatch: { category: TransactionCategory; score: number } | null = null;
+
+  for (const rule of rules) {
+    const matchedCategory = availableCategories.find((category) => category.id === rule.categoryId);
+    if (!matchedCategory) {
+      continue;
+    }
+
+    for (const keyword of rule.keywords) {
+      const normalizedKeyword = normalizeMerchantText(keyword);
+      if (!normalizedKeyword) {
+        continue;
+      }
+
+      const matchIndex = normalizedMerchant.indexOf(normalizedKeyword);
+      if (matchIndex < 0) {
+        continue;
+      }
+
+      const hasWordBoundaryBefore = matchIndex === 0 || normalizedMerchant[matchIndex - 1] === ' ';
+      const prefixBoost = matchIndex === 0 ? 2 : 1;
+      const boundaryBoost = hasWordBoundaryBefore ? 1 : 0;
+      const precisionBoost = normalizedKeyword.length / normalizedMerchant.length;
+      const score = prefixBoost + boundaryBoost + precisionBoost;
+
+      if (!bestMatch || score > bestMatch.score) {
+        bestMatch = {
+          category: matchedCategory,
+          score,
+        };
+      }
+    }
+  }
+
+  return bestMatch?.category ?? null;
+}
+
+function sanitizeAmountInput(value: string): string {
+  const cleaned = value.replace(/[^0-9.]/g, '');
+  const parts = cleaned.split('.');
+
+  if (parts.length <= 1) {
+    return parts[0] ?? '';
+  }
+
+  const whole = parts[0] ?? '0';
+  const decimal = parts.slice(1).join('');
+  return `${whole}.${decimal}`;
+}
+
+function parseDateInput(value: string): Date | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? new Date(`${normalized}T00:00:00`)
+    : new Date(normalized);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function evaluateCalculatorExpression(expression: string): number {
+  const source = expression.replace(/\s+/g, '');
+  if (!source) {
+    throw new Error('Empty expression');
+  }
+
+  if (!/^[0-9+\-*/.()]+$/.test(source)) {
+    throw new Error('Invalid expression');
+  }
+
+  let cursor = 0;
+
+  const parseExpression = (): number => {
+    let value = parseTerm();
+
+    while (cursor < source.length && (source[cursor] === '+' || source[cursor] === '-')) {
+      const operator = source[cursor];
+      cursor += 1;
+      const right = parseTerm();
+      value = operator === '+' ? value + right : value - right;
+    }
+
+    return value;
+  };
+
+  const parseTerm = (): number => {
+    let value = parseFactor();
+
+    while (cursor < source.length && (source[cursor] === '*' || source[cursor] === '/')) {
+      const operator = source[cursor];
+      cursor += 1;
+      const right = parseFactor();
+
+      if (operator === '/' && right === 0) {
+        throw new Error('Division by zero');
+      }
+
+      value = operator === '*' ? value * right : value / right;
+    }
+
+    return value;
+  };
+
+  const parseFactor = (): number => {
+    if (source[cursor] === '+' || source[cursor] === '-') {
+      const sign = source[cursor] === '-' ? -1 : 1;
+      cursor += 1;
+      return sign * parseFactor();
+    }
+
+    if (source[cursor] === '(') {
+      cursor += 1;
+      const value = parseExpression();
+      if (source[cursor] !== ')') {
+        throw new Error('Missing closing parenthesis');
+      }
+      cursor += 1;
+      return value;
+    }
+
+    const start = cursor;
+    let dotCount = 0;
+
+    while (cursor < source.length && /[0-9.]/.test(source[cursor])) {
+      if (source[cursor] === '.') {
+        dotCount += 1;
+      }
+      cursor += 1;
+    }
+
+    if (start === cursor || dotCount > 1) {
+      throw new Error('Invalid number');
+    }
+
+    const value = Number(source.slice(start, cursor));
+    if (!Number.isFinite(value)) {
+      throw new Error('Invalid number');
+    }
+
+    return value;
+  };
+
+  const result = parseExpression();
+  if (cursor !== source.length || !Number.isFinite(result)) {
+    throw new Error('Invalid expression');
+  }
+
+  return Math.round((result + Number.EPSILON) * 100) / 100;
+}
+
+function toCalculatorDisplay(value: number): string {
+  const normalized = Math.round((value + Number.EPSILON) * 100) / 100;
+  return normalized.toString();
+}
+
+async function persistReceiptImage(uri: string): Promise<string> {
+  if (!uri.startsWith('file://')) {
+    return uri;
+  }
+
+  const documentsDir = FileSystem.Paths.document;
+  if (uri.startsWith(documentsDir.uri)) {
+    return uri;
+  }
+
+  const receiptsDirUri = `${documentsDir.uri}receipts/`;
+  try {
+    await LegacyFileSystem.makeDirectoryAsync(receiptsDirUri, { intermediates: true });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.toLowerCase().includes('already exists')) {
+      throw error;
+    }
+  }
+
+  const extensionMatch = uri.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+  const extension = extensionMatch?.[1] ?? 'jpg';
+  const destinationUri = `${receiptsDirUri}receipt_${Date.now()}_${Math.round(Math.random() * 10000)}.${extension}`;
+  await LegacyFileSystem.copyAsync({
+    from: uri,
+    to: destinationUri,
+  });
+
+  return destinationUri;
+}
 
 interface AddTransactionModalProps {
   visible: boolean;
@@ -54,6 +391,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [type, setType] = useState<'income' | 'expense' | 'transfer'>('expense');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
+  const [transactionDate, setTransactionDate] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
   const [fromAccount, setFromAccount] = useState('');
   const [toAccount, setToAccount] = useState('');
@@ -72,29 +410,166 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [ocrExtracted, setOcrExtracted] = useState(false);
+  const [ocrDetections, setOcrDetections] = useState(createEmptyOcrDetections);
   const [showImageActions, setShowImageActions] = useState(false);
+  const ocrInFlightRef = useRef(false);
+  const ocrRequestIdRef = useRef(0);
+  const isMountedRef = useRef(true);
+  const categoryListRef = useRef<FlatList<TransactionCategory>>(null);
   
   const { addTransaction, accounts, formatCurrency } = useTransactionStore();
 
-  const categories = type === 'transfer' ? [] : (type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES);
+  const categories = useMemo(() => {
+    return type === 'transfer'
+      ? []
+      : type === 'income'
+        ? MODAL_INCOME_CATEGORIES
+        : MODAL_EXPENSE_CATEGORIES;
+  }, [type]);
 
-  // Filter categories based on search
-  const filteredCategories = categories.filter(category =>
-    category.name.toLowerCase().includes(categorySearch.toLowerCase())
-  );
+  const filteredCategories = useMemo(() => {
+    const normalizedSearch = categorySearch.trim().toLowerCase();
+    if (!normalizedSearch) return categories;
 
-  const simulateOcrScanning = async (_imageUri: string) => {
+    return categories.filter((category) =>
+      category.name.toLowerCase().includes(normalizedSearch)
+    );
+  }, [categories, categorySearch]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!visible || type === 'transfer' || !selectedCategory) {
+      return;
+    }
+
+    const selectedIndex = filteredCategories.findIndex(
+      (category) => category.id === selectedCategory.id
+    );
+
+    if (selectedIndex < 0) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      categoryListRef.current?.scrollToIndex({
+        index: selectedIndex,
+        animated: true,
+        viewPosition: 0.5,
+      });
+    });
+  }, [filteredCategories, selectedCategory, type, visible]);
+
+  const performOCR = async (imageUri: string, options?: { override?: boolean }) => {
+    if (!isMountedRef.current || ocrInFlightRef.current) return;
+
+    const canMutateOcrState = (requestId: number) =>
+      isMountedRef.current && requestId === ocrRequestIdRef.current;
+
+    const override = options?.override ?? false;
+    const requestId = ocrRequestIdRef.current + 1;
+    ocrRequestIdRef.current = requestId;
+    ocrInFlightRef.current = true;
     setIsScanning(true);
     setOcrExtracted(false);
+    setOcrDetections(createEmptyOcrDetections());
 
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    try {
+      const compressedImage = await manipulateAsync(
+        imageUri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.7, format: SaveFormat.JPEG }
+      );
 
-    setIsScanning(false);
-    Alert.alert(
-      'OCR Unavailable',
-      'Receipt text extraction is not configured in this build yet. Enter the transaction details manually.',
-      [{ text: 'OK' }]
-    );
+      if (!canMutateOcrState(requestId)) return;
+
+      if (compressedImage?.uri && compressedImage.uri !== receiptImage) {
+        setReceiptImage(compressedImage.uri);
+      }
+
+      const { rawText, data } = await runReceiptOcr(compressedImage.uri);
+      if (!canMutateOcrState(requestId)) return;
+
+      if (!rawText.trim()) {
+        if (canMutateOcrState(requestId)) {
+          Alert.alert(
+            'No Text Found',
+            'We could not detect any text in this receipt. Please enter details manually.',
+            [{ text: 'OK' }]
+          );
+        }
+        return;
+      }
+
+      const hasValidAmount =
+        typeof data.amount === 'number' && Number.isFinite(data.amount) && data.amount > 0;
+      const normalizedDate = normalizeReceiptDate(data.date);
+      const nextDetections = {
+        amount: hasValidAmount,
+        merchant: Boolean(data.merchant),
+        date: Boolean(normalizedDate),
+      };
+      if (canMutateOcrState(requestId)) {
+        setOcrDetections(nextDetections);
+      }
+
+      const hasDetectedData = hasValidAmount || Boolean(data.merchant || data.date);
+      if (!hasDetectedData) {
+        if (canMutateOcrState(requestId)) {
+          Alert.alert(
+            'No Details Detected',
+            'We could not detect the amount or merchant. Please enter details manually.',
+            [{ text: 'OK' }]
+          );
+        }
+        return;
+      }
+
+      if (
+        canMutateOcrState(requestId) &&
+        typeof data.amount === 'number' &&
+        Number.isFinite(data.amount) &&
+        data.amount > 0 &&
+        (override || !amount)
+      ) {
+        setAmount(data.amount.toString());
+      }
+
+      if (canMutateOcrState(requestId) && data.merchant && (override || !description)) {
+        setDescription(data.merchant);
+      }
+
+      const suggestedCategory = suggestCategoryFromMerchant(data.merchant, type, categories);
+      if (canMutateOcrState(requestId) && suggestedCategory && (override || !selectedCategory)) {
+        handleCategorySelect(suggestedCategory);
+      }
+
+      if (canMutateOcrState(requestId) && normalizedDate && (override || !transactionDate)) {
+        setTransactionDate(normalizedDate);
+      }
+
+      if (canMutateOcrState(requestId)) {
+        setOcrExtracted(true);
+      }
+    } catch (error) {
+      console.error('OCR error:', error);
+      if (canMutateOcrState(requestId)) {
+        Alert.alert(
+          'OCR Failed',
+          'We could not read this receipt. Please enter the transaction details manually.',
+          [{ text: 'OK' }]
+        );
+      }
+    } finally {
+      if (canMutateOcrState(requestId)) {
+        setIsScanning(false);
+        ocrInFlightRef.current = false;
+      }
+    }
   };
 
   // Function to take a photo with camera
@@ -119,18 +594,11 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       });
 
       if (!result.canceled && result.assets[0].uri) {
-        // Compress image
-        const compressedImage = await manipulateAsync(
-          result.assets[0].uri,
-          [{ resize: { width: 800 } }],
-          { compress: 0.7, format: SaveFormat.JPEG }
-        );
-        
-        setReceiptImage(compressedImage.uri);
+        setReceiptImage(result.assets[0].uri);
         setShowImageActions(true);
         
         // Auto-start OCR scanning
-        simulateOcrScanning(compressedImage.uri);
+        performOCR(result.assets[0].uri);
       }
     } catch (error) {
       console.error('Error taking photo:', error);
@@ -153,7 +621,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
         setShowImageActions(true);
         
         // Auto-start OCR scanning
-        simulateOcrScanning(result.assets[0].uri);
+        performOCR(result.assets[0].uri);
       }
     } catch (error) {
       console.error('Error picking image:', error);
@@ -164,15 +632,24 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   // Function to scan existing receipt image
   const scanReceipt = () => {
     if (receiptImage) {
-      simulateOcrScanning(receiptImage);
+      performOCR(receiptImage, { override: true });
     }
   };
 
   // Function to remove receipt image
   const removeReceiptImage = () => {
+    ocrRequestIdRef.current += 1;
+    ocrInFlightRef.current = false;
+    setIsScanning(false);
     setReceiptImage(null);
     setShowImageActions(false);
     setOcrExtracted(false);
+    setOcrDetections(createEmptyOcrDetections());
+  };
+
+  const handleCategorySelect = (category: TransactionCategory) => {
+    setSelectedCategory(category);
+    setCategorySearch(category.name);
   };
 
   const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer') => {
@@ -186,9 +663,10 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setToAccountSearch('');
     setShowFromAccountDropdown(false);
     setShowToAccountDropdown(false);
+    setOcrDetections(createEmptyOcrDetections());
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!amount || !description) {
       Alert.alert('Error', 'Please fill in amount and description');
       return;
@@ -225,42 +703,66 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       return;
     }
 
-    const transactionData: any = {
-      amount: numAmount,
-      description,
-      type,
-      date: new Date(),
-    };
-
-    if (type !== 'transfer') {
-      transactionData.category = selectedCategory;
-      if (type === 'expense') {
-        transactionData.fromAccount = fromAccount;
-      }
-      if (type === 'income') {
-        transactionData.toAccount = toAccount;
-      }
-    } else {
-      transactionData.fromAccount = fromAccount;
-      transactionData.toAccount = toAccount;
-      transactionData.category = {
-        id: 'transfer',
-        name: 'Transfer',
-        icon: 'ArrowLeftRight',
-        color: '#667eea',
-      };
+    const parsedTransactionDate = transactionDate ? parseDateInput(transactionDate) : null;
+    if (transactionDate && !parsedTransactionDate) {
+      Alert.alert('Error', 'Please enter a valid transaction date in YYYY-MM-DD format');
+      return;
     }
+
+    const resolvedDate = parsedTransactionDate ?? new Date();
+
+    let parsedRecurringEndDate: Date | undefined;
+    if (isRecurring && recurringEndDate) {
+      parsedRecurringEndDate = parseDateInput(recurringEndDate) ?? undefined;
+      if (!parsedRecurringEndDate) {
+        Alert.alert('Error', 'Please enter a valid recurring end date in YYYY-MM-DD format');
+        return;
+      }
+
+      const recurringStartDate = new Date(resolvedDate);
+      recurringStartDate.setHours(0, 0, 0, 0);
+
+      const recurringEndAtStartOfDay = new Date(parsedRecurringEndDate);
+      recurringEndAtStartOfDay.setHours(0, 0, 0, 0);
+
+      if (recurringEndAtStartOfDay.getTime() < recurringStartDate.getTime()) {
+        Alert.alert('Error', 'Recurring end date must be on or after the transaction date');
+        return;
+      }
+    }
+
+    const category = type === 'transfer' ? TRANSFER_CATEGORY : selectedCategory;
+    if (!category) {
+      Alert.alert('Error', 'Please select a category');
+      return;
+    }
+
+    const transactionData: NewTransactionInput = {
+      amount: numAmount,
+      description: description.trim(),
+      type,
+      date: resolvedDate,
+      category,
+      fromAccount: type === 'expense' || type === 'transfer' ? fromAccount : undefined,
+      toAccount: type === 'income' || type === 'transfer' ? toAccount : undefined,
+    };
 
     // Add receipt image if exists
     if (receiptImage) {
-      transactionData.receiptImage = receiptImage;
+      try {
+        transactionData.receiptImage = await persistReceiptImage(receiptImage);
+      } catch (error) {
+        console.error('Failed to persist receipt image:', error);
+        Alert.alert('Error', 'Failed to save receipt image. Please try again.');
+        return;
+      }
     }
 
     if (isRecurring) {
       transactionData.isRecurring = true;
       transactionData.recurringFrequency = recurringFrequency;
-      if (recurringEndDate) {
-        transactionData.recurringEndDate = new Date(recurringEndDate);
+      if (parsedRecurringEndDate) {
+        transactionData.recurringEndDate = parsedRecurringEndDate;
       }
     }
 
@@ -269,8 +771,11 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   };
 
   const handleClose = () => {
+    ocrRequestIdRef.current += 1;
+    ocrInFlightRef.current = false;
     setAmount('');
     setDescription('');
+    setTransactionDate('');
     setSelectedCategory(null);
     setFromAccount('');
     setToAccount('');
@@ -289,6 +794,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setReceiptImage(null);
     setIsScanning(false);
     setOcrExtracted(false);
+    setOcrDetections(createEmptyOcrDetections());
     setShowImageActions(false);
     onClose();
   };
@@ -299,18 +805,39 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       setCalculatorInput('');
     } else if (value === '=') {
       try {
-        const result = eval(calculatorInput || calculatorDisplay);
-        setCalculatorDisplay(result.toString());
-        setAmount(result.toString());
+        const result = evaluateCalculatorExpression(calculatorInput || calculatorDisplay);
+        const displayValue = toCalculatorDisplay(result);
+        setCalculatorDisplay(displayValue);
+        setAmount(displayValue);
         setCalculatorInput('');
       } catch (error) {
         setCalculatorDisplay('Error');
       }
     } else if (value === '⌫') {
+      if (calculatorDisplay === 'Error') {
+        setCalculatorDisplay('0');
+        setCalculatorInput('');
+        return;
+      }
+
       const newDisplay = calculatorDisplay.slice(0, -1) || '0';
       setCalculatorDisplay(newDisplay);
       setCalculatorInput(newDisplay);
     } else {
+      if (calculatorDisplay === 'Error') {
+        const resetValue = value === '.' ? '0.' : value;
+        setCalculatorDisplay(resetValue);
+        setCalculatorInput(resetValue);
+        return;
+      }
+
+      if (value === '.') {
+        const activeChunk = (calculatorDisplay.split(/[+\-*/]/).pop() ?? '');
+        if (activeChunk.includes('.')) {
+          return;
+        }
+      }
+
       const newDisplay = calculatorDisplay === '0' ? value : calculatorDisplay + value;
       setCalculatorDisplay(newDisplay);
       setCalculatorInput(newDisplay);
@@ -360,9 +887,8 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                   isSelected && { backgroundColor: theme.colors.primary + '20' },
                 ]}
                 onPress={() => {
-                  setSelectedCategory(category);
+                  handleCategorySelect(category);
                   setShowCategoryDropdown(false);
-                  setCategorySearch('');
                 }}
               >
                 <View style={styles.dropdownItemLeft}>
@@ -738,6 +1264,35 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             ? '✓ Details extracted from receipt'
             : 'Upload a receipt photo to automatically fill transaction details'}
         </Text>
+
+        {ocrExtracted ? (
+          <View style={styles.ocrDetectionList}>
+            <Text
+              style={[
+                styles.ocrDetectionItem,
+                { color: ocrDetections.merchant ? '#10B981' : theme.colors.textSecondary },
+              ]}
+            >
+              {ocrDetections.merchant ? '✓ Merchant detected' : 'Merchant not detected'}
+            </Text>
+            <Text
+              style={[
+                styles.ocrDetectionItem,
+                { color: ocrDetections.amount ? '#10B981' : theme.colors.textSecondary },
+              ]}
+            >
+              {ocrDetections.amount ? '✓ Amount detected' : 'Amount not detected'}
+            </Text>
+            <Text
+              style={[
+                styles.ocrDetectionItem,
+                { color: ocrDetections.date ? '#10B981' : theme.colors.textSecondary },
+              ]}
+            >
+              {ocrDetections.date ? '✓ Date detected' : 'Date not detected'}
+            </Text>
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -819,7 +1374,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             <TextInput
               style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
               value={amount}
-              onChangeText={setAmount}
+              onChangeText={(text) => setAmount(sanitizeAmountInput(text))}
               placeholder="0.00"
               placeholderTextColor={theme.colors.textSecondary}
               keyboardType="numeric"
@@ -877,6 +1432,20 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             />
           </View>
 
+          <View style={styles.inputGroup}>
+            <Text style={[styles.label, { color: theme.colors.text }]}>Date</Text>
+            <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <Calendar size={16} color={theme.colors.primary} />
+              <TextInput
+                style={[styles.dateInput, { color: theme.colors.text }]}
+                value={transactionDate}
+                onChangeText={setTransactionDate}
+                placeholder="YYYY-MM-DD"
+                placeholderTextColor={theme.colors.textSecondary}
+              />
+            </View>
+          </View>
+
           {type !== 'transfer' ? (
             <>
               <View style={styles.inputGroup}>
@@ -896,13 +1465,30 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                     </TouchableOpacity>
                   ) : null}
                 </View>
-                <ScrollView
+                <FlatList
+                  ref={categoryListRef}
+                  data={filteredCategories}
                   horizontal
+                  keyExtractor={(category) => category.id}
+                  getItemLayout={(_, index) => ({
+                    length: CATEGORY_CHIP_ESTIMATED_WIDTH,
+                    offset: CATEGORY_CHIP_ESTIMATED_WIDTH * index,
+                    index,
+                  })}
                   showsHorizontalScrollIndicator={false}
                   style={styles.categoryChipScroll}
                   contentContainerStyle={styles.categoryChipRow}
-                >
-                  {filteredCategories.map((category) => {
+                  onScrollToIndexFailed={({ index }) => {
+                    const safeIndex = Math.max(0, Math.min(index, filteredCategories.length - 1));
+                    setTimeout(() => {
+                      categoryListRef.current?.scrollToIndex({
+                        index: safeIndex,
+                        animated: true,
+                        viewPosition: 0.5,
+                      });
+                    }, 80);
+                  }}
+                  renderItem={({ item: category }) => {
                     const isSelected = selectedCategory?.id === category.id;
                     const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
 
@@ -916,7 +1502,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                             borderColor: isSelected ? theme.colors.primary : category.color,
                           },
                         ]}
-                        onPress={() => setSelectedCategory(category)}
+                        onPress={() => handleCategorySelect(category)}
                       >
                         <View style={[styles.categoryChipIcon, { backgroundColor: category.color + '20' }]}>
                           <IconComponent size={18} color={category.color} />
@@ -931,8 +1517,8 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                         </Text>
                       </TouchableOpacity>
                     );
-                  })}
-                </ScrollView>
+                  }}
+                />
                 {filteredCategories.length === 0 ? (
                   <View style={styles.noResults}>
                     <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>No categories found</Text>
@@ -1369,6 +1955,14 @@ const styles = StyleSheet.create({
   receiptHint: {
     fontSize: 12,
     marginTop: 4,
+  },
+  ocrDetectionList: {
+    marginTop: 8,
+    gap: 4,
+  },
+  ocrDetectionItem: {
+    fontSize: 12,
+    fontWeight: '500',
   },
   footer: {
     padding: 16,

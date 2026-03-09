@@ -26,6 +26,7 @@ export interface Transaction {
   materializedForDate?: string;
   parentTransactionId?: string;
   tags?: string[];
+  receiptImage?: string;
   updatedAt?: Date;
 }
 
@@ -138,6 +139,15 @@ export interface FarmCategoryBreakdown {
   categoryName: string;
   amount: number;
   ratio: number;
+}
+
+export interface FarmSummary {
+  season: string;
+  totalFarmIncome: number;
+  totalFarmExpenses: number;
+  profit: number;
+  costBreakdown: { category: string; amount: number; percentage: number }[];
+  topCrops: { name: string; revenue: number }[];
 }
 
 export interface SeasonalFarmSummary {

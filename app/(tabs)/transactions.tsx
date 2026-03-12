@@ -20,6 +20,7 @@ const FILTER_OPTIONS: Array<{ key: 'all' | TransactionType; label: string }> = [
   { key: 'income', label: 'Income' },
   { key: 'expense', label: 'Expenses' },
   { key: 'transfer', label: 'Transfers' },
+  { key: 'debt', label: 'Debt' },
 ];
 
 export default function TransactionsScreen() {
@@ -59,6 +60,12 @@ export default function TransactionsScreen() {
       transfers: filteredTransactions
         .filter((transaction) => transaction.type === 'transfer')
         .reduce((sum, transaction) => sum + transaction.amount, 0),
+      debt: filteredTransactions
+        .filter((transaction) => transaction.type === 'debt')
+        .reduce((sum, transaction) => {
+          const direction = transaction.debtDirection === 'lent' ? -1 : 1;
+          return sum + transaction.amount * direction;
+        }, 0),
     }),
     [filteredTransactions]
   );
@@ -115,6 +122,10 @@ export default function TransactionsScreen() {
           <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
             <Text style={[styles.summaryValue, { color: theme.colors.primary }]}>{formatCurrency(totals.transfers)}</Text>
+          </View>
+          <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+            <Text style={[styles.summaryValue, styles.debtText]}>{formatCurrency(totals.debt)}</Text>
           </View>
         </View>
       </View>
@@ -186,6 +197,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 16,
     gap: 12,
+    flexWrap: 'wrap',
   },
   summaryItem: {
     flex: 1,
@@ -207,6 +219,9 @@ const styles = StyleSheet.create({
   },
   expenseText: {
     color: '#DC2626',
+  },
+  debtText: {
+    color: '#F59E0B',
   },
   scrollView: {
     flex: 1,
@@ -236,3 +251,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
+
+
+
+

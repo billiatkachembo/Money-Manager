@@ -4,6 +4,7 @@ import {
   Budget,
   BudgetAlert,
   FinancialGoal,
+  MerchantProfile,
   Note,
   RecurringRule,
   Transaction,
@@ -42,6 +43,7 @@ export interface PersistedState {
   financialGoals: FinancialGoal[];
   userProfile: UserProfile;
   recurringRules: RecurringRule[];
+  merchantProfiles: MerchantProfile[];
 }
 
 export interface StorageAdapter {
@@ -62,6 +64,7 @@ export const STORAGE_KEYS = {
   financialGoals: 'financialGoals',
   userProfile: 'userProfile',
   recurringRules: 'recurringRules',
+  merchantProfiles: 'merchantProfiles',
 } as const;
 
 const ALL_KEYS = Object.values(STORAGE_KEYS);
@@ -99,6 +102,7 @@ function serializeTransactions(transactions: Transaction[]): unknown[] {
     createdAt: transaction.createdAt.toISOString(),
     updatedAt: transaction.updatedAt?.toISOString(),
     recurringEndDate: transaction.recurringEndDate?.toISOString(),
+    dueDate: transaction.dueDate?.toISOString(),
   }));
 }
 
@@ -126,6 +130,7 @@ function deserializeTransactions(raw: unknown): Transaction[] {
         createdAt,
         updatedAt: parseDate(candidate.updatedAt as string),
         recurringEndDate: parseDate(candidate.recurringEndDate as string),
+        dueDate: parseDate(candidate.dueDate as string),
       } as Transaction;
     })
     .filter((item): item is Transaction => !!item);
@@ -382,6 +387,37 @@ function deserializeRecurringRules(raw: unknown): RecurringRule[] {
     .filter((item): item is RecurringRule => !!item);
 }
 
+function serializeMerchantProfiles(merchants: MerchantProfile[]): unknown[] {
+  return merchants.map((profile) => ({
+    ...profile,
+    lastUsed: profile.lastUsed?.toISOString(),
+  }));
+}
+
+function deserializeMerchantProfiles(raw: unknown): MerchantProfile[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      if (!candidate.id || !candidate.merchantName || !candidate.normalizedName) {
+        return null;
+      }
+
+      return {
+        ...(candidate as unknown as MerchantProfile),
+        lastUsed: parseDate(candidate.lastUsed as string),
+      } as MerchantProfile;
+    })
+    .filter((item): item is MerchantProfile => !!item);
+}
+
 function parseJson<T>(value: string | null, fallback: T): T {
   if (!value) {
     return fallback;
@@ -410,6 +446,7 @@ export async function loadPersistedState(
   const rawGoals = parseJson<unknown>(map.get(STORAGE_KEYS.financialGoals) ?? null, []);
   const rawProfile = parseJson<unknown>(map.get(STORAGE_KEYS.userProfile) ?? null, null);
   const rawRecurring = parseJson<unknown>(map.get(STORAGE_KEYS.recurringRules) ?? null, []);
+  const rawMerchants = parseJson<unknown>(map.get(STORAGE_KEYS.merchantProfiles) ?? null, []);
 
   return {
     transactions: deserializeTransactions(rawTransactions),
@@ -421,6 +458,7 @@ export async function loadPersistedState(
     financialGoals: deserializeFinancialGoals(rawGoals),
     userProfile: deserializeUserProfile(rawProfile, defaults.userProfile),
     recurringRules: deserializeRecurringRules(rawRecurring),
+    merchantProfiles: deserializeMerchantProfiles(rawMerchants),
   };
 }
 
@@ -469,6 +507,10 @@ export async function savePersistedPatch(
     entries.push([STORAGE_KEYS.recurringRules, JSON.stringify(patch.recurringRules)]);
   }
 
+  if (patch.merchantProfiles) {
+    entries.push([STORAGE_KEYS.merchantProfiles, JSON.stringify(serializeMerchantProfiles(patch.merchantProfiles))]);
+  }
+
   if (entries.length === 0) {
     return;
   }
@@ -482,4 +524,3 @@ export async function clearPersistedState(adapter: StorageAdapter = asyncStorage
 
 // Prepared adapter contract for future SQLite-backed repository.
 export const storageAdapter = asyncStorageAdapter;
-

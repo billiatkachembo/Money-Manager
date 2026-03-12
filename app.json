@@ -15,14 +15,17 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.rork.money-manager-app"
+      "bundleIdentifier": "app.rork.money-manager"
     },
     "android": {
+      "package": "com.billiatkachembo.moneymanager",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "money_manager.com"
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -51,7 +54,7 @@
         "origin": "https://rork.com/"
       },
       "eas": {
-        "projectId": "f040fa3c-4c10-4263-acb6-2e24b9fac0ab"
+        "projectId": "d2f7f5bf-b64f-4703-b41c-9a258f1f9521"
       }
     }
   }

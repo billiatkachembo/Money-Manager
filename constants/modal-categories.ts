@@ -32,6 +32,18 @@ export const MODAL_EXPENSE_CATEGORIES: TransactionCategory[] = [
     color: '#118AB2',
   },
   {
+    id: 'fertilizers',
+    name: 'Fertilizers',
+    icon: 'Leaf',
+    color: '#34D399',
+  },
+  {
+    id: 'seeds',
+    name: 'Seeds & Plants',
+    icon: 'Sprout',
+    color: '#22C55E',
+  },
+  {
     id: 'dining',
     name: 'Dining Out',
     icon: 'Utensils',
@@ -132,6 +144,12 @@ export const MODAL_EXPENSE_CATEGORIES: TransactionCategory[] = [
     name: 'Bank Fees',
     icon: 'CreditCard',
     color: '#8B5CF6',
+  },
+  {
+    id: 'debt',
+    name: 'Debt',
+    icon: 'Landmark',
+    color: '#64748B',
   },
   {
     id: 'other',

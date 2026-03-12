@@ -1,7 +1,8 @@
 import TextRecognition from '@react-native-ml-kit/text-recognition';
-import { Transaction, TransactionCategory } from '@/types/transaction';
-import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/categories';
-import { CURRENCY_OPTIONS, findCurrencyOption } from '@/constants/currencies';
+import { MerchantProfile, Transaction, TransactionCategory } from '@/types/transaction';
+import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
+import { CURRENCY_OPTIONS } from '@/constants/currencies';
+import { aiAnalyzeReceipt, resolveAiCategory } from '@/utils/ai/receipt-ai';
 
 export interface ReceiptData {
   amount?: number;
@@ -82,8 +83,22 @@ function guessTransactionType(amount?: number): 'income' | 'expense' {
   return amount >= 0 ? 'expense' : 'income';
 }
 
+export interface ReceiptAiDraft {
+  categoryId: string;
+  confidence: number;
+  source: 'merchant_memory' | 'ai_classifier' | 'fallback';
+  debtIntent: {
+    type: 'expense' | 'debt';
+    direction?: 'borrowed' | 'lent';
+    debtPayment?: boolean;
+  } | null;
+}
+
 // --- Main OCR parser ---
-export async function runReceiptOcr(imageUri: string): Promise<{ rawText: string; data: ReceiptData; draft: Partial<Transaction> }> {
+export async function runReceiptOcr(
+  imageUri: string,
+  options?: { merchants?: MerchantProfile[] }
+): Promise<{ rawText: string; data: ReceiptData; draft: Partial<Transaction>; ai: ReceiptAiDraft }> {
   const result = await TextRecognition.recognize(imageUri);
   const rawText = result?.text?.trim() ?? '';
 
@@ -93,18 +108,35 @@ export async function runReceiptOcr(imageUri: string): Promise<{ rawText: string
   const tags = extractTags(merchant);
 
   const currency = CURRENCY_OPTIONS.find((c) => rawText.includes(c.symbol))?.code ?? 'ZMW';
-  const type: 'income' | 'expense' = guessTransactionType(amount);
-  const category = guessCategory(merchant, type);
+  const ai = aiAnalyzeReceipt(merchant, rawText, options?.merchants ?? []);
+
+  let type: Transaction['type'] = guessTransactionType(amount);
+  if (ai.debtIntent?.type === 'debt') {
+    type = 'debt';
+  } else if (ai.debtIntent?.type === 'expense') {
+    type = 'expense';
+  }
+
+  const category = type === 'income'
+    ? guessCategory(merchant, 'income')
+    : resolveAiCategory(ai.categoryId, type === 'debt' ? 'debt' : 'expense');
 
   const draft: Partial<Transaction> = {
     amount,
+    merchant,
     description: merchant ?? '',
     date: date ? new Date(date) : undefined,
     type,
     category,
     tags,
-    isRecurring: false, // could be extended with rule detection
+    currency,
+    debtDirection: type === 'debt' ? ai.debtIntent?.direction : undefined,
+    counterparty: type === 'debt' ? merchant : undefined,
+    debtPayment: type === 'expense' ? ai.debtIntent?.debtPayment : undefined,
+    isRecurring: false,
   };
 
-  return { rawText, data: { amount, merchant, date, currency, tags }, draft };
+  return { rawText, data: { amount, merchant, date, currency, tags }, draft, ai };
 }
+
+export { normalizeReceiptDate };

@@ -13,7 +13,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { X, Calendar, Calculator, ArrowLeftRight, Search } from 'lucide-react-native';
+import { X, Calendar, Calculator, ArrowLeftRight, Search, Landmark } from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactionStore } from '@/store/transaction-store';
@@ -28,6 +28,27 @@ interface EditTransactionModalProps {
   onSave: () => void;
 }
 
+function parseDateInput(value: string): Date | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? new Date(`${normalized}T00:00:00`)
+    : new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function formatIsoDate(value?: Date): string {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+  return parsed.toISOString().split('T')[0];
+}
+
 export function EditTransactionModal({ visible, transaction, onClose, onSave }: EditTransactionModalProps) {
   const { theme } = useTheme();
   const { updateTransaction, formatCurrency, transactions } = useTransactionStore();
@@ -35,9 +56,14 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [date, setDate] = useState(new Date());
-  const [type, setType] = useState<'income' | 'expense' | 'transfer'>('expense');
+  const [type, setType] = useState<'income' | 'expense' | 'transfer' | 'debt'>('expense');
   const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
   const [categorySearch, setCategorySearch] = useState('');
+  const [debtDirection, setDebtDirection] = useState<'borrowed' | 'lent'>('borrowed');
+  const [counterparty, setCounterparty] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [interestRate, setInterestRate] = useState('');
+  const [debtPayment, setDebtPayment] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [calculatorDisplay, setCalculatorDisplay] = useState('0');
@@ -65,6 +91,11 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
 
       setSelectedCategory(normalizedCategory);
       setCategorySearch('');
+      setDebtDirection(transaction.debtDirection ?? 'borrowed');
+      setCounterparty(transaction.counterparty ?? '');
+      setDueDate(formatIsoDate(transaction.dueDate));
+      setInterestRate(transaction.interestRate !== undefined ? transaction.interestRate.toString() : '');
+      setDebtPayment(Boolean(transaction.debtPayment));
     }
   }, [transaction]);
 
@@ -89,7 +120,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     return displayedCategories.filter((category) => category.name.toLowerCase().includes(query));
   }, [categorySearch, displayedCategories]);
 
-  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer') => {
+  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
     setType(nextType);
     setSelectedCategory(null);
     setCategorySearch('');
@@ -211,6 +242,20 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       return;
     }
 
+    const trimmedDueDate = dueDate.trim();
+    const parsedDueDate = trimmedDueDate ? parseDateInput(trimmedDueDate) : null;
+    if (trimmedDueDate && !parsedDueDate) {
+      Alert.alert('Error', 'Please enter a valid due date in YYYY-MM-DD format');
+      return;
+    }
+
+    const trimmedInterestRate = interestRate.trim();
+    const parsedInterestRate = trimmedInterestRate ? Number(trimmedInterestRate) : undefined;
+    if (trimmedInterestRate && !Number.isFinite(parsedInterestRate)) {
+      Alert.alert('Error', 'Please enter a valid interest rate');
+      return;
+    }
+
     const updatedTransaction: Transaction = {
       ...transaction,
       amount: numAmount,
@@ -223,6 +268,11 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
         icon: 'ArrowLeftRight',
         color: '#667eea',
       } : selectedCategory!,
+      debtDirection: type === 'debt' ? debtDirection : undefined,
+      counterparty: type === 'debt' ? counterparty.trim() || undefined : undefined,
+      dueDate: type === 'debt' ? parsedDueDate ?? undefined : undefined,
+      interestRate: type === 'debt' ? parsedInterestRate : undefined,
+      debtPayment: type === 'expense' ? debtPayment : undefined,
     };
 
     try {
@@ -312,6 +362,21 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   { color: type === 'transfer' ? theme.colors.text : theme.colors.textSecondary }
                 ]}>
                   Transfer
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.typeButton,
+                  type === 'debt' && { backgroundColor: theme.colors.surface }
+                ]}
+                onPress={() => handleTypeChange('debt')}
+              >
+                <Landmark size={16} color={type === 'debt' ? theme.colors.text : theme.colors.textSecondary} />
+                <Text style={[
+                  styles.typeButtonText,
+                  { color: type === 'debt' ? theme.colors.text : theme.colors.textSecondary }
+                ]}>
+                  Debt
                 </Text>
               </TouchableOpacity>
             </View>
@@ -481,6 +546,84 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
               ) : null}
             </View>
           )}
+
+          {type === 'debt' ? (
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: theme.colors.text }]}>Debt Details</Text>
+              <View style={[styles.debtDirectionRow, { backgroundColor: theme.colors.border }]}> 
+                <TouchableOpacity
+                  style={[
+                    styles.debtDirectionButton,
+                    debtDirection === 'borrowed' && { backgroundColor: theme.colors.surface },
+                  ]}
+                  onPress={() => setDebtDirection('borrowed')}
+                >
+                  <Text style={[
+                    styles.debtDirectionText,
+                    { color: debtDirection === 'borrowed' ? theme.colors.text : theme.colors.textSecondary },
+                  ]}>
+                    Borrowed
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.debtDirectionButton,
+                    debtDirection === 'lent' && { backgroundColor: theme.colors.surface },
+                  ]}
+                  onPress={() => setDebtDirection('lent')}
+                >
+                  <Text style={[
+                    styles.debtDirectionText,
+                    { color: debtDirection === 'lent' ? theme.colors.text : theme.colors.textSecondary },
+                  ]}>
+                    Lent
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
+                value={counterparty}
+                onChangeText={setCounterparty}
+                placeholder="Counterparty"
+                placeholderTextColor={theme.colors.textSecondary}
+              />
+              <View style={[styles.dateInput, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+                <Calendar size={16} color={theme.colors.primary} />
+                <TextInput
+                  style={[styles.dateInputText, { color: theme.colors.text }]}
+                  value={dueDate}
+                  onChangeText={setDueDate}
+                  placeholder="Due date (YYYY-MM-DD)"
+                  placeholderTextColor={theme.colors.textSecondary}
+                />
+              </View>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
+                value={interestRate}
+                onChangeText={setInterestRate}
+                placeholder="Interest rate (%)"
+                placeholderTextColor={theme.colors.textSecondary}
+                keyboardType="decimal-pad"
+              />
+            </View>
+          ) : null}
+
+          {type === 'expense' ? (
+            <View style={styles.inputGroup}>
+              <View style={styles.debtPaymentRow}>
+                <View style={styles.debtPaymentInfo}>
+                  <Landmark size={18} color={theme.colors.primary} />
+                  <Text style={[styles.label, { color: theme.colors.text }]}>Debt Payment</Text>
+                </View>
+                <Switch
+                  value={debtPayment}
+                  onValueChange={setDebtPayment}
+                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                  thumbColor={debtPayment ? '#fff' : '#f4f3f4'}
+                />
+              </View>
+            </View>
+          ) : null}
         </ScrollView>
 
         <View style={[styles.footer, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border }]}>
@@ -640,6 +783,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  debtDirectionRow: {
+    flexDirection: 'row',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 12,
+  },
+  debtDirectionButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  debtDirectionText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  debtPaymentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  debtPaymentInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   categorySearchBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -717,3 +886,18 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

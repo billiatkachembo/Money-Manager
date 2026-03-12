@@ -1,4 +1,4 @@
-package money_manager.com
+package com.billiatkachembo.moneymanager
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

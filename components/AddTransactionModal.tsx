@@ -45,7 +45,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
-import { normalizeReceiptDate, runReceiptOcr } from '@/utils/receiptOcr';
+import { normalizeReceiptDate, ReceiptAiDraft, runReceiptOcr } from '@/utils/receiptOcr';
 
 type NewTransactionInput = Omit<Transaction, 'id' | 'createdAt'>;
 
@@ -56,11 +56,6 @@ const TRANSFER_CATEGORY: TransactionCategory = {
   color: '#667eea',
 };
 
-type MerchantRule = {
-  categoryId: string;
-  keywords: string[];
-};
-
 const CATEGORY_CHIP_ESTIMATED_WIDTH = 108;
 
 const createEmptyOcrDetections = () => ({
@@ -68,165 +63,6 @@ const createEmptyOcrDetections = () => ({
   merchant: false,
   date: false,
 });
-
-const EXPENSE_MERCHANT_RULES: MerchantRule[] = [
-  {
-    categoryId: 'groceries',
-    keywords: ['walmart', 'target', 'costco', 'kroger', 'safeway', 'whole foods', 'trader joe', 'aldi', 'publix'],
-  },
-  {
-    categoryId: 'gas',
-    keywords: ['shell', 'chevron', 'exxon', 'mobil', 'bp', 'sunoco', 'arco', 'circle k'],
-  },
-  {
-    categoryId: 'coffee',
-    keywords: ['starbucks', 'dunkin', 'tim hortons', 'peets', 'costa'],
-  },
-  {
-    categoryId: 'dining',
-    keywords: ['mcdonald', 'burger king', 'kfc', 'taco bell', 'chipotle', 'subway', 'doordash', 'ubereats', 'grubhub', 'restaurant', 'pizza'],
-  },
-  {
-    categoryId: 'transport',
-    keywords: ['uber', 'lyft', 'metro', 'transit', 'amtrak'],
-  },
-  {
-    categoryId: 'subscriptions',
-    keywords: ['netflix', 'spotify', 'youtube', 'hulu', 'adobe', 'apple.com/bill', 'subscription'],
-  },
-  {
-    categoryId: 'shopping',
-    keywords: ['amazon', 'best buy', 'etsy', 'ebay', 'ikea', 'macys'],
-  },
-  {
-    categoryId: 'health',
-    keywords: ['cvs', 'walgreens', 'rite aid', 'pharmacy', 'clinic', 'hospital'],
-  },
-  {
-    categoryId: 'utilities',
-    keywords: ['comcast', 'xfinity', 'verizon', 'at&t', 't-mobile', 'electric', 'water bill', 'internet'],
-  },
-  {
-    categoryId: 'travel',
-    keywords: ['airbnb', 'booking', 'expedia', 'delta', 'united airlines', 'southwest'],
-  },
-];
-
-const INCOME_MERCHANT_RULES: MerchantRule[] = [
-  {
-    categoryId: 'salary',
-    keywords: ['payroll', 'salary', 'wages', 'adp', 'paychex'],
-  },
-  {
-    categoryId: 'bonus',
-    keywords: ['bonus'],
-  },
-  {
-    categoryId: 'commission',
-    keywords: ['commission'],
-  },
-  {
-    categoryId: 'refund',
-    keywords: ['refund', 'return credit', 'chargeback', 'reversal'],
-  },
-  {
-    categoryId: 'interest',
-    keywords: ['interest'],
-  },
-  {
-    categoryId: 'dividends',
-    keywords: ['dividend'],
-  },
-  {
-    categoryId: 'rental',
-    keywords: ['rent payment', 'tenant'],
-  },
-  {
-    categoryId: 'gift',
-    keywords: ['gift'],
-  },
-  {
-    categoryId: 'business',
-    keywords: ['stripe', 'square', 'shopify payout'],
-  },
-  {
-    categoryId: 'freelance',
-    keywords: ['upwork', 'fiverr', 'freelance', 'contract'],
-  },
-  {
-    categoryId: 'social-security',
-    keywords: ['social security', 'ssa'],
-  },
-  {
-    categoryId: 'pension',
-    keywords: ['pension'],
-  },
-  {
-    categoryId: 'side-hustle',
-    keywords: ['doordash', 'uber', 'lyft', 'instacart'],
-  },
-];
-
-function normalizeMerchantText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9/& ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function suggestCategoryFromMerchant(
-  merchant: string | undefined,
-  transactionType: 'income' | 'expense' | 'transfer',
-  availableCategories: TransactionCategory[]
-): TransactionCategory | null {
-  if (!merchant || transactionType === 'transfer' || availableCategories.length === 0) {
-    return null;
-  }
-
-  const normalizedMerchant = normalizeMerchantText(merchant);
-  if (!normalizedMerchant) {
-    return null;
-  }
-
-  const rules = transactionType === 'income' ? INCOME_MERCHANT_RULES : EXPENSE_MERCHANT_RULES;
-
-  let bestMatch: { category: TransactionCategory; score: number } | null = null;
-
-  for (const rule of rules) {
-    const matchedCategory = availableCategories.find((category) => category.id === rule.categoryId);
-    if (!matchedCategory) {
-      continue;
-    }
-
-    for (const keyword of rule.keywords) {
-      const normalizedKeyword = normalizeMerchantText(keyword);
-      if (!normalizedKeyword) {
-        continue;
-      }
-
-      const matchIndex = normalizedMerchant.indexOf(normalizedKeyword);
-      if (matchIndex < 0) {
-        continue;
-      }
-
-      const hasWordBoundaryBefore = matchIndex === 0 || normalizedMerchant[matchIndex - 1] === ' ';
-      const prefixBoost = matchIndex === 0 ? 2 : 1;
-      const boundaryBoost = hasWordBoundaryBefore ? 1 : 0;
-      const precisionBoost = normalizedKeyword.length / normalizedMerchant.length;
-      const score = prefixBoost + boundaryBoost + precisionBoost;
-
-      if (!bestMatch || score > bestMatch.score) {
-        bestMatch = {
-          category: matchedCategory,
-          score,
-        };
-      }
-    }
-  }
-
-  return bestMatch?.category ?? null;
-}
 
 function sanitizeAmountInput(value: string): string {
   const cleaned = value.replace(/[^0-9.]/g, '');
@@ -388,7 +224,7 @@ interface AddTransactionModalProps {
 
 export function AddTransactionModal({ visible, onClose }: AddTransactionModalProps) {
   const { theme } = useTheme();
-  const [type, setType] = useState<'income' | 'expense' | 'transfer'>('expense');
+  const [type, setType] = useState<'income' | 'expense' | 'transfer' | 'debt'>('expense');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [transactionDate, setTransactionDate] = useState('');
@@ -412,12 +248,18 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const [ocrExtracted, setOcrExtracted] = useState(false);
   const [ocrDetections, setOcrDetections] = useState(createEmptyOcrDetections);
   const [showImageActions, setShowImageActions] = useState(false);
+  const [debtDirection, setDebtDirection] = useState<'borrowed' | 'lent'>('borrowed');
+  const [counterparty, setCounterparty] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [interestRate, setInterestRate] = useState('');
+  const [debtPayment, setDebtPayment] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<ReceiptAiDraft | null>(null);
   const ocrInFlightRef = useRef(false);
   const ocrRequestIdRef = useRef(0);
   const isMountedRef = useRef(true);
   const categoryListRef = useRef<FlatList<TransactionCategory>>(null);
   
-  const { addTransaction, accounts, formatCurrency } = useTransactionStore();
+  const { addTransaction, accounts, formatCurrency, merchantProfiles, learnMerchantCategory } = useTransactionStore();
 
   const categories = useMemo(() => {
     return type === 'transfer'
@@ -435,6 +277,16 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       category.name.toLowerCase().includes(normalizedSearch)
     );
   }, [categories, categorySearch]);
+
+  const aiCategoryName = useMemo(() => {
+    if (!aiSuggestion) return null;
+    const pool = aiSuggestion.debtIntent?.type === 'debt'
+      ? MODAL_EXPENSE_CATEGORIES
+      : type === 'income'
+        ? MODAL_INCOME_CATEGORIES
+        : MODAL_EXPENSE_CATEGORIES;
+    return pool.find((category) => category.id === aiSuggestion.categoryId)?.name ?? 'Other';
+  }, [aiSuggestion, type]);
 
   useEffect(() => {
     return () => {
@@ -477,6 +329,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setIsScanning(true);
     setOcrExtracted(false);
     setOcrDetections(createEmptyOcrDetections());
+    setAiSuggestion(null);
 
     try {
       const compressedImage = await manipulateAsync(
@@ -491,8 +344,26 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
         setReceiptImage(compressedImage.uri);
       }
 
-      const { rawText, data } = await runReceiptOcr(compressedImage.uri);
+      const { rawText, data, ai } = await runReceiptOcr(compressedImage.uri, { merchants: merchantProfiles });
       if (!canMutateOcrState(requestId)) return;
+
+      if (canMutateOcrState(requestId)) {
+        setAiSuggestion(ai);
+        if (ai.debtIntent?.type === 'debt') {
+          setType('debt');
+          setDebtDirection(ai.debtIntent.direction ?? 'borrowed');
+          if (data.merchant && (override || !counterparty)) {
+            setCounterparty(data.merchant);
+          }
+        } else if (ai.debtIntent?.type === 'expense' && type === 'transfer') {
+          setType('expense');
+        }
+
+        if (ai.debtIntent?.debtPayment && (override || !debtPayment)) {
+          setDebtPayment(true);
+        }
+      }
+
 
       if (!rawText.trim()) {
         if (canMutateOcrState(requestId)) {
@@ -543,7 +414,16 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
         setDescription(data.merchant);
       }
 
-      const suggestedCategory = suggestCategoryFromMerchant(data.merchant, type, categories);
+      const preferredType = ai.debtIntent?.type === 'debt' ? 'debt' : type;
+      const categoryPool = preferredType === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES;
+      const aiCategory = ai.categoryId
+        ? categoryPool.find((category) => category.id === ai.categoryId)
+        : null;
+      const fallbackCategoryId =
+        preferredType === 'income' ? 'other-income' : preferredType === 'debt' ? 'debt' : 'other';
+      const fallbackCategory =
+        categoryPool.find((category) => category.id === fallbackCategoryId) ?? categoryPool[0];
+      const suggestedCategory = aiCategory ?? fallbackCategory;
       if (canMutateOcrState(requestId) && suggestedCategory && (override || !selectedCategory)) {
         handleCategorySelect(suggestedCategory);
       }
@@ -645,6 +525,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setShowImageActions(false);
     setOcrExtracted(false);
     setOcrDetections(createEmptyOcrDetections());
+    setAiSuggestion(null);
   };
 
   const handleCategorySelect = (category: TransactionCategory) => {
@@ -652,7 +533,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setCategorySearch(category.name);
   };
 
-  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer') => {
+  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
     setType(nextType);
     setSelectedCategory(null);
     setShowCategoryDropdown(false);
@@ -667,7 +548,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   };
 
   const handleSubmit = async () => {
-    if (!amount || !description) {
+    if (!amount || !description.trim()) {
       Alert.alert('Error', 'Please fill in amount and description');
       return;
     }
@@ -692,6 +573,18 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       return;
     }
 
+    if (type === 'debt') {
+      if (debtDirection === 'borrowed' && !toAccount) {
+        Alert.alert('Error', 'Please select the account receiving this loan');
+        return;
+      }
+
+      if (debtDirection === 'lent' && !fromAccount) {
+        Alert.alert('Error', 'Please select the account used to lend this loan');
+        return;
+      }
+    }
+
     if (type === 'transfer' && fromAccount === toAccount) {
       Alert.alert('Error', 'Cannot transfer to the same account');
       return;
@@ -710,6 +603,25 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     }
 
     const resolvedDate = parsedTransactionDate ?? new Date();
+
+    let parsedDueDate: Date | undefined;
+    if (type === 'debt' && dueDate) {
+      parsedDueDate = parseDateInput(dueDate) ?? undefined;
+      if (!parsedDueDate) {
+        Alert.alert('Error', 'Please enter a valid due date in YYYY-MM-DD format');
+        return;
+      }
+    }
+
+    let parsedInterestRate: number | undefined;
+    if (type === 'debt' && interestRate) {
+      const parsedRate = Number(interestRate);
+      if (!Number.isFinite(parsedRate) || parsedRate < 0) {
+        Alert.alert('Error', 'Please enter a valid interest rate');
+        return;
+      }
+      parsedInterestRate = parsedRate;
+    }
 
     let parsedRecurringEndDate: Date | undefined;
     if (isRecurring && recurringEndDate) {
@@ -737,15 +649,29 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       return;
     }
 
+    const trimmedDescription = description.trim();
+    const merchantName =
+      type === 'debt' ? (counterparty.trim() || trimmedDescription) : trimmedDescription;
     const transactionData: NewTransactionInput = {
       amount: numAmount,
-      description: description.trim(),
+      description: trimmedDescription,
       type,
       date: resolvedDate,
       category,
+      merchant: merchantName || undefined,
+      debtDirection: type === 'debt' ? debtDirection : undefined,
+      counterparty: type === 'debt' ? (counterparty.trim() || merchantName || undefined) : undefined,
+      dueDate: type === 'debt' ? parsedDueDate : undefined,
+      interestRate: type === 'debt' ? parsedInterestRate : undefined,
+      debtPayment: type === 'expense' ? debtPayment : undefined,
       fromAccount: type === 'expense' || type === 'transfer' ? fromAccount : undefined,
       toAccount: type === 'income' || type === 'transfer' ? toAccount : undefined,
     };
+
+    if (type === 'debt') {
+      transactionData.fromAccount = debtDirection === 'lent' ? fromAccount : undefined;
+      transactionData.toAccount = debtDirection === 'borrowed' ? toAccount : undefined;
+    }
 
     // Add receipt image if exists
     if (receiptImage) {
@@ -767,6 +693,10 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     }
 
     addTransaction(transactionData);
+
+    if (merchantName && type !== 'transfer') {
+      learnMerchantCategory(merchantName, category.id);
+    }
     handleClose();
   };
 
@@ -796,6 +726,12 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     setOcrExtracted(false);
     setOcrDetections(createEmptyOcrDetections());
     setShowImageActions(false);
+    setDebtDirection('borrowed');
+    setCounterparty('');
+    setDueDate('');
+    setInterestRate('');
+    setDebtPayment(false);
+    setAiSuggestion(null);
     onClose();
   };
 
@@ -867,9 +803,6 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             onChangeText={setCategorySearch}
             autoFocus
           />
-          <TouchableOpacity onPress={() => setShowCategoryDropdown(false)}>
-            <X size={16} color={theme.colors.textSecondary} />
-          </TouchableOpacity>
         </View>
         
         <ScrollView style={styles.dropdownList} showsVerticalScrollIndicator={false}>
@@ -1124,6 +1057,36 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
         onOpen: () => setShowFromAccountDropdown(false),
       });
     }
+    if (type === 'debt') {
+      const options = accounts.filter((account) => {
+        const search = debtDirection === 'borrowed' ? normalizedToSearch : normalizedFromSearch;
+        if (!search) return true;
+        return account.name.toLowerCase().includes(search);
+      });
+
+      return renderPicker({
+        label: 'Account',
+        searchValue: debtDirection === 'borrowed' ? toAccountSearch : fromAccountSearch,
+        selectedAccount: debtDirection === 'borrowed' ? selectedTo : selectedFrom,
+        selectedId: debtDirection === 'borrowed' ? toAccount : fromAccount,
+        setSearch: debtDirection === 'borrowed' ? setToAccountSearch : setFromAccountSearch,
+        setSelected: debtDirection === 'borrowed' ? setToAccount : setFromAccount,
+        showDropdown: debtDirection === 'borrowed' ? showToAccountDropdown : showFromAccountDropdown,
+        setShowDropdown: debtDirection === 'borrowed' ? setShowToAccountDropdown : setShowFromAccountDropdown,
+        options,
+        emptyLabel: 'No matching account',
+        placeholder: debtDirection === 'borrowed'
+          ? 'Type to find the receiving account'
+          : 'Type to find the funding account',
+        onOpen: () => {
+          if (debtDirection === 'borrowed') {
+            setShowFromAccountDropdown(false);
+          } else {
+            setShowToAccountDropdown(false);
+          }
+        },
+      });
+    }
 
     if (type !== 'transfer') {
       return null;
@@ -1293,6 +1256,30 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
             </Text>
           </View>
         ) : null}
+
+        {aiSuggestion ? (
+          <View style={[styles.aiSuggestionCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+            <View style={styles.aiSuggestionHeader}>
+              <Text style={[styles.aiSuggestionTitle, { color: theme.colors.text }]}>AI Suggestion</Text>
+              <Text style={[styles.aiSuggestionConfidence, { color: theme.colors.textSecondary }]}> 
+                {Math.round(aiSuggestion.confidence * 100)}%
+              </Text>
+            </View>
+            <Text style={[styles.aiSuggestionText, { color: theme.colors.textSecondary }]}> 
+              Category: {aiCategoryName ?? 'Other'}
+            </Text>
+            <Text style={[styles.aiSuggestionMeta, { color: theme.colors.textSecondary }]}> 
+              Source: {aiSuggestion.source === 'merchant_memory' ? 'Merchant memory' : aiSuggestion.source === 'ai_classifier' ? 'AI classifier' : 'Fallback'}
+            </Text>
+            {aiSuggestion.debtIntent ? (
+              <Text style={[styles.aiSuggestionMeta, { color: theme.colors.textSecondary }]}> 
+                Debt signal: {aiSuggestion.debtIntent.type === 'debt'
+                  ? `Loan ${aiSuggestion.debtIntent.direction ?? 'detected'}`
+                  : 'Repayment'}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -1355,6 +1342,21 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
                 { color: type === 'transfer' ? theme.colors.text : theme.colors.textSecondary }
               ]}>
                 Transfer
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.typeButton,
+                type === 'debt' && { backgroundColor: theme.colors.surface }
+              ]}
+              onPress={() => handleTypeChange('debt')}
+            >
+              <Landmark size={16} color={type === 'debt' ? theme.colors.text : theme.colors.textSecondary} />
+              <Text style={[
+                styles.typeButtonText,
+                { color: type === 'debt' ? theme.colors.text : theme.colors.textSecondary }
+              ]}>
+                Debt
               </Text>
             </TouchableOpacity>
           </View>
@@ -1530,7 +1532,85 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
           ) : (
             renderAccountSelection()
           )}
-          
+
+          {type === 'debt' ? (
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: theme.colors.text }]}>Debt Details</Text>
+              <View style={[styles.debtDirectionRow, { backgroundColor: theme.colors.border }]}> 
+                <TouchableOpacity
+                  style={[
+                    styles.debtDirectionButton,
+                    debtDirection === 'borrowed' && { backgroundColor: theme.colors.surface },
+                  ]}
+                  onPress={() => setDebtDirection('borrowed')}
+                >
+                  <Text style={[
+                    styles.debtDirectionText,
+                    { color: debtDirection === 'borrowed' ? theme.colors.text : theme.colors.textSecondary },
+                  ]}>
+                    Borrowed
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.debtDirectionButton,
+                    debtDirection === 'lent' && { backgroundColor: theme.colors.surface },
+                  ]}
+                  onPress={() => setDebtDirection('lent')}
+                >
+                  <Text style={[
+                    styles.debtDirectionText,
+                    { color: debtDirection === 'lent' ? theme.colors.text : theme.colors.textSecondary },
+                  ]}>
+                    Lent
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
+                value={counterparty}
+                onChangeText={setCounterparty}
+                placeholder="Counterparty"
+                placeholderTextColor={theme.colors.textSecondary}
+              />
+              <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+                <Calendar size={16} color={theme.colors.primary} />
+                <TextInput
+                  style={[styles.dateInput, { color: theme.colors.text }]}
+                  value={dueDate}
+                  onChangeText={setDueDate}
+                  placeholder="Due date (YYYY-MM-DD)"
+                  placeholderTextColor={theme.colors.textSecondary}
+                />
+              </View>
+              <TextInput
+                style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
+                value={interestRate}
+                onChangeText={setInterestRate}
+                placeholder="Interest rate (%)"
+                placeholderTextColor={theme.colors.textSecondary}
+                keyboardType="decimal-pad"
+              />
+            </View>
+          ) : null}
+
+          {type === 'expense' ? (
+            <View style={styles.inputGroup}>
+              <View style={styles.recurringRow}>
+                <View style={styles.recurringInfo}>
+                  <Landmark size={20} color={theme.colors.primary} />
+                  <Text style={[styles.label, { color: theme.colors.text }]}>Debt Payment</Text>
+                </View>
+                <Switch
+                  value={debtPayment}
+                  onValueChange={setDebtPayment}
+                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
+                  thumbColor={debtPayment ? '#fff' : '#f4f3f4'}
+                />
+              </View>
+            </View>
+          ) : null}
+
           <View style={styles.inputGroup}>
             <View style={styles.recurringRow}>
               <View style={styles.recurringInfo}>
@@ -1637,6 +1717,22 @@ const styles = StyleSheet.create({
   },
   typeButtonText: {
     fontSize: 16,
+    fontWeight: '600',
+  },
+  debtDirectionRow: {
+    flexDirection: 'row',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 12,
+  },
+  debtDirectionButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 10,
+  },
+  debtDirectionText: {
+    fontSize: 14,
     fontWeight: '600',
   },
   inputGroup: {
@@ -2062,4 +2158,3 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
-

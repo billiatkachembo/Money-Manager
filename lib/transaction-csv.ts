@@ -49,7 +49,7 @@ const DEFAULT_EXPENSE_CATEGORY: TransactionCategory = {
 
 const TRUTHY_VALUES = ['true', 'yes', 'y', '1', 'on', 'enabled'];
 const FALSY_VALUES = ['false', 'no', 'n', '0', 'off', 'disabled'];
-const VALID_TYPES: Transaction['type'][] = ['income', 'expense', 'transfer'];
+const VALID_TYPES: Transaction['type'][] = ['income', 'expense', 'transfer', 'debt'];
 const VALID_FREQUENCIES: Transaction['recurringFrequency'][] = ['daily', 'weekly', 'monthly', 'yearly'];
 
 // Cache for performance
@@ -143,7 +143,7 @@ const resolveCategory = (
   }
 
   if (!categoryId && !categoryName) {
-    const defaultCategory = type === 'income' ? DEFAULT_INCOME_CATEGORY : DEFAULT_EXPENSE_CATEGORY;
+    const defaultCategory = isIncome ? DEFAULT_INCOME_CATEGORY : DEFAULT_EXPENSE_CATEGORY;
     categoryCache.set(cacheKey, defaultCategory);
     return defaultCategory;
   }
@@ -155,10 +155,10 @@ const resolveCategory = (
   }
 
   const newCategory: TransactionCategory = {
-    id: categoryId || slugify(categoryName) || (type === 'income' ? DEFAULT_INCOME_CATEGORY.id : DEFAULT_EXPENSE_CATEGORY.id),
-    name: categoryName || (type === 'income' ? DEFAULT_INCOME_CATEGORY.name : DEFAULT_EXPENSE_CATEGORY.name),
-    icon: type === 'income' ? DEFAULT_INCOME_CATEGORY.icon : DEFAULT_EXPENSE_CATEGORY.icon,
-    color: type === 'income' ? DEFAULT_INCOME_CATEGORY.color : DEFAULT_EXPENSE_CATEGORY.color,
+    id: categoryId || slugify(categoryName) || (isIncome ? DEFAULT_INCOME_CATEGORY.id : DEFAULT_EXPENSE_CATEGORY.id),
+    name: categoryName || (isIncome ? DEFAULT_INCOME_CATEGORY.name : DEFAULT_EXPENSE_CATEGORY.name),
+    icon: isIncome ? DEFAULT_INCOME_CATEGORY.icon : DEFAULT_EXPENSE_CATEGORY.icon,
+    color: isIncome ? DEFAULT_INCOME_CATEGORY.color : DEFAULT_EXPENSE_CATEGORY.color,
   };
 
   categoryCache.set(cacheKey, newCategory);
@@ -277,7 +277,7 @@ const processRow = (
   const date = normalizeDate(dateValue);
 
   if (!type) {
-    return { error: 'Transaction type must be income, expense, or transfer' };
+    return { error: 'Transaction type must be income, expense, transfer, or debt' };
   }
 
   if (amount === null) {
@@ -580,3 +580,10 @@ export const parseTransactionsFromCsv = (
 };
 
 export type { Transaction, TransactionCategory } from '@/types/transaction';
+
+
+
+
+
+
+

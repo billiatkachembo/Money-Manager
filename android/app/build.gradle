@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'money_manager.com'
+    namespace 'com.billiatkachembo.moneymanager'
     defaultConfig {
-        applicationId 'money_manager.com'
+        applicationId 'com.billiatkachembo.moneymanager'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

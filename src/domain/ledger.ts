@@ -68,6 +68,15 @@ export function deriveAccountBalance(accountId: string, transactions: Transactio
       balance -= tx.amount;
     }
 
+    if (tx.type === 'debt') {
+      if (tx.debtDirection === 'borrowed' && to === accountId) {
+        balance += tx.amount;
+      }
+      if (tx.debtDirection === 'lent' && from === accountId) {
+        balance -= tx.amount;
+      }
+    }
+
     if (tx.type === 'transfer') {
       if (tx.transferLeg === 'debit') {
         if (from === accountId) {

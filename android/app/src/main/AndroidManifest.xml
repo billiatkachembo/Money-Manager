@@ -26,7 +26,7 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="myapp"/>
-        <data android:scheme="exp+money-manager-app"/>
+        <data android:scheme="exp+money-manager"/>
       </intent-filter>
     </activity>
   </application>

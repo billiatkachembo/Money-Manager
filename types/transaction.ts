@@ -1,8 +1,10 @@
-export type TransactionType = 'income' | 'expense' | 'transfer';
+export type TransactionType = 'income' | 'expense' | 'transfer' | 'debt';
 
 export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
 export type TransferLeg = 'debit' | 'credit';
+
+export type DebtDirection = 'borrowed' | 'lent';
 
 export interface Transaction {
   id: string;
@@ -12,6 +14,13 @@ export interface Transaction {
   type: TransactionType;
   date: Date;
   createdAt: Date;
+  merchant?: string;
+  currency?: string;
+  debtDirection?: DebtDirection;
+  counterparty?: string;
+  dueDate?: Date;
+  interestRate?: number;
+  debtPayment?: boolean;
   fromAccount?: string;
   toAccount?: string;
   fromAccountId?: string;
@@ -35,6 +44,25 @@ export interface TransactionCategory {
   name: string;
   icon: string;
   color: string;
+}
+
+export interface DebtAccount {
+  id: string;
+  counterparty: string;
+  balance: number;
+  direction: DebtDirection;
+  interestRate?: number;
+  dueDate?: Date;
+  updatedAt?: Date;
+}
+
+export interface MerchantProfile {
+  id: string;
+  merchantName: string;
+  normalizedName: string;
+  preferredCategoryId: string;
+  transactionCount: number;
+  lastUsed?: Date;
 }
 
 export interface Budget {
@@ -157,4 +185,3 @@ export interface SeasonalFarmSummary {
   farmProfit: number;
   costBreakdown: FarmCategoryBreakdown[];
 }
-

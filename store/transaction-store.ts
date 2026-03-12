@@ -6,9 +6,11 @@ import {
   Account,
   Budget,
   BudgetAlert,
+  DebtAccount,
   FinancialGoal,
   FinancialHealthMetrics,
   Insight,
+  MerchantProfile,
   Note,
   RecurringRule,
   SeasonalFarmSummary,
@@ -32,6 +34,7 @@ import {
   recomputeAllBalances,
   validateLedgerIntegrity,
 } from '@/src/domain/ledger';
+import { computeDebtLedger } from '@/src/domain/debt-ledger';
 import {
   createRecurringRuleFromTransaction,
   materializeRecurringTransactions,
@@ -46,6 +49,7 @@ import {
   getFarmCostBreakdown,
   getSeasonalFarmSummary,
 } from '@/src/domain/farming';
+import { learnMerchantCategory as learnMerchantCategoryInternal } from '@/utils/ai/merchant-intelligence';
 
 interface BackupData {
   transactions: Transaction[];
@@ -53,6 +57,7 @@ interface BackupData {
   notes: Note[];
   settings: AppSettings;
   recurringRules: RecurringRule[];
+  merchantProfiles: MerchantProfile[];
   exportDate: string;
   version: string;
 }
@@ -242,6 +247,14 @@ function normalizeFinancialGoal(goal: FinancialGoal): FinancialGoal {
   };
 }
 
+function normalizeMerchantProfile(profile: MerchantProfile): MerchantProfile {
+  return {
+    ...profile,
+    lastUsed: parseOptionalDate(profile.lastUsed),
+  };
+}
+
+
 function normalizeUserProfileData(profile: Partial<UserProfile> | UserProfile | undefined): UserProfile {
   const merged = {
     ...DEFAULT_USER_PROFILE,
@@ -255,17 +268,37 @@ function normalizeUserProfileData(profile: Partial<UserProfile> | UserProfile | 
 }
 
 function normalizeSettingsData(value: Partial<AppSettings> | AppSettings | undefined): AppSettings {
-  const merged = {
+  const defaultPrivacy = DEFAULT_SETTINGS.privacy ?? {
+    hideAmounts: false,
+    requireAuth: false,
+    dataSharing: false,
+    analytics: false,
+  };
+
+  const defaultSecurity = DEFAULT_SETTINGS.security ?? {
+    autoLock: 5,
+    passwordEnabled: false,
+    twoFactorEnabled: false,
+  };
+
+  const privacy = {
+    hideAmounts: value?.privacy?.hideAmounts ?? defaultPrivacy.hideAmounts,
+    requireAuth: value?.privacy?.requireAuth ?? defaultPrivacy.requireAuth,
+    dataSharing: value?.privacy?.dataSharing ?? defaultPrivacy.dataSharing,
+    analytics: value?.privacy?.analytics ?? defaultPrivacy.analytics,
+  };
+
+  const security = {
+    autoLock: value?.security?.autoLock ?? defaultSecurity.autoLock,
+    passwordEnabled: value?.security?.passwordEnabled ?? defaultSecurity.passwordEnabled,
+    twoFactorEnabled: value?.security?.twoFactorEnabled ?? defaultSecurity.twoFactorEnabled,
+  };
+
+  const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...value,
-    privacy: {
-      ...DEFAULT_SETTINGS.privacy,
-      ...value?.privacy,
-    },
-    security: {
-      ...DEFAULT_SETTINGS.security,
-      ...value?.security,
-    },
+    privacy,
+    security,
   };
 
   return {
@@ -323,6 +356,7 @@ function buildDefaults(): PersistedState {
     financialGoals: [],
     userProfile: DEFAULT_USER_PROFILE,
     recurringRules: [],
+    merchantProfiles: [],
   };
 }
 
@@ -336,6 +370,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [userProfile, setUserProfile] = useState<UserProfile>(DEFAULT_USER_PROFILE);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
+  const [merchantProfiles, setMerchantProfiles] = useState<MerchantProfile[]>([]);
   const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
 
@@ -353,6 +388,13 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     () => computeActiveAccountNetBalance(accounts),
     [accounts]
   );
+
+  const debtAccounts = useMemo(
+
+    () => computeDebtLedger(ledgerTransactions),
+    [ledgerTransactions]
+  );
+
 
   const persistPatch = useCallback(async (patch: Partial<PersistedState>) => {
     try {
@@ -1008,6 +1050,19 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [persistPatch, settings]
   );
 
+  const learnMerchantCategory = useCallback(
+    (merchant: string, categoryId: string) => {
+      if (!merchant?.trim() || !categoryId) {
+        return;
+      }
+
+      const next = learnMerchantCategoryInternal(merchant, categoryId, merchantProfiles);
+      setMerchantProfiles(next);
+      void persistPatch({ merchantProfiles: next });
+    },
+    [merchantProfiles, persistPatch]
+  );
+
   const addAccountsBatch = useCallback(
     (accountDataList: Array<Omit<Account, 'id' | 'createdAt'>>) => {
       if (accountDataList.length === 0) {
@@ -1287,6 +1342,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       const nextRecurringRules = (
         Array.isArray(snapshot.recurringRules) ? snapshot.recurringRules : defaults.recurringRules
       ).map(normalizeRule);
+      const nextMerchantProfiles = (
+        Array.isArray(snapshot.merchantProfiles) ? snapshot.merchantProfiles : defaults.merchantProfiles
+      ).map(normalizeMerchantProfile);
       const integrity = validateLedgerIntegrity(nextTransactions);
 
       setLedgerTransactions(nextTransactions);
@@ -1297,6 +1355,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setFinancialGoals(nextFinancialGoals);
       setUserProfile(nextUserProfile);
       setSettings(nextSettings);
+      setMerchantProfiles(nextMerchantProfiles);
       setRecurringRules(nextRecurringRules);
       setLedgerIssues(integrity.issues);
       setIsHydrated(true);
@@ -1311,6 +1370,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         financialGoals: nextFinancialGoals,
         userProfile: nextUserProfile,
         recurringRules: nextRecurringRules,
+        merchantProfiles: nextMerchantProfiles,
       });
     },
     []
@@ -1334,6 +1394,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         notes,
         settings,
         recurringRules,
+        merchantProfiles,
         exportDate: new Date().toISOString(),
         version: '2.0.0',
       };
@@ -1370,6 +1431,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setUserProfile(defaults.userProfile);
       setSettings(defaults.settings);
       setRecurringRules(defaults.recurringRules);
+      setMerchantProfiles(defaults.merchantProfiles);
       setLedgerIssues([]);
       setIsHydrated(true);
     } catch (error) {
@@ -1472,7 +1534,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     balance: lifetimeNetCashFlow,
     netBalance,
     lifetimeNetCashFlow,
+    debtAccounts,
     settings,
+    merchantProfiles,
     budgets,
     budgetAlerts,
     financialGoals,
@@ -1504,6 +1568,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     restoreBackupSnapshot,
     importTransactionsBatch,
     updateSettings,
+    learnMerchantCategory,
     addAccountsBatch,
     addAccount,
     updateAccount,
@@ -1525,6 +1590,31 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     updateUserProfile,
   };
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

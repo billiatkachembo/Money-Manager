@@ -38,11 +38,18 @@ export function TransactionItem({
 
   const IconMap = Icons as unknown as Record<string, React.ComponentType<any>>;
   const IconComponent = IconMap[transaction.category.icon] || Icons.Circle;
-  const amountPrefix = transaction.type === 'income' ? '+' : transaction.type === 'expense' ? '-' : '';
+  const isDebtBorrowed = transaction.type === 'debt' && transaction.debtDirection === 'borrowed';
+  const isDebtLent = transaction.type === 'debt' && transaction.debtDirection === 'lent';
+  const amountPrefix =
+    transaction.type === 'income' || isDebtBorrowed
+      ? '+'
+      : transaction.type === 'expense' || isDebtLent
+        ? '-'
+        : '';
   const amountColor =
-    transaction.type === 'income'
+    transaction.type === 'income' || isDebtBorrowed
       ? styles.incomeAmount
-      : transaction.type === 'expense'
+      : transaction.type === 'expense' || isDebtLent
         ? styles.expenseAmount
         : { color: theme.colors.primary };
   const hasActions = showActions && (onEdit || onDelete);
@@ -195,3 +202,5 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+

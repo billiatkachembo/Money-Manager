@@ -98,6 +98,9 @@ export const MODAL_EXPENSE_CATEGORIES: TransactionCategory[] = [
   { id: 'entertainment', name: 'Entertainment', icon: 'Film', color: '#7209B7' },
   { id: 'health', name: 'Health', icon: 'Heart', color: '#FF595E' },
   { id: 'insurance', name: 'Insurance', icon: 'Shield', color: '#073B4C' },
+  { id: 'fertilizers', name: 'Fertilizers', icon: 'Leaf', color: '#34D399' },
+  { id: 'seeds', name: 'Seeds & Plants', icon: 'Sprout', color: '#22C55E' },
+  { id: 'debt', name: 'Debt', icon: 'Landmark', color: '#64748B' },
   { id: 'other', name: 'Other', icon: 'MoreHorizontal', color: '#94A3B8' },
 ];
 

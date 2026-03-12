@@ -1,4 +1,4 @@
-package money_manager.com
+package com.billiatkachembo.moneymanager
 
 import android.app.Application
 import android.content.res.Configuration

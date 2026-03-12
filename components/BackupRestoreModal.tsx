@@ -1,4 +1,4 @@
-import React from 'react';
+import { memo } from 'react';
 import {
   Modal,
   View,
@@ -63,7 +63,7 @@ interface BackupActionButtonProps {
   textColor?: string;
 }
 
-const BackupActionButton = React.memo(function BackupActionButton({
+const BackupActionButton = memo(function BackupActionButton({
   icon,
   label,
   onPress,
@@ -84,7 +84,7 @@ const BackupActionButton = React.memo(function BackupActionButton({
   );
 });
 
-export const BackupRestoreModal = React.memo(function BackupRestoreModal({
+export const BackupRestoreModal = memo(function BackupRestoreModal({
   show,
   setShow,
   theme,
@@ -140,6 +140,9 @@ export const BackupRestoreModal = React.memo(function BackupRestoreModal({
           ) : null}
 
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Cloud Backup</Text>
+          <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
+            Creates a full JSON snapshot and opens the share sheet so you can upload to Google Drive.
+          </Text>
           <BackupActionButton
             icon={<UploadCloud size={20} color="#FFFFFF" />}
             label="Backup to Google Drive"
@@ -149,7 +152,7 @@ export const BackupRestoreModal = React.memo(function BackupRestoreModal({
           />
           <BackupActionButton
             icon={<DownloadCloud size={20} color={theme.colors.primary} />}
-            label="Restore from Cloud"
+            label="Restore from Google Drive (Import JSON)"
             onPress={onRestoreFromGoogleDrive}
             disabled={isProcessing}
             containerStyle={{ backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border }}
@@ -157,6 +160,9 @@ export const BackupRestoreModal = React.memo(function BackupRestoreModal({
           />
 
           <Text style={[styles.sectionTitle, styles.sectionSpacing, { color: theme.colors.text }]}>Local Backup</Text>
+          <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
+            Full app snapshot including accounts, budgets, goals, notes, and settings.
+          </Text>
           <BackupActionButton
             icon={<Download size={20} color={theme.colors.primary} />}
             label="Export Full Backup JSON"
@@ -175,6 +181,9 @@ export const BackupRestoreModal = React.memo(function BackupRestoreModal({
           />
 
           <Text style={[styles.sectionTitle, styles.sectionSpacing, { color: theme.colors.text }]}>Transactions CSV</Text>
+          <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
+            Supports expense, income, transfer, and debt with accounts, timestamps, totals, and tags.
+          </Text>
           <BackupActionButton
             icon={<Download size={20} color={theme.colors.primary} />}
             label="Export Transactions CSV"
@@ -272,6 +281,12 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginBottom: 8,
+  },
+  sectionHint: {
+    fontSize: 12,
+    marginTop: -2,
+    marginBottom: 8,
+    lineHeight: 16,
   },
   sectionSpacing: {
     marginTop: 12,

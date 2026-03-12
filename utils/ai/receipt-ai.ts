@@ -1,4 +1,4 @@
-import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { MerchantProfile, TransactionCategory } from '@/types/transaction';
 import { findMerchantCategory } from './merchant-intelligence';
 
@@ -95,6 +95,6 @@ export function resolveAiCategory(
   categoryId: string,
   type: 'income' | 'expense' | 'debt'
 ): TransactionCategory {
-  const categories = type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES;
+  const categories = type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
   return pickCategory(categoryId, categories) ?? categories.find((category) => category.id === 'other') ?? categories[0];
 }

@@ -18,6 +18,7 @@ export interface AppSettings {
   notifications: boolean;
   biometricAuth: boolean;
   autoBackup: boolean;
+  averageDebtInterestRate?: number;
   lastBackupDate?: Date;
   firstUsedAt?: Date;
   privacy?: {

@@ -1,6 +1,6 @@
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import { MerchantProfile, Transaction, TransactionCategory } from '@/types/transaction';
-import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { aiAnalyzeReceipt, resolveAiCategory } from '@/utils/ai/receipt-ai';
 
@@ -72,7 +72,7 @@ function normalizeReceiptDate(dateString?: string): string | undefined {
 
 // --- Map receipt to transaction draft ---
 function guessCategory(merchant: string | undefined, type: 'income' | 'expense' = 'expense'): TransactionCategory {
-  const categories = type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES;
+  const categories = type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
   if (!merchant) return categories[0];
   const found = categories.find((cat) => merchant.toLowerCase().includes(cat.name.toLowerCase()));
   return found ?? categories[0];

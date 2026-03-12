@@ -97,9 +97,25 @@ const normalizeDate = (value: string): Date | null => {
 
 const normalizeAmount = (value: string): number | null => {
   if (!value.trim()) return null;
-  const cleaned = value.replace(/[$,€£\s]/g, '');
+  const cleaned = value.replace(/[^0-9.-]/g, '');
   const amount = Number(cleaned);
   return Number.isFinite(amount) ? amount : null;
+};
+
+const normalizeDebtDirection = (value: string): Transaction['debtDirection'] | undefined => {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'borrowed' || normalized === 'lent') {
+    return normalized as Transaction['debtDirection'];
+  }
+  return undefined;
+};
+
+const normalizeTransferLeg = (value: string): Transaction['transferLeg'] | undefined => {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'debit' || normalized === 'credit') {
+    return normalized as Transaction['transferLeg'];
+  }
+  return undefined;
 };
 
 const isValidCategory = (category: TransactionCategory): boolean => {
@@ -113,6 +129,7 @@ const resolveCategory = (
   categories: TransactionCategory[]
 ): TransactionCategory => {
   if (type === 'transfer') return TRANSFER_CATEGORY;
+  const isIncome = type === 'income';
 
   const cacheKey = `${type}:${categoryIdRaw}:${categoryNameRaw}`;
   if (categoryCache.has(cacheKey)) return categoryCache.get(cacheKey)!;
@@ -247,9 +264,19 @@ const processRow = (
   headerMap: Map<string, string>,
   categories: TransactionCategory[]
 ): ProcessRowResult | null => {
-  const dateValue = getColumnValue(row, headerMap, ['date', 'transactiondate', 'transaction date']);
+  const dateValue = getColumnValue(row, headerMap, [
+    'date',
+    'transactiondate',
+    'transaction date',
+    'timestamp',
+    'datetime',
+    'transactiondatetime',
+    'transaction datetime',
+  ]);
+  const createdAtValue = getColumnValue(row, headerMap, ['createdat', 'created at']);
+  const updatedAtValue = getColumnValue(row, headerMap, ['updatedat', 'updated at']);
   const typeValue = getColumnValue(row, headerMap, ['type', 'transactiontype', 'transaction type']);
-  const amountValue = getColumnValue(row, headerMap, ['amount', 'value', 'price']);
+  const amountValue = getColumnValue(row, headerMap, ['amount', 'total', 'totalamount', 'total amount', 'value', 'price']);
   const descriptionValue = getColumnValue(row, headerMap, ['description', 'memo', 'note', 'payee']);
   const categoryIdValue = getColumnValue(row, headerMap, ['categoryid', 'category id']);
   const categoryNameValue = getColumnValue(row, headerMap, ['categoryname', 'category', 'category name']);
@@ -267,14 +294,29 @@ const processRow = (
     'to account id',
     'destination',
   ]);
+  const fromAccountIdValue = getColumnValue(row, headerMap, ['fromaccountid', 'from account id']);
+  const toAccountIdValue = getColumnValue(row, headerMap, ['toaccountid', 'to account id']);
+  const transferGroupValue = getColumnValue(row, headerMap, ['transfergroupid', 'transfer group id']);
+  const transferLegValue = getColumnValue(row, headerMap, ['transferleg', 'transfer leg']);
+  const currencyValue = getColumnValue(row, headerMap, ['currency', 'currencycode', 'currency code']);
+  const merchantValue = getColumnValue(row, headerMap, ['merchant', 'merchantname', 'merchant name']);
+  const debtDirectionValue = getColumnValue(row, headerMap, ['debtdirection', 'debt direction']);
+  const counterpartyValue = getColumnValue(row, headerMap, ['counterparty', 'party']);
+  const dueDateValue = getColumnValue(row, headerMap, ['duedate', 'due date']);
+  const interestRateValue = getColumnValue(row, headerMap, ['interestrate', 'interest rate', 'apr']);
+  const debtPaymentValue = getColumnValue(row, headerMap, ['debtpayment', 'debt payment', 'isdebtpayment']);
   const tagsValue = getColumnValue(row, headerMap, ['tags', 'tag', 'labels']);
+  const hiddenValue = getColumnValue(row, headerMap, ['ishidden', 'hidden']);
   const recurringValue = getColumnValue(row, headerMap, ['isrecurring', 'recurring', 'is recurring']);
   const recurringFrequencyValue = getColumnValue(row, headerMap, ['recurringfrequency', 'frequency', 'recurring frequency']);
   const recurringEndDateValue = getColumnValue(row, headerMap, ['recurringenddate', 'end date', 'recurring end date']);
 
   const type = normalizeType(typeValue);
   const amount = normalizeAmount(amountValue);
-  const date = normalizeDate(dateValue);
+  const date = normalizeDate(dateValue) ?? normalizeDate(createdAtValue);
+  const updatedAt = normalizeDate(updatedAtValue);
+  const dueDate = normalizeDate(dueDateValue);
+  const interestRate = interestRateValue ? Number(interestRateValue) : undefined;
 
   if (!type) {
     return { error: 'Transaction type must be income, expense, transfer, or debt' };
@@ -284,15 +326,17 @@ const processRow = (
     return { error: 'Amount must be a valid number' };
   }
   
-  if (amount <= 0) {
+  if (amount === 0) {
     return { error: 'Amount must be positive' };
   }
+
+  const normalizedAmount = Math.abs(amount);
 
   if (!date) {
     return { error: 'Date is invalid or unsupported format' };
   }
 
-  if (type === 'transfer' && !fromAccountValue && !toAccountValue) {
+  if (type === 'transfer' && !fromAccountValue && !toAccountValue && !fromAccountIdValue && !toAccountIdValue) {
     return { error: 'Transfer transactions require at least one account' };
   }
 
@@ -315,18 +359,30 @@ const processRow = (
   }
 
   const transaction: ImportedTransactionDraft = {
-    amount,
+    amount: normalizedAmount,
     description: descriptionValue || category.name,
     category,
     type,
     date,
     fromAccount: fromAccountValue || undefined,
     toAccount: toAccountValue || undefined,
+    fromAccountId: fromAccountIdValue || undefined,
+    toAccountId: toAccountIdValue || undefined,
+    transferGroupId: transferGroupValue || undefined,
+    transferLeg: normalizeTransferLeg(transferLegValue),
+    currency: currencyValue || undefined,
+    merchant: merchantValue || undefined,
+    debtDirection: normalizeDebtDirection(debtDirectionValue),
+    counterparty: counterpartyValue || undefined,
+    dueDate: dueDate ?? undefined,
+    interestRate: Number.isFinite(interestRate) ? interestRate : undefined,
+    debtPayment: parseBoolean(debtPaymentValue),
     tags: parseTags(tagsValue),
+    isHidden: parseBoolean(hiddenValue),
     isRecurring,
     recurringFrequency: parseRecurringFrequency(recurringFrequencyValue),
     recurringEndDate: recurringEndDateValue ? normalizeDate(recurringEndDateValue) ?? undefined : undefined,
-    updatedAt: new Date(),
+    updatedAt: updatedAt ?? new Date(),
   };
 
   const warning = category.id.startsWith('imported-') 
@@ -341,18 +397,33 @@ export const exportTransactionsToCsv = (transactions: Transaction[]): string => 
     const canonicalCategory = resolveCanonicalCategory(transaction.category);
 
     return {
-    date: t.date.toISOString().split('T')[0],
+      date: transaction.date.toISOString(),
       type: transaction.type,
       amount: transaction.amount.toFixed(2),
+      total: transaction.amount.toFixed(2),
       description: transaction.description,
       categoryId: canonicalCategory?.id ?? transaction.category?.id ?? '',
       categoryName: canonicalCategory?.name ?? transaction.category?.name ?? '',
       fromAccount: transaction.fromAccount ?? '',
       toAccount: transaction.toAccount ?? '',
+      fromAccountId: transaction.fromAccountId ?? '',
+      toAccountId: transaction.toAccountId ?? '',
+      transferGroupId: transaction.transferGroupId ?? '',
+      transferLeg: transaction.transferLeg ?? '',
+      currency: transaction.currency ?? '',
+      merchant: transaction.merchant ?? '',
+      debtDirection: transaction.debtDirection ?? '',
+      counterparty: transaction.counterparty ?? '',
+      dueDate: transaction.dueDate?.toISOString() ?? '',
+      interestRate: transaction.interestRate ?? '',
+      debtPayment: transaction.debtPayment ? 'true' : 'false',
       tags: transaction.tags?.join('|') ?? '',
+      isHidden: transaction.isHidden ? 'true' : 'false',
       isRecurring: transaction.isRecurring ? 'true' : 'false',
       recurringFrequency: transaction.recurringFrequency ?? '',
-      recurringEndDate: transaction.recurringEndDate?.toISOString().split('T')[0] ?? '',
+      recurringEndDate: transaction.recurringEndDate?.toISOString() ?? '',
+      createdAt: transaction.createdAt?.toISOString?.() ?? '',
+      updatedAt: transaction.updatedAt?.toISOString?.() ?? '',
     };
   });
 
@@ -403,13 +474,16 @@ export const parseTransactionsFromCsvAsync = (
           headerMap.set(normalizeHeader(field), field);
         });
 
-        const requiredHeaders = ['date', 'type', 'amount'];
-        const missingHeaders = requiredHeaders.filter(h => !headerMap.has(normalizeHeader(h)));
+        const missingHeaders = ['date', 'type'].filter(h => !headerMap.has(normalizeHeader(h)));
+        const hasAmountColumn = headerMap.has(normalizeHeader('amount')) || headerMap.has(normalizeHeader('total'));
 
-        if (missingHeaders.length > 0 && currentRow === 0) {
+        if ((missingHeaders.length > 0 || !hasAmountColumn) && currentRow === 0) {
           errors.push({
             row: 0,
-            message: `Missing required headers: ${missingHeaders.join(', ')}`,
+            message: `Missing required headers: ${[
+              ...missingHeaders,
+              !hasAmountColumn ? 'amount/total' : null,
+            ].filter(Boolean).join(', ')}`,
           });
           parser.abort();
           resolve({
@@ -521,17 +595,20 @@ export const parseTransactionsFromCsv = (
     headerMap.set(normalizeHeader(field), field);
   });
 
-  const requiredHeaders = ['date', 'type', 'amount'];
-  const missingHeaders = requiredHeaders.filter(h => !headerMap.has(normalizeHeader(h)));
+  const missingHeaders = ['date', 'type'].filter(h => !headerMap.has(normalizeHeader(h)));
+  const hasAmountColumn = headerMap.has(normalizeHeader('amount')) || headerMap.has(normalizeHeader('total'));
 
-  if (missingHeaders.length > 0) {
+  if (missingHeaders.length > 0 || !hasAmountColumn) {
     return {
       transactions: [],
       importedCount: 0,
       skippedCount: 0,
       errors: [{
         row: 0,
-        message: `Missing required headers: ${missingHeaders.join(', ')}`,
+        message: `Missing required headers: ${[
+          ...missingHeaders,
+          !hasAmountColumn ? 'amount/total' : null,
+        ].filter(Boolean).join(', ')}`,
       }],
       warnings: [],
     };

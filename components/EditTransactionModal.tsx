@@ -19,7 +19,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction, TransactionCategory } from '@/types/transaction';
-import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 
 interface EditTransactionModalProps {
   visible: boolean;
@@ -76,9 +76,9 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       setType(transaction.type);
 
       const categoryPool = transaction.type === 'income'
-        ? MODAL_INCOME_CATEGORIES
+        ? INCOME_CATEGORIES
         : transaction.type === 'expense'
-          ? MODAL_EXPENSE_CATEGORIES
+          ? EXPENSE_CATEGORIES
           : [];
 
       const normalizedCategory = transaction.category
@@ -99,7 +99,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     }
   }, [transaction]);
 
-  const categories = type === 'transfer' ? [] : (type === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES);
+  const categories = type === 'transfer' ? [] : (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
 
   const displayedCategories = useMemo(() => {
     if (!selectedCategory || type === 'transfer') {

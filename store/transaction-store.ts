@@ -18,6 +18,8 @@ import {
   TransactionCategory,
   UserProfile,
 } from '@/types/transaction';
+import { EXPENSE_CATEGORIES } from '@/constants/categories';
+import { findCurrencyOption } from '@/constants/currencies';
 import {
   AppSettings,
   PersistedState,
@@ -92,6 +94,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   notifications: true,
   biometricAuth: false,
   autoBackup: false,
+  averageDebtInterestRate: 0.18,
   privacy: {
     hideAmounts: false,
     requireAuth: false,
@@ -379,6 +382,29 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [ledgerTransactions]
   );
 
+  const budgetCategories = useMemo(() => {
+    const categoriesFromTransactions = visibleTransactions
+      .filter((transaction) => transaction.type === 'expense')
+      .map((transaction) => transaction.category)
+      .filter((category): category is TransactionCategory => !!category?.id);
+
+    const categoriesFromBudgets = budgets
+      .map((budget) => budget.category)
+      .filter((category): category is TransactionCategory => !!category?.id);
+
+    const map = new Map<string, TransactionCategory>();
+
+    [...EXPENSE_CATEGORIES, ...categoriesFromTransactions, ...categoriesFromBudgets].forEach(
+      (category) => {
+        if (!map.has(category.id)) {
+          map.set(category.id, category);
+        }
+      }
+    );
+
+    return Array.from(map.values());
+  }, [budgets, visibleTransactions]);
+
   const lifetimeNetCashFlow = useMemo(
     () => computeNetBalance(ledgerTransactions),
     [ledgerTransactions]
@@ -459,18 +485,18 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         return '$0.00';
       }
 
-      const currency = currencyCode ?? settings.currency;
+      const currencyOption = findCurrencyOption(currencyCode ?? settings.currency);
+      const symbol = currencyOption.symbol;
       const locale = settings.language === 'en' ? 'en-US' : settings.language;
 
       try {
-        return new Intl.NumberFormat(locale, {
-          style: 'currency',
-          currency,
+        const numberPart = new Intl.NumberFormat(locale, {
           minimumFractionDigits: 2,
           maximumFractionDigits: 2,
         }).format(amount);
+        return `${symbol} ${numberPart}`;
       } catch {
-        return amount.toFixed(2);
+        return `${symbol} ${amount.toFixed(2)}`;
       }
     },
     [settings.currency, settings.language]
@@ -971,6 +997,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     },
     [getBudgetSpendingInternal, visibleTransactions]
   );
+
+  const getBudgetCategories = useCallback(() => budgetCategories, [budgetCategories]);
 
   const markAlertAsRead = useCallback(
     (id: string) => {
@@ -1582,6 +1610,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     updateBudget,
     deleteBudget,
     getBudgetSpending,
+    getBudgetCategories,
     markAlertAsRead,
     clearReadAlerts,
     addFinancialGoal,

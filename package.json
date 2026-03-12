@@ -11,6 +11,7 @@
     "@trpc/server": "^11.9.0",
     "date-fns": "^4.1.0",
     "expo": "~54.0.33",
+    "expo-auth-session": "~6.2.2",
     "expo-blur": "~15.0.8",
     "expo-constants": "~18.0.13",
     "expo-dev-client": "~6.0.20",
@@ -29,6 +30,7 @@
     "expo-status-bar": "~3.0.9",
     "expo-system-ui": "~6.0.1",
     "expo-web-browser": "~15.0.10",
+    "expo-secure-store": "~13.0.2",
     "lucide-react-native": "^0.576.0",
     "nativewind": "^4.1.23",
     "papaparse": "^5.5.3",
@@ -56,5 +58,14 @@
   "scripts": {
     "android": "expo run:android",
     "ios": "expo run:ios"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "@react-native-ml-kit/text-recognition"
+        ]
+      }
+    }
   }
 }

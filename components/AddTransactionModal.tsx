@@ -38,7 +38,7 @@ import {
 } from 'lucide-react-native';
 import * as Icons from 'lucide-react-native';
 import { Transaction, TransactionCategory } from '@/types/transaction';
-import { MODAL_EXPENSE_CATEGORIES, MODAL_INCOME_CATEGORIES } from '@/constants/modal-categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import * as ImagePicker from 'expo-image-picker';
@@ -265,8 +265,8 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
     return type === 'transfer'
       ? []
       : type === 'income'
-        ? MODAL_INCOME_CATEGORIES
-        : MODAL_EXPENSE_CATEGORIES;
+        ? INCOME_CATEGORIES
+        : EXPENSE_CATEGORIES;
   }, [type]);
 
   const filteredCategories = useMemo(() => {
@@ -281,10 +281,10 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
   const aiCategoryName = useMemo(() => {
     if (!aiSuggestion) return null;
     const pool = aiSuggestion.debtIntent?.type === 'debt'
-      ? MODAL_EXPENSE_CATEGORIES
+      ? EXPENSE_CATEGORIES
       : type === 'income'
-        ? MODAL_INCOME_CATEGORIES
-        : MODAL_EXPENSE_CATEGORIES;
+        ? INCOME_CATEGORIES
+        : EXPENSE_CATEGORIES;
     return pool.find((category) => category.id === aiSuggestion.categoryId)?.name ?? 'Other';
   }, [aiSuggestion, type]);
 
@@ -415,7 +415,7 @@ export function AddTransactionModal({ visible, onClose }: AddTransactionModalPro
       }
 
       const preferredType = ai.debtIntent?.type === 'debt' ? 'debt' : type;
-      const categoryPool = preferredType === 'income' ? MODAL_INCOME_CATEGORIES : MODAL_EXPENSE_CATEGORIES;
+      const categoryPool = preferredType === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
       const aiCategory = ai.categoryId
         ? categoryPool.find((category) => category.id === ai.categoryId)
         : null;

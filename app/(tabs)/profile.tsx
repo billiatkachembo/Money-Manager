@@ -43,14 +43,31 @@ import {
   Shield as ShieldIcon
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+import { makeRedirectUri } from 'expo-auth-session';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { ALL_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
-import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupRestoreModal';
+import {
+  clearDriveAuth,
+  downloadBackupFile,
+  getOrCreateBackupFolder,
+  isTokenValid,
+  listBackupFiles,
+  loadDriveAuth,
+  refreshAccessToken,
+  saveDriveAuth,
+  uploadBackupFile,
+} from '@/lib/google-drive';
+
+WebBrowser.maybeCompleteAuthSession();
 
 interface UserProfile {
   name: string;
@@ -127,6 +144,35 @@ export default function ProfileScreen() {
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState<string>('');
   const [backupHistory, setBackupHistory] = useState<BackupHistoryItem[]>([]);
+
+  const googleClientIds = {
+    expo: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID,
+    ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  };
+
+  const redirectUri = makeRedirectUri({ scheme: 'myapp' });
+  const useProxy = Constants.appOwnership === 'expo';
+
+  const [googleAuthRequest, , promptGoogleAuth] = Google.useAuthRequest({
+    expoClientId: googleClientIds.expo,
+    iosClientId: googleClientIds.ios,
+    androidClientId: googleClientIds.android,
+    webClientId: googleClientIds.web,
+    scopes: ['https://www.googleapis.com/auth/drive.file'],
+    redirectUri,
+    extraParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
+  });
+
+  const [driveAuth, setDriveAuth] = useState<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+  } | null>(null);
 
   const currencies = CURRENCY_OPTIONS;
 
@@ -225,24 +271,51 @@ export default function ProfileScreen() {
     onSuccess?: () => void
   ) => {
     try {
-      const file = new File(Paths.cache, fileName);
-      file.create({ intermediates: true, overwrite: true });
-      file.write(content);
+      const baseDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
+      let fileUri: string | null = null;
+      let shouldShare = true;
 
-      if (!(await Sharing.isAvailableAsync())) {
-        throw new Error('File sharing is not available on this device.');
+      if (baseDir) {
+        fileUri = `${baseDir}${fileName}`;
+        await FileSystem.writeAsStringAsync(fileUri, content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      } else if (Platform.OS === 'android' && FileSystem.StorageAccessFramework) {
+        const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (!permission.granted) {
+          throw new Error('Storage permission was denied.');
+        }
+        fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          permission.directoryUri,
+          fileName,
+          mimeType
+        );
+        await FileSystem.writeAsStringAsync(fileUri, content, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        shouldShare = false;
       }
 
-      await Sharing.shareAsync(file.uri, {
-        dialogTitle: title,
-        mimeType,
-        UTI:
-          mimeType === 'text/csv'
-            ? 'public.comma-separated-values-text'
-            : mimeType === 'application/json'
-              ? 'public.json'
-              : undefined,
-      });
+      if (!fileUri) {
+        throw new Error('File export is not available on this device.');
+      }
+
+      if (shouldShare) {
+        if (!(await Sharing.isAvailableAsync())) {
+          throw new Error('File sharing is not available on this device.');
+        }
+
+        await Sharing.shareAsync(fileUri, {
+          dialogTitle: title,
+          mimeType,
+          UTI:
+            mimeType === 'text/csv'
+              ? 'public.comma-separated-values-text'
+              : mimeType === 'application/json'
+                ? 'public.json'
+                : undefined,
+        });
+      }
 
       onSuccess?.();
       setBackupStatus('success');
@@ -460,33 +533,43 @@ export default function ProfileScreen() {
   const handleBackupToGoogleDrive = async () => {
     try {
       setBackupStatus('backingup');
-      setBackupMessage('Connecting to Google Drive...');
+      setBackupMessage('Preparing Google Drive backup...');
 
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
+      const exportedAt = new Date();
       const dataToExport = {
-        transactions,
-        userProfile,
+        transactions: allTransactions,
+        accounts,
+        notes,
         settings,
-        backupDate: new Date().toISOString(),
+        budgets,
+        budgetAlerts,
+        financialGoals,
+        userProfile,
+        recurringRules,
+        exportDate: exportedAt.toISOString(),
         totalTransactions: transactions.length,
-        appVersion: '1.0.0',
+        appVersion: '2.0.0',
+        schemaVersion: '2.0',
       };
 
-      console.log('Google Drive Backup Data:', JSON.stringify(dataToExport, null, 2));
-      
-      updateSettings({ lastBackupDate: new Date() });
-      setBackupHistory((previous) => [
-        { timestamp: Date.now(), filename: 'Google Drive backup' },
-        ...previous,
-      ].slice(0, 5));
-      setBackupStatus('success');
-      setBackupMessage(`Backup completed! ${transactions.length} transactions saved to Google Drive.`);
-      
-      setTimeout(() => {
-        setBackupStatus('idle');
-      }, 3000);
-      
+      const jsonString = JSON.stringify(dataToExport, null, 2);
+      const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+      const backupFileName = `money-manager-drive-backup-${timestamp}.json`;
+
+      await shareFilePayload(
+        'Money Manager Drive Backup',
+        backupFileName,
+        jsonString,
+        'application/json',
+        'Backup ready. Choose Google Drive to upload the file.',
+        () => {
+          updateSettings({ lastBackupDate: exportedAt });
+          setBackupHistory((previous) => [
+            { timestamp: exportedAt.getTime(), filename: backupFileName },
+            ...previous,
+          ].slice(0, 5));
+        }
+      );
     } catch (error) {
       console.error('Google Drive backup error:', error);
       setBackupStatus('error');
@@ -496,40 +579,17 @@ export default function ProfileScreen() {
 
   const handleRestoreFromGoogleDrive = async () => {
     try {
-      setBackupStatus('restoring');
-      setBackupMessage('Searching for backup files...');
-
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
       Alert.alert(
-        'Restore Backup',
-        'This will replace all current data with the backup data from Google Drive. This action cannot be undone.',
+        'Restore from Google Drive',
+        'Download the backup JSON from Google Drive, then use Import JSON to restore it. A file picker is available after installing expo-document-picker.',
         [
           { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Restore',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                setBackupMessage('Downloading and restoring data...');
-                await new Promise(resolve => setTimeout(resolve, 5000));
-                setBackupStatus('success');
-                setBackupMessage('Data restored successfully from Google Drive!');
-                setTimeout(() => {
-                  setBackupStatus('idle');
-                }, 3000);
-              } catch (restoreError) {
-                setBackupStatus('error');
-                setBackupMessage('Restore failed. Please try again.');
-              }
-            },
-          },
+          { text: 'Open Import', onPress: () => openImportModal('json') },
         ]
       );
-      
     } catch (error) {
       setBackupStatus('error');
-      setBackupMessage('Restore failed. Please check your connection and try again.');
+      setBackupMessage(error instanceof Error ? error.message : 'Restore failed. Please try again.');
     }
   };
 
@@ -1036,7 +1096,7 @@ export default function ProfileScreen() {
               </Text>
 
               <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Manage JSON, CSV, and Drive backups
+                Manage JSON, CSV, and Drive backups (via share sheet)
               </Text>
             </View>
           </View>
@@ -1297,7 +1357,7 @@ export default function ProfileScreen() {
               <Text style={[styles.importHelpText, { color: theme.colors.textSecondary }]}>
                 {importFormat === 'json'
                   ? 'Paste a full Money Manager backup payload to replace the current app data.'
-                  : 'Paste CSV rows with a header row. Supported columns include date, type, amount, description, categoryId/categoryName, fromAccountId, toAccountId, and tags.'}
+                  : 'Paste CSV with headers. Supported columns include date/timestamp, type, amount or total, description, categoryId/categoryName, accounts, transfer/debt fields, currency, tags, createdAt, and updatedAt.'}
               </Text>
 
               <TextInput

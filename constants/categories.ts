@@ -118,6 +118,10 @@ export const ALL_CATEGORIES: TransactionCategory[] = [
   ...MODAL_INCOME_CATEGORIES,
 ];
 
+// Backwards-compatible alias for legacy imports.
+export const EXPENSE_CATEGORIES = MODAL_EXPENSE_CATEGORIES;
+export const INCOME_CATEGORIES = MODAL_INCOME_CATEGORIES;
+
 /* -------------------- Income/Expense Keyword Detection -------------------- */
 // Keywords that hint at income (case-insensitive)
 const INCOME_KEYWORDS = [

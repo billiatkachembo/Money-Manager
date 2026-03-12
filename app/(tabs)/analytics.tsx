@@ -99,7 +99,7 @@ export default function AnalyticsScreen() {
   const { theme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
 
-  const chartWidth = Math.max(screenWidth - 56, 280);
+  const chartWidth = Math.max(screenWidth - 32, 260);
   const today = new Date();
   const currentMonth = toMonthKey(today);
   const elapsedDays = Math.max(1, today.getDate());
@@ -138,18 +138,28 @@ export default function AnalyticsScreen() {
     }));
   }, [categorySpending, theme.isDark]);
 
+  const transactionsByDay = useMemo(() => {
+    const map = new Map<string, { income: number; expenses: number }>();
+    for (const transaction of transactions) {
+      if (transaction.type !== 'income' && transaction.type !== 'expense') {
+        continue;
+      }
+      const key = toDayKey(transaction.date);
+      const entry = map.get(key) ?? { income: 0, expenses: 0 };
+      if (transaction.type === 'income') {
+        entry.income += transaction.amount;
+      } else {
+        entry.expenses += transaction.amount;
+      }
+      map.set(key, entry);
+    }
+    return map;
+  }, [transactions]);
+
   const trendData = useMemo(() => {
     const recentDays = buildRecentDays(14);
-    const expenses = recentDays.map((date) =>
-      transactions
-        .filter((transaction) => transaction.type === 'expense' && toDayKey(transaction.date) === toDayKey(date))
-        .reduce((sum, transaction) => sum + transaction.amount, 0)
-    );
-    const income = recentDays.map((date) =>
-      transactions
-        .filter((transaction) => transaction.type === 'income' && toDayKey(transaction.date) === toDayKey(date))
-        .reduce((sum, transaction) => sum + transaction.amount, 0)
-    );
+    const expenses = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.expenses ?? 0);
+    const income = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.income ?? 0);
 
     return {
       labels: recentDays.map((date, index) => (index % 2 === 0 ? `${date.getMonth() + 1}/${date.getDate()}` : '')),
@@ -171,7 +181,7 @@ export default function AnalyticsScreen() {
         },
       ],
     };
-  }, [transactions]);
+  }, [transactionsByDay]);
 
   const monthlyComparisonData = useMemo(() => {
     const recentMonths = buildRecentMonths(6);
@@ -211,26 +221,30 @@ export default function AnalyticsScreen() {
     [accounts]
   );
 
+  const monthlyNetFlowByMonth = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const transaction of transactions) {
+      const key = toMonthKey(transaction.date);
+      const current = map.get(key) ?? 0;
+      if (transaction.type === 'income') {
+        map.set(key, current + transaction.amount);
+      } else if (transaction.type === 'expense') {
+        map.set(key, current - transaction.amount);
+      } else {
+        map.set(key, current);
+      }
+    }
+    return map;
+  }, [transactions]);
+
   const cumulativeNetFlow = useMemo(() => {
     let running = 0;
     return netWorthProgress.points.map((point) => {
-      const monthNetFlow = transactions.reduce((sum, transaction) => {
-        if (toMonthKey(transaction.date) !== point.month) {
-          return sum;
-        }
-        if (transaction.type === 'income') {
-          return sum + transaction.amount;
-        }
-        if (transaction.type === 'expense') {
-          return sum - transaction.amount;
-        }
-        return sum;
-      }, 0);
-
+      const monthNetFlow = monthlyNetFlowByMonth.get(point.month) ?? 0;
       running += monthNetFlow;
       return roundCurrency(running);
     });
-  }, [netWorthProgress.points, transactions]);
+  }, [monthlyNetFlowByMonth, netWorthProgress.points]);
 
   const netWorthChartData = useMemo(
     () => ({
@@ -296,9 +310,16 @@ export default function AnalyticsScreen() {
   );
 
   const netFlowOverlayText = useMemo(
-    () => formatSignedCurrency(formatCurrency, cumulativeNetFlow[cumulativeNetFlow.length - 1] ?? 0),
+    () => formatSignedCurrency(formatCurrency, cumulativeNetFlow.at(-1) ?? 0),
     [cumulativeNetFlow, formatCurrency]
   );
+
+  const savingsRate = useMemo(() => {
+    if (monthlyIncome <= 0) {
+      return 0;
+    }
+    return (monthlyIncome - monthlyExpenses) / monthlyIncome;
+  }, [monthlyExpenses, monthlyIncome]);
 
   const monthContributionItems = useMemo(() => {
     if (!selectedMonthPoint) {
@@ -394,10 +415,13 @@ export default function AnalyticsScreen() {
             <Text style={[styles.summaryValue, styles.expenseText]}>{formatCurrency(monthlyExpenses)}</Text>
           </View>
         </View>
-        <View style={[styles.netIncomeContainer, { borderTopColor: theme.colors.border }]}> 
+        <View style={[styles.netIncomeContainer, { borderTopColor: theme.colors.border }]}>
           <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Income</Text>
           <Text style={[styles.netIncomeValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
             {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
+          </Text>
+          <Text style={[styles.savingsRateText, { color: theme.colors.textSecondary }]}>
+            Savings Rate: {formatPercentage(savingsRate)}
           </Text>
         </View>
       </View>
@@ -911,6 +935,11 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
   },
+  savingsRateText: {
+    marginTop: 6,
+    fontSize: 12,
+    fontWeight: '500',
+  },
   netWorthChangeText: {
     fontSize: 11,
     fontWeight: '600',
@@ -1160,7 +1189,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.45)',
   },
   monthModalCard: {
-    maxHeight: '84%',
+    maxHeight: '90%',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     borderWidth: 1,

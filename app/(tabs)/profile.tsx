@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
+  Image,
   Text,
   StyleSheet,
   ScrollView,
@@ -43,7 +44,6 @@ import {
   Shield as ShieldIcon
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri } from 'expo-auth-session';
@@ -52,7 +52,7 @@ import { useTheme } from '@/store/theme-store';
 import { ALL_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupRestoreModal';
 import {
@@ -65,6 +65,7 @@ import {
   refreshAccessToken,
   saveDriveAuth,
   uploadBackupFile,
+  type DriveAuthState,
 } from '@/lib/google-drive';
 
 WebBrowser.maybeCompleteAuthSession();
@@ -121,6 +122,7 @@ export default function ProfileScreen() {
     recurringRules,
     updateSettings, 
     updateUserProfile,
+    attemptAutoRestoreFromDrive,
     restoreBackupSnapshot,
     importTransactionsBatch,
     formatCurrency, 
@@ -144,23 +146,56 @@ export default function ProfileScreen() {
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState<string>('');
   const [backupHistory, setBackupHistory] = useState<BackupHistoryItem[]>([]);
+  const [avatarError, setAvatarError] = useState(false);
+  const autoBackupPromptedRef = useRef(false);
 
   const googleClientIds = {
-    expo: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID,
-    ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-    web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    expo: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+    ios: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+    android: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+    web: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+  };
+
+  const authClientIds = {
+    expo:
+      googleClientIds.expo ??
+      googleClientIds.web ??
+      googleClientIds.ios ??
+      googleClientIds.android ??
+      'MISSING_EXPO_CLIENT_ID',
+    ios:
+      googleClientIds.ios ??
+      googleClientIds.expo ??
+      googleClientIds.web ??
+      googleClientIds.android ??
+      'MISSING_IOS_CLIENT_ID',
+    android:
+      googleClientIds.android ??
+      googleClientIds.expo ??
+      googleClientIds.web ??
+      googleClientIds.ios ??
+      'MISSING_ANDROID_CLIENT_ID',
+    web:
+      googleClientIds.web ??
+      googleClientIds.expo ??
+      googleClientIds.ios ??
+      googleClientIds.android ??
+      'MISSING_WEB_CLIENT_ID',
   };
 
   const redirectUri = makeRedirectUri({ scheme: 'myapp' });
-  const useProxy = Constants.appOwnership === 'expo';
 
   const [googleAuthRequest, , promptGoogleAuth] = Google.useAuthRequest({
-    expoClientId: googleClientIds.expo,
-    iosClientId: googleClientIds.ios,
-    androidClientId: googleClientIds.android,
-    webClientId: googleClientIds.web,
-    scopes: ['https://www.googleapis.com/auth/drive.file'],
+    clientId: authClientIds.web,
+    iosClientId: authClientIds.ios,
+    androidClientId: authClientIds.android,
+    webClientId: authClientIds.web,
+    scopes: [
+      'https://www.googleapis.com/auth/drive.file',
+      'openid',
+      'profile',
+      'email',
+    ],
     redirectUri,
     extraParams: {
       access_type: 'offline',
@@ -168,11 +203,7 @@ export default function ProfileScreen() {
     },
   });
 
-  const [driveAuth, setDriveAuth] = useState<{
-    accessToken: string;
-    refreshToken?: string;
-    expiresAt?: number;
-  } | null>(null);
+  const [driveAuth, setDriveAuth] = useState<DriveAuthState | null>(null);
 
   const currencies = CURRENCY_OPTIONS;
 
@@ -193,6 +224,27 @@ export default function ProfileScreen() {
   useEffect(() => {
     setEditForm(userProfile);
   }, [userProfile]);
+
+  useEffect(() => {
+    setAvatarError(false);
+  }, [userProfile.avatar]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadDriveAuthState = async () => {
+      const stored = await loadDriveAuth();
+      if (stored && isMounted) {
+        setDriveAuth(stored);
+      }
+    };
+
+    void loadDriveAuthState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const languages = [
     { code: 'en', name: 'English' },
@@ -285,8 +337,12 @@ export default function ProfileScreen() {
         if (!permission.granted) {
           throw new Error('Storage permission was denied.');
         }
+        const directoryUri = permission.directoryUri;
+        if (!directoryUri) {
+          throw new Error('Storage permission did not return a directory.');
+        }
         fileUri = await FileSystem.StorageAccessFramework.createFileAsync(
-          permission.directoryUri,
+          directoryUri,
           fileName,
           mimeType
         );
@@ -530,10 +586,160 @@ export default function ProfileScreen() {
 
     handleCsvImport(importText);
   };
+  const resolveGoogleClientId = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      return (
+        googleClientIds.ios ??
+        googleClientIds.web ??
+        googleClientIds.android ??
+        googleClientIds.expo
+      );
+    }
+
+    if (Platform.OS === 'android') {
+      return (
+        googleClientIds.android ??
+        googleClientIds.web ??
+        googleClientIds.ios ??
+        googleClientIds.expo
+      );
+    }
+
+    return (
+      googleClientIds.web ??
+      googleClientIds.ios ??
+      googleClientIds.android ??
+      googleClientIds.expo
+    );
+  }, [googleClientIds]);
+
+  const syncGoogleProfile = useCallback(async (accessToken: string) => {
+    try {
+      const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Unable to fetch Google profile.');
+      }
+
+      const profile = await response.json();
+      if (!profile || typeof profile !== 'object') {
+        return;
+      }
+
+      updateUserProfile({
+        ...userProfile,
+        name: profile.name ?? userProfile.name,
+        email: profile.email ?? userProfile.email,
+        avatar: profile.picture ?? userProfile.avatar,
+      });
+    } catch (error) {
+      console.error('Google profile sync error:', error);
+    }
+  }, [updateUserProfile, userProfile]);
+
+  const ensureDriveAuth = useCallback(async () => {
+    const clientId = resolveGoogleClientId();
+    if (!clientId) {
+      throw new Error('Google client ID is missing. Configure EXPO_PUBLIC_GOOGLE_*_CLIENT_ID values first.');
+    }
+
+    let stored = driveAuth ?? (await loadDriveAuth());
+    if (stored) {
+      setDriveAuth(stored);
+    }
+
+    if (isTokenValid(stored)) {
+      return stored as DriveAuthState;
+    }
+
+    if (stored?.refreshToken) {
+      try {
+        const refreshed = await refreshAccessToken(stored.refreshToken, clientId);
+        const nextAuth: DriveAuthState = {
+          accessToken: refreshed.accessToken,
+          refreshToken: stored.refreshToken,
+          expiresAt: refreshed.expiresIn ? Date.now() + refreshed.expiresIn * 1000 : undefined,
+        };
+
+        await saveDriveAuth(nextAuth, refreshed.expiresIn);
+        setDriveAuth(nextAuth);
+        return nextAuth;
+      } catch (error) {
+        console.error('Google token refresh error:', error);
+        await clearDriveAuth();
+        setDriveAuth(null);
+      }
+    }
+
+    if (!googleAuthRequest) {
+      throw new Error('Google authentication is not ready. Please try again.');
+    }
+
+    const response = await promptGoogleAuth();
+    if (response.type !== 'success' || !response.authentication?.accessToken) {
+      throw new Error('Google sign-in was cancelled.');
+    }
+
+    const nextAuth: DriveAuthState = {
+      accessToken: response.authentication.accessToken,
+      refreshToken: response.authentication.refreshToken,
+      expiresAt: response.authentication.expiresIn
+        ? Date.now() + response.authentication.expiresIn * 1000
+        : undefined,
+    };
+
+    await saveDriveAuth(nextAuth, response.authentication.expiresIn);
+    setDriveAuth(nextAuth);
+    await syncGoogleProfile(nextAuth.accessToken);
+    await attemptAutoRestoreFromDrive({ force: true });
+
+    return nextAuth;
+  }, [
+    attemptAutoRestoreFromDrive,
+    driveAuth,
+    googleAuthRequest,
+    loadDriveAuth,
+    promptGoogleAuth,
+    refreshAccessToken,
+    resolveGoogleClientId,
+    saveDriveAuth,
+    syncGoogleProfile,
+  ]);
+
+  useEffect(() => {
+    if (!settings.autoBackup) {
+      autoBackupPromptedRef.current = false;
+      return;
+    }
+
+    if (driveAuth || !googleAuthRequest) {
+      return;
+    }
+
+    if (autoBackupPromptedRef.current) {
+      return;
+    }
+
+    autoBackupPromptedRef.current = true;
+    void ensureDriveAuth().catch((error) => {
+      console.error('Auto backup sign-in error:', error);
+    });
+  }, [driveAuth, ensureDriveAuth, googleAuthRequest, settings.autoBackup]);
+
   const handleBackupToGoogleDrive = async () => {
     try {
       setBackupStatus('backingup');
-      setBackupMessage('Preparing Google Drive backup...');
+      setBackupMessage('Connecting to Google Drive...');
+
+      const auth = await ensureDriveAuth();
+      const accessToken = auth.accessToken;
+      const folderId = await getOrCreateBackupFolder(accessToken, 'Money Manager Backups');
+
+      setBackupMessage('Uploading backup to Google Drive...');
 
       const exportedAt = new Date();
       const dataToExport = {
@@ -556,38 +762,73 @@ export default function ProfileScreen() {
       const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
       const backupFileName = `money-manager-drive-backup-${timestamp}.json`;
 
-      await shareFilePayload(
-        'Money Manager Drive Backup',
-        backupFileName,
-        jsonString,
-        'application/json',
-        'Backup ready. Choose Google Drive to upload the file.',
-        () => {
-          updateSettings({ lastBackupDate: exportedAt });
-          setBackupHistory((previous) => [
-            { timestamp: exportedAt.getTime(), filename: backupFileName },
-            ...previous,
-          ].slice(0, 5));
-        }
-      );
+      await uploadBackupFile(accessToken, backupFileName, jsonString, folderId);
+
+      updateSettings({ lastBackupDate: exportedAt });
+      setBackupHistory((previous) => [
+        { timestamp: exportedAt.getTime(), filename: backupFileName },
+        ...previous,
+      ].slice(0, 5));
+
+      setBackupStatus('success');
+      setBackupMessage('Backup uploaded to Google Drive.');
+      resetBackupStatus();
     } catch (error) {
       console.error('Google Drive backup error:', error);
       setBackupStatus('error');
-      setBackupMessage('Backup failed. Please check your connection and try again.');
+      setBackupMessage(error instanceof Error ? error.message : 'Backup failed. Please check your connection and try again.');
     }
   };
 
   const handleRestoreFromGoogleDrive = async () => {
     try {
+      setBackupStatus('restoring');
+      setBackupMessage('Connecting to Google Drive...');
+
+      const auth = await ensureDriveAuth();
+      const accessToken = auth.accessToken;
+      const folderId = await getOrCreateBackupFolder(accessToken, 'Money Manager Backups');
+      const files = await listBackupFiles(accessToken, folderId);
+
+      if (!files.length) {
+        setBackupStatus('error');
+        setBackupMessage('No Google Drive backups found.');
+        resetBackupStatus();
+        return;
+      }
+
+      const latest = files[0];
+      setBackupStatus('idle');
+
       Alert.alert(
         'Restore from Google Drive',
-        'Download the backup JSON from Google Drive, then use Import JSON to restore it. A file picker is available after installing expo-document-picker.',
+        `Restore backup "${latest.name}"? This will replace your current data.`,
         [
           { text: 'Cancel', style: 'cancel' },
-          { text: 'Open Import', onPress: () => openImportModal('json') },
+          {
+            text: 'Restore',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                setBackupStatus('restoring');
+                setBackupMessage('Downloading backup from Google Drive...');
+                const jsonString = await downloadBackupFile(accessToken, latest.id);
+                const importedData = JSON.parse(jsonString);
+                await restoreBackupSnapshot(importedData);
+                setBackupStatus('success');
+                setBackupMessage('Google Drive backup restored successfully.');
+                resetBackupStatus();
+              } catch (error) {
+                console.error('Google Drive restore error:', error);
+                setBackupStatus('error');
+                setBackupMessage(error instanceof Error ? error.message : 'Restore failed. Please try again.');
+              }
+            },
+          },
         ]
       );
     } catch (error) {
+      console.error('Google Drive restore error:', error);
       setBackupStatus('error');
       setBackupMessage(error instanceof Error ? error.message : 'Restore failed. Please try again.');
     }
@@ -883,7 +1124,16 @@ export default function ProfileScreen() {
       {/* Header Section */}
       <View style={[styles.header, { backgroundColor: theme.colors.surface }]}>
         <View style={styles.avatarContainer}>
-          <User size={32} color="#667eea" />
+          {userProfile.avatar && userProfile.avatar.startsWith('http') && !avatarError ? (
+            <Image
+              source={{ uri: userProfile.avatar }}
+              style={styles.avatarImage}
+              resizeMode="cover"
+              onError={() => setAvatarError(true)}
+            />
+          ) : (
+            <User size={32} color="#667eea" />
+          )}
         </View>
         <Text style={[styles.name, { color: theme.colors.text }]}>{userProfile.name}</Text>
         <Text style={[styles.email, { color: theme.colors.textSecondary }]}>{userProfile.email}</Text>
@@ -1096,7 +1346,7 @@ export default function ProfileScreen() {
               </Text>
 
               <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Manage JSON, CSV, and Drive backups (via share sheet)
+                Manage JSON, CSV, and Drive backups
               </Text>
             </View>
           </View>
@@ -1756,6 +2006,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
+    overflow: 'hidden',
+  },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
   },
   name: {
     fontSize: 20,
@@ -2209,5 +2464,18 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

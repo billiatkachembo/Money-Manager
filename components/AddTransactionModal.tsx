@@ -220,11 +220,20 @@ async function persistReceiptImage(uri: string): Promise<string> {
 interface AddTransactionModalProps {
   visible: boolean;
   onClose: () => void;
+  initialType?: 'income' | 'expense' | 'transfer' | 'debt';
 }
 
-export function AddTransactionModal({ visible, onClose }: AddTransactionModalProps) {
+export function AddTransactionModal({ visible, onClose, initialType }: AddTransactionModalProps) {
   const { theme } = useTheme();
   const [type, setType] = useState<'income' | 'expense' | 'transfer' | 'debt'>('expense');
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    setType(initialType ?? 'expense');
+  }, [initialType, visible]);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [transactionDate, setTransactionDate] = useState('');
@@ -2060,6 +2069,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  aiSuggestionCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginTop: 12,
+  },
+  aiSuggestionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  aiSuggestionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  aiSuggestionConfidence: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  aiSuggestionText: {
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  aiSuggestionMeta: {
+    fontSize: 12,
+  },
   footer: {
     padding: 16,
     borderTopWidth: 1,
@@ -2158,3 +2194,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+
+

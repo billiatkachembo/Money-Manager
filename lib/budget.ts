@@ -24,6 +24,38 @@ const computePercentage = (spent: number, budgetAmount: number): number =>
 const getBudgetStatus = (percentage: number): 'safe' | 'warning' | 'exceeded' =>
   percentage >= 100 ? 'exceeded' : percentage >= 80 ? 'warning' : 'safe';
 
+export function getBudgetRiskSummary(
+  budgets: Budget[],
+  transactions: Transaction[],
+  month: string
+): { overCount: number; nearCount: number; safeCount: number; total: number } {
+  const referenceDate = new Date(`${month}-01T00:00:00.000Z`);
+  const activeBudgets = getActiveBudgets(budgets, referenceDate);
+
+  let overCount = 0;
+  let nearCount = 0;
+  let safeCount = 0;
+
+  for (const budget of activeBudgets) {
+    const spent = computeBudgetSpendingForDate(budget, transactions, referenceDate);
+    const percentage = computePercentage(spent, budget.amount);
+
+    if (percentage >= 100) {
+      overCount += 1;
+    } else if (percentage >= 80) {
+      nearCount += 1;
+    } else {
+      safeCount += 1;
+    }
+  }
+
+  return {
+    overCount,
+    nearCount,
+    safeCount,
+    total: activeBudgets.length,
+  };
+}
 /**
  * Compute multi-month budget usage + projected alerts
  * @param budgets - all budgets

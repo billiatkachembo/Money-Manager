@@ -91,12 +91,17 @@ export function GoalsSection() {
 
   const [showGoalForm, setShowGoalForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState<FinancialGoal | null>(null);
-  const [goalForm, setGoalForm] = useState({
-    title: '',
-    targetAmount: '',
-    targetDate: '',
-    category: 'savings' as const,
-  });
+  const [goalForm, setGoalForm] = useState<{
+  title: string;
+  targetAmount: string;
+  targetDate: string;
+  category: FinancialGoal['category'];
+}>({
+  title: '',
+  targetAmount: '',
+  targetDate: '',
+  category: 'savings',
+});
 
   const today = useMemo(() => new Date(), []);
 
@@ -555,3 +560,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

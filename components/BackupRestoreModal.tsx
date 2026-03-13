@@ -1,4 +1,4 @@
-import { memo } from 'react';
+﻿import { memo } from 'react';
 import {
   Modal,
   View,
@@ -141,7 +141,7 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
 
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Cloud Backup</Text>
           <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
-            Creates a full JSON snapshot and opens the share sheet so you can upload to Google Drive.
+            Creates a full JSON snapshot and uploads it directly to Google Drive.
           </Text>
           <BackupActionButton
             icon={<UploadCloud size={20} color="#FFFFFF" />}
@@ -152,7 +152,7 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
           />
           <BackupActionButton
             icon={<DownloadCloud size={20} color={theme.colors.primary} />}
-            label="Restore from Google Drive (Import JSON)"
+            label="Restore from Google Drive"
             onPress={onRestoreFromGoogleDrive}
             disabled={isProcessing}
             containerStyle={{ backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border }}
@@ -327,3 +327,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+

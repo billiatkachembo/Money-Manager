@@ -44,8 +44,8 @@ function SkeletonBlock({ width, height, style }: { width: number | string; heigh
   useEffect(() => {
     const animation = Animated.loop(
       Animated.sequence([
-        Animated.timing(opacity, { toValue: 0.7, duration: 800, useNativeDriver: true }),
-        Animated.timing(opacity, { toValue: 0.3, duration: 800, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.9, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.35, duration: 700, useNativeDriver: true }),
       ])
     );
     animation.start();
@@ -55,62 +55,82 @@ function SkeletonBlock({ width, height, style }: { width: number | string; heigh
   return (
     <Animated.View
       style={[
-        { width: width as number, height, borderRadius: 12, backgroundColor: '#E0E0E0', opacity },
+        {
+          width,
+          height,
+          borderRadius: 14,
+          backgroundColor: 'rgba(148,163,184,0.2)',
+          opacity,
+        },
         style,
       ]}
     />
   );
 }
 
-const HealthScoreRing = React.memo(function HealthScoreRing({ score, size = 72, strokeWidth = 6 }: { score: number; size?: number; strokeWidth?: number }) {
+const HealthScoreRing = React.memo(function HealthScoreRing({
+  score,
+  size,
+  strokeWidth,
+}: {
+  score: number;
+  size: number;
+  strokeWidth: number;
+}) {
+  const progress = Math.max(0, Math.min(score / 100, 1));
   const color = getHealthScoreColor(score);
   const label = getHealthScoreLabel(score);
-  const progress = Math.min(score / 100, 1);
-  const animatedWidth = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.9)).current;
+  const opacityAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.timing(animatedWidth, {
-      toValue: progress,
-      duration: 1200,
-      useNativeDriver: false,
-    }).start();
-  }, [progress, animatedWidth]);
+    Animated.parallel([
+      Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 7 }),
+      Animated.timing(opacityAnim, { toValue: 1, duration: 320, useNativeDriver: true }),
+    ]).start();
+  }, [opacityAnim, scaleAnim, progress]);
 
   return (
-    <View style={{ alignItems: 'center' }}>
-      <View style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        borderWidth: strokeWidth,
-        borderColor: 'rgba(0,0,0,0.06)',
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-      }}>
-        <View style={{
-          position: 'absolute',
-          top: -strokeWidth,
-          left: -strokeWidth,
+    <Animated.View style={{ alignItems: 'center', opacity: opacityAnim, transform: [{ scale: scaleAnim }] }}>
+      <View
+        style={{
           width: size,
           height: size,
           borderRadius: size / 2,
           borderWidth: strokeWidth,
-          borderColor: 'transparent',
-          borderTopColor: color,
-          borderRightColor: progress > 0.25 ? color : 'transparent',
-          borderBottomColor: progress > 0.5 ? color : 'transparent',
-          borderLeftColor: progress > 0.75 ? color : 'transparent',
-          transform: [{ rotate: '-90deg' }],
-        }} />
+          borderColor: 'rgba(0,0,0,0.06)',
+          alignItems: 'center',
+          justifyContent: 'center',
+          position: 'relative',
+        }}
+      >
+        <View
+          style={{
+            position: 'absolute',
+            top: -strokeWidth,
+            left: -strokeWidth,
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderWidth: strokeWidth,
+            borderColor: 'transparent',
+            borderTopColor: color,
+            borderRightColor: progress > 0.25 ? color : 'transparent',
+            borderBottomColor: progress > 0.5 ? color : 'transparent',
+            borderLeftColor: progress > 0.75 ? color : 'transparent',
+            transform: [{ rotate: '-90deg' }],
+          }}
+        />
         <Text style={{ fontSize: 18, fontWeight: '800' as const, color }}>{score}</Text>
       </View>
-      <Text style={{ fontSize: 10, fontWeight: '600' as const, color, marginTop: 4, letterSpacing: 0.3 }}>{label}</Text>
-    </View>
+      <Text style={{ fontSize: 10, fontWeight: '600' as const, color, marginTop: 4, letterSpacing: 0.3 }}>
+        {label}
+      </Text>
+    </Animated.View>
   );
 });
 
-const InsightCard = React.memo(function InsightCard({ insight, isDark }: { insight: Insight; isDark: boolean }) {
+const InsightCard = React.memo(function InsightCard({ insight, isDark, onPress }: { insight: Insight; isDark: boolean; onPress?: () => void }) {
   const severityConfig = {
     critical: { icon: AlertTriangle, color: '#EF4444', bg: isDark ? '#2D1B1B' : '#FEF2F2', border: isDark ? '#5C2020' : '#FECACA' },
     warning: { icon: Zap, color: '#F59E0B', bg: isDark ? '#2D2514' : '#FFFBEB', border: isDark ? '#5C4B14' : '#FDE68A' },
@@ -134,6 +154,7 @@ const InsightCard = React.memo(function InsightCard({ insight, isDark }: { insig
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
       <TouchableOpacity
         activeOpacity={0.9}
+        onPress={onPress}
         onPressIn={onPressIn}
         onPressOut={onPressOut}
         style={[insightStyles.card, { backgroundColor: config.bg, borderColor: config.border, borderWidth: 1 }]}
@@ -189,6 +210,8 @@ export default function HomeScreen() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const [preferredType, setPreferredType] = useState<'income' | 'expense' | 'transfer' | 'debt' | null>(null);
   const { theme } = useTheme();
   const fabScale = useRef(new Animated.Value(1)).current;
 
@@ -197,7 +220,6 @@ export default function HomeScreen() {
     accounts,
     financialGoals,
     netBalance,
-    lifetimeNetCashFlow,
     getTotalIncome,
     getTotalExpenses,
     healthScore,
@@ -214,9 +236,42 @@ export default function HomeScreen() {
   const monthlyIncome = getTotalIncome(currentMonth);
   const monthlyExpenses = getTotalExpenses(currentMonth);
   const monthlyCashFlow = monthlyIncome - monthlyExpenses;
+  const recentTransactions = useMemo(
+    () => [...transactions].sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 7),
+    [transactions]
+  );
 
-  const recentTransactions = useMemo(() => transactions.slice(0, 5), [transactions]);
+  
+  const activeAccounts = useMemo(() => accounts.filter((account) => account.isActive), [accounts]);
 
+  const accountOverview = useMemo(
+    () => [...activeAccounts].sort((a, b) => b.balance - a.balance).slice(0, 3),
+    [activeAccounts]
+  );
+
+  const topSpending = useMemo(() => {
+    const totals = new Map<string, { name: string; color: string; amount: number }>();
+
+    for (const transaction of transactions) {
+      if (transaction.type !== 'expense') continue;
+      if (transaction.date.toISOString().slice(0, 7) !== currentMonth) continue;
+
+      const category = transaction.category;
+      const key = category?.id ?? category?.name ?? 'uncategorized';
+      const entry = totals.get(key);
+      const amount = Math.abs(transaction.amount);
+      const name = category?.name ?? 'Uncategorized';
+      const color = category?.color ?? 'rgba(148,163,184,0.6)';
+
+      if (entry) {
+        entry.amount += amount;
+      } else {
+        totals.set(key, { name, color, amount });
+      }
+    }
+
+    return Array.from(totals.values()).sort((a, b) => b.amount - a.amount).slice(0, 3);
+  }, [transactions, currentMonth]);
   const activeBudgets = useMemo(() => getActiveBudgets(budgets), [budgets]);
 
   const savingsAccounts = useMemo(
@@ -303,14 +358,72 @@ export default function HomeScreen() {
   const onFabPressIn = useCallback(() => {
     Animated.spring(fabScale, { toValue: 0.88, useNativeDriver: true, friction: 6 }).start();
   }, [fabScale]);
-
   const onFabPressOut = useCallback(() => {
     Animated.spring(fabScale, { toValue: 1, useNativeDriver: true, friction: 6 }).start();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setPreferredType(null);
     setShowAddModal(true);
   }, [fabScale]);
 
+  const handleFabLongPress = useCallback(() => {
+    Alert.alert('Add transaction', 'Choose a type', [
+      {
+        text: 'Income',
+        onPress: () => {
+          setPreferredType('income');
+          setShowAddModal(true);
+        },
+      },
+      {
+        text: 'Expense',
+        onPress: () => {
+          setPreferredType('expense');
+          setShowAddModal(true);
+        },
+      },
+      {
+        text: 'Transfer',
+        onPress: () => {
+          setPreferredType('transfer');
+          setShowAddModal(true);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [setPreferredType, setShowAddModal]);
+
+  const handleMetricPress = useCallback((target: 'budget' | 'health' | 'goals' | 'savings') => {
+    const messageMap = {
+      budget: 'Open the Budget screen to review active budgets.',
+      health: 'Open Financial Health to see your full score breakdown.',
+      goals: 'Open Planning to manage goals and milestones.',
+      savings: 'Open Accounts to review your savings balances.',
+    };
+
+    Alert.alert('Navigate', messageMap[target]);
+  }, []);
+
+  const handleInsightPress = useCallback((insight: Insight) => {
+    Alert.alert(insight.title, insight.message);
+  }, []);
+
   const isDark = theme.isDark;
+
+  useEffect(() => {
+    if (isLoaded) {
+      setShowSkeleton(false);
+      return;
+    }
+
+    const timer = setTimeout(() => setShowSkeleton(true), 300);
+    return () => clearTimeout(timer);
+  }, [isLoaded]);
+
+  if (!isLoaded && !showSkeleton) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]} />
+    );
+  }
 
   if (!isLoaded) {
     return (
@@ -350,26 +463,29 @@ export default function HomeScreen() {
         >
           <View style={styles.heroTop}>
             <View>
-              <Text style={styles.heroLabel}>Net Balance</Text>
+              <Text style={styles.heroLabel}>Net Worth</Text>
               <Text style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}>
                 {netBalance < 0 ? '-' : ''}{formatCurrency(Math.abs(netBalance))}
               </Text>
-              <Text style={[styles.heroMeta, lifetimeNetCashFlow < 0 && styles.heroMetaNegative]}>
-                Lifetime Net Cash Flow {lifetimeNetCashFlow > 0 ? '+' : lifetimeNetCashFlow < 0 ? '-' : ''}{formatCurrency(Math.abs(lifetimeNetCashFlow))}
+              <Text style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}>
+                This month {monthlyCashFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(monthlyCashFlow))}
               </Text>
             </View>
             <View style={styles.cashFlowPill}>
-              {monthlyCashFlow >= 0 ? (
-                <ArrowUpRight size={12} color="#4ADE80" />
-              ) : (
-                <ArrowDownRight size={12} color="#F87171" />
-              )}
-              <Text style={[
-                styles.cashFlowPillText,
-                { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
-              ]}>
-                {monthlyCashFlow >= 0 ? '+' : ''}{formatCurrency(monthlyCashFlow)}
-              </Text>
+              <Text style={styles.cashFlowPillLabel}>Cash Flow</Text>
+              <View style={styles.cashFlowValueRow}>
+                {monthlyCashFlow >= 0 ? (
+                  <ArrowUpRight size={12} color="#4ADE80" />
+                ) : (
+                  <ArrowDownRight size={12} color="#F87171" />
+                )}
+                <Text style={[
+                  styles.cashFlowPillText,
+                  { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
+                ]}>
+                  {monthlyCashFlow >= 0 ? '+' : ''}{formatCurrency(monthlyCashFlow)}
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -396,14 +512,13 @@ export default function HomeScreen() {
           </View>
         </LinearGradient>
 
-        <SmartInsightsCard
-          balance={netBalance}
-          income={monthlyIncome}
-          expenses={monthlyExpenses}
-        />
 
         <View style={styles.metricsRow}>
-          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+          <TouchableOpacity
+            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            activeOpacity={0.85}
+            onPress={() => handleMetricPress('budget')}
+          >
             <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#1E3A5F20' : '#EFF6FF' }]}>
               <Shield size={16} color={isDark ? '#60A5FA' : '#3B82F6'} />
             </View>
@@ -414,7 +529,7 @@ export default function HomeScreen() {
                   <View style={styles.riskBadge}>
                     <AlertTriangle size={13} color="#EF4444" />
                     <Text style={[styles.metricValue, { color: '#EF4444' }]}>
-                      {budgetRisk.overCount} over
+                      {budgetRisk.overCount} over budget
                     </Text>
                   </View>
                 ) : budgetRisk.nearCount > 0 ? (
@@ -439,9 +554,13 @@ export default function HomeScreen() {
                 </Text>
               </>
             )}
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+          <TouchableOpacity
+            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            activeOpacity={0.85}
+            onPress={() => handleMetricPress('health')}
+          >
             <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#1A332920' : '#F0FDF4' }]}>
               <Activity size={16} color={isDark ? '#34D399' : '#059669'} />
             </View>
@@ -454,9 +573,13 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add transactions</Text>
               </>
             )}
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+          <TouchableOpacity
+            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            activeOpacity={0.85}
+            onPress={() => handleMetricPress('goals')}
+          >
             <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#3C2A1120' : '#FEF3C7' }]}>
               <Target size={16} color={isDark ? '#FBBF24' : '#D97706'} />
             </View>
@@ -464,7 +587,7 @@ export default function HomeScreen() {
             {goalSummary.total > 0 ? (
               <>
                 <Text style={[styles.metricValue, { color: theme.colors.text }]}>
-                  {goalSummary.activeCount === 0 ? 'Done' : String(goalSummary.activeCount)}
+                  {goalSummary.activeCount === 0 ? 'All complete' : String(goalSummary.activeCount)}
                 </Text>
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
                   {goalSummary.activeCount === 0 ? 'all goals complete' : goalSummary.activeCount === 1 ? 'active goal' : 'active goals'}
@@ -486,9 +609,13 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add one in Planning</Text>
               </>
             )}
-          </View>
+          </TouchableOpacity>
 
-          <View style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}>
+          <TouchableOpacity
+            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            activeOpacity={0.85}
+            onPress={() => handleMetricPress('savings')}
+          >
             <View style={[styles.metricIconBg, { backgroundColor: isDark ? '#14332B80' : '#DCFCE7' }]}>
               <PiggyBank size={16} color={isDark ? '#4ADE80' : '#16A34A'} />
             </View>
@@ -506,7 +633,7 @@ export default function HomeScreen() {
                   {savingsAccounts.length} {savingsAccounts.length === 1 ? 'account' : 'accounts'}
                 </Text>
                 <Text style={[styles.metricMeta, { color: theme.colors.textSecondary }]}>
-                  {totalSavings > 0 ? 'Saved across accounts' : 'No balance yet'}
+                  {totalSavings > 0 ? 'Total saved' : 'No balance yet'}
                 </Text>
               </>
             ) : (
@@ -515,25 +642,103 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add a savings account</Text>
               </>
             )}
-          </View>
+          </TouchableOpacity>
         </View>
 
-        {topInsights.length > 0 && (
+        {accountOverview.length > 0 && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Smart Insights</Text>
-              {insights.length > 3 && (
-                <TouchableOpacity style={styles.seeAllBtn}>
-                  <Text style={[styles.seeAll, { color: theme.colors.primary }]}>
-                    +{insights.length - 3} more
-                  </Text>
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Accounts</Text>
+              {activeAccounts.length > accountOverview.length && (
+                <TouchableOpacity style={styles.seeAllBtn} onPress={() => handleMetricPress('savings')}>
+                  <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
+                  <ChevronRight size={14} color={theme.colors.primary} />
                 </TouchableOpacity>
               )}
             </View>
-            {topInsights.map((insight) => (
-              <InsightCard key={insight.id} insight={insight} isDark={isDark} />
-            ))}
+            <View
+              style={[
+                styles.overviewCard,
+                { backgroundColor: isDark ? theme.colors.card : '#FFFFFF', borderColor: theme.colors.border },
+              ]}
+            >
+              {accountOverview.map((account, index) => (
+                <View key={account.id}>
+                  {index > 0 && <View style={[styles.txDivider, { backgroundColor: theme.colors.border }]} />}
+                  <View style={styles.overviewRow}>
+                    <View style={styles.overviewNameWrap}>
+                      <View style={[styles.overviewDot, { backgroundColor: account.color || theme.colors.primary }]} />
+                      <Text style={[styles.overviewName, { color: theme.colors.text }]} numberOfLines={1}>
+                        {account.name}
+                      </Text>
+                    </View>
+                    <Text style={[styles.overviewValue, { color: theme.colors.text }]}>
+                      {formatCurrency(account.balance)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
           </View>
+        )}
+
+        {topSpending.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Top Spending</Text>
+              <Text style={[styles.sectionMeta, { color: theme.colors.textSecondary }]}>This month</Text>
+            </View>
+            <View
+              style={[
+                styles.overviewCard,
+                { backgroundColor: isDark ? theme.colors.card : '#FFFFFF', borderColor: theme.colors.border },
+              ]}
+            >
+              {topSpending.map((item, index) => (
+                <View key={`${item.name}-${index}`}>
+                  {index > 0 && <View style={[styles.txDivider, { backgroundColor: theme.colors.border }]} />}
+                  <View style={styles.spendingRow}>
+                    <View style={styles.overviewNameWrap}>
+                      <View style={[styles.spendingDot, { backgroundColor: item.color }]} />
+                      <Text style={[styles.overviewName, { color: theme.colors.text }]} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                    </View>
+                    <Text style={[styles.overviewValue, { color: theme.colors.text }]}>
+                      {formatCurrency(item.amount)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {transactions.length > 0 && (
+          <>
+            <SmartInsightsCard
+              balance={netBalance}
+              income={monthlyIncome}
+              expenses={monthlyExpenses}
+            />
+            {topInsights.length > 0 && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Smart Insights</Text>
+                  {insights.length > 3 && (
+                    <TouchableOpacity style={styles.seeAllBtn}>
+                      <Text style={[styles.seeAll, { color: theme.colors.primary }]}>
+                        +{insights.length - 3} more
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {topInsights.map((insight) => (
+                  <InsightCard key={insight.id} insight={insight} isDark={isDark} onPress={() => handleInsightPress(insight)} />
+                ))}
+              </View>
+            )}
+          </>
         )}
 
         {showFarm && farmSummary && (farmSummary.totalFarmIncome > 0 || farmSummary.totalFarmExpenses > 0) && (
@@ -547,7 +752,7 @@ export default function HomeScreen() {
                 <Sprout size={16} color="#16A34A" />
               </View>
               <Text style={[styles.farmTitle, { color: theme.colors.text }]}>
-                {farmSummary.season} Farm
+                {farmSummary.season} Farm Finances
               </Text>
               <View style={[styles.farmProfitPill, {
                 backgroundColor: farmSummary.profit >= 0
@@ -637,6 +842,8 @@ export default function HomeScreen() {
           style={[styles.fab, { backgroundColor: isDark ? '#16A34A' : '#0D3B2E' }]}
           onPressIn={onFabPressIn}
           onPressOut={onFabPressOut}
+          onLongPress={handleFabLongPress}
+          delayLongPress={250}
           activeOpacity={1}
           testID="add-transaction-fab"
         >
@@ -646,7 +853,11 @@ export default function HomeScreen() {
 
       <AddTransactionModal
         visible={showAddModal}
-        onClose={() => setShowAddModal(false)}
+        initialType={preferredType ?? undefined}
+        onClose={() => {
+          setShowAddModal(false);
+          setPreferredType(null);
+        }}
       />
 
       {editingTransaction ? (
@@ -710,14 +921,25 @@ const styles = StyleSheet.create({
     color: '#FCA5A5',
   },
   cashFlowPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 2,
     backgroundColor: 'rgba(255,255,255,0.08)',
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
+    paddingVertical: 6,
+    borderRadius: 18,
     marginTop: 4,
+  },
+  cashFlowPillLabel: {
+    fontSize: 10,
+    fontWeight: '600' as const,
+    color: 'rgba(255,255,255,0.6)',
+    letterSpacing: 0.3,
+  },
+  cashFlowValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   cashFlowPillText: {
     fontSize: 12,
@@ -842,6 +1064,55 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
     letterSpacing: -0.2,
   },
+  sectionMeta: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+  },
+  overviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  overviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  overviewNameWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    marginRight: 10,
+  },
+  overviewDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  overviewName: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+    flex: 1,
+  },
+  overviewValue: {
+    fontSize: 13,
+    fontWeight: '700' as const,
+  },
+  spendingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  spendingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
   seeAllBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -954,4 +1225,50 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

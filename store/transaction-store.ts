@@ -1,7 +1,7 @@
 
 import createContextHook from '@nkzw/create-context-hook';
-import { Alert } from 'react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Alert, Platform } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Account,
   Budget,
@@ -52,6 +52,17 @@ import {
   getSeasonalFarmSummary,
 } from '@/src/domain/farming';
 import { learnMerchantCategory as learnMerchantCategoryInternal } from '@/utils/ai/merchant-intelligence';
+import {
+  clearDriveAuth,
+  downloadBackupFile,
+  getOrCreateBackupFolder,
+  isTokenValid,
+  listBackupFiles,
+  loadDriveAuth,
+  refreshAccessToken,
+  saveDriveAuth,
+  uploadBackupFile,
+} from '@/lib/google-drive';
 
 interface BackupData {
   transactions: Transaction[];
@@ -117,6 +128,46 @@ const DEFAULT_USER_PROFILE: UserProfile = {
   joinDate: new Date('2024-01-01T00:00:00.000Z'),
   avatar: 'U',
 };
+
+const AUTO_BACKUP_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTO_BACKUP_DEBOUNCE_MS = 45 * 1000;
+
+const GOOGLE_CLIENT_IDS = {
+  expo: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+  ios: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+  android: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+  web: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+};
+
+function resolveGoogleClientId(): string | null {
+  if (Platform.OS === 'ios') {
+    return (
+      GOOGLE_CLIENT_IDS.ios ??
+      GOOGLE_CLIENT_IDS.web ??
+      GOOGLE_CLIENT_IDS.android ??
+      GOOGLE_CLIENT_IDS.expo ??
+      null
+    );
+  }
+
+  if (Platform.OS === 'android') {
+    return (
+      GOOGLE_CLIENT_IDS.android ??
+      GOOGLE_CLIENT_IDS.web ??
+      GOOGLE_CLIENT_IDS.ios ??
+      GOOGLE_CLIENT_IDS.expo ??
+      null
+    );
+  }
+
+  return (
+    GOOGLE_CLIENT_IDS.web ??
+    GOOGLE_CLIENT_IDS.ios ??
+    GOOGLE_CLIENT_IDS.android ??
+    GOOGLE_CLIENT_IDS.expo ??
+    null
+  );
+}
 
 function monthKey(date: Date): string {
   return date.toISOString().slice(0, 7);
@@ -376,6 +427,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [merchantProfiles, setMerchantProfiles] = useState<MerchantProfile[]>([]);
   const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
+  const autoBackupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoBackupInFlightRef = useRef(false);
+  const autoRestoreAttemptedRef = useRef(false);
 
   const visibleTransactions = useMemo(
     () => sortByDateDesc(ledgerTransactions.filter(isVisibleTransaction)),
@@ -427,6 +481,40 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       await savePersistedPatch(patch);
     } catch (error) {
       console.error('Failed to persist patch:', error);
+    }
+  }, []);
+
+  const getValidDriveAccessToken = useCallback(async (): Promise<string | null> => {
+    const stored = await loadDriveAuth();
+    if (!stored) {
+      return null;
+    }
+
+    if (isTokenValid(stored)) {
+      return stored.accessToken;
+    }
+
+    if (!stored.refreshToken) {
+      return null;
+    }
+
+    const clientId = resolveGoogleClientId();
+    if (!clientId) {
+      return null;
+    }
+
+    try {
+      const refreshed = await refreshAccessToken(stored.refreshToken, clientId);
+      const nextAuth = {
+        accessToken: refreshed.accessToken,
+        refreshToken: stored.refreshToken,
+      };
+      await saveDriveAuth(nextAuth, refreshed.expiresIn);
+      return refreshed.accessToken;
+    } catch (error) {
+      console.error('Failed to refresh Google Drive token:', error);
+      await clearDriveAuth();
+      return null;
     }
   }, []);
 
@@ -1414,36 +1502,223 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [accounts, ledgerTransactions, persistPatch]
   );
 
-  const backupToGoogleDrive = useCallback(async () => {
-    try {
-      const backupData: BackupData = {
-        transactions: ledgerTransactions,
-        accounts,
-        notes,
-        settings,
-        recurringRules,
-        merchantProfiles,
-        exportDate: new Date().toISOString(),
-        version: '2.0.0',
-      };
+  const buildDriveBackupPayload = useCallback(
+    (exportedAt: Date) => ({
+      transactions: ledgerTransactions,
+      accounts,
+      notes,
+      settings,
+      budgets,
+      budgetAlerts,
+      financialGoals,
+      userProfile,
+      recurringRules,
+      merchantProfiles,
+      exportDate: exportedAt.toISOString(),
+      totalTransactions: ledgerTransactions.length,
+      appVersion: '2.0.0',
+      schemaVersion: '2.0',
+    }),
+    [
+      accounts,
+      budgetAlerts,
+      budgets,
+      financialGoals,
+      ledgerTransactions,
+      merchantProfiles,
+      notes,
+      recurringRules,
+      settings,
+      userProfile,
+    ]
+  );
 
-      console.log('Offline backup payload:', JSON.stringify(backupData));
-      const nextSettings = {
-        ...settings,
-        lastBackupDate: new Date(),
-      };
-      setSettings(nextSettings);
-      await savePersistedPatch({ settings: nextSettings });
-      Alert.alert('Backup successful', 'A local backup snapshot was prepared successfully.');
-    } catch (error) {
-      console.error('Backup failed:', error);
-      Alert.alert('Backup failed', 'Unable to create backup snapshot.');
+  const performDriveBackup = useCallback(
+    async (options?: { showAlert?: boolean }) => {
+      if (autoBackupInFlightRef.current) {
+        return false;
+      }
+
+      autoBackupInFlightRef.current = true;
+
+      try {
+        const accessToken = await getValidDriveAccessToken();
+        if (!accessToken) {
+          if (options?.showAlert) {
+            Alert.alert('Google Drive not connected', 'Sign in to Google Drive to enable backups.');
+          }
+          return false;
+        }
+
+        const folderId = await getOrCreateBackupFolder(accessToken, 'Money Manager Backups');
+        const exportedAt = new Date();
+        const payload = buildDriveBackupPayload(exportedAt);
+        const jsonString = JSON.stringify(payload);
+        const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
+        const backupFileName = `money-manager-drive-backup-${timestamp}.json`;
+
+        await uploadBackupFile(accessToken, backupFileName, jsonString, folderId);
+
+        const nextSettings = {
+          ...settings,
+          lastBackupDate: exportedAt,
+        };
+        setSettings(nextSettings);
+        await persistPatch({ settings: nextSettings });
+
+        if (options?.showAlert) {
+          Alert.alert('Backup successful', 'Your Google Drive backup is ready.');
+        }
+        return true;
+      } catch (error) {
+        console.error('Google Drive backup error:', error);
+        if (options?.showAlert) {
+          Alert.alert(
+            'Backup failed',
+            error instanceof Error ? error.message : 'Backup failed. Please try again.'
+          );
+        }
+        return false;
+      } finally {
+        autoBackupInFlightRef.current = false;
+      }
+    },
+    [buildDriveBackupPayload, getValidDriveAccessToken, persistPatch, settings]
+  );
+
+  const isLocalDataEmpty = useMemo(
+    () =>
+      ledgerTransactions.length === 0 &&
+      accounts.length === 0 &&
+      notes.length === 0 &&
+      budgets.length === 0 &&
+      budgetAlerts.length === 0 &&
+      financialGoals.length === 0 &&
+      recurringRules.length === 0,
+    [
+      accounts.length,
+      budgetAlerts.length,
+      budgets.length,
+      financialGoals.length,
+      ledgerTransactions.length,
+      notes.length,
+      recurringRules.length,
+    ]
+  );
+
+  const attemptAutoRestoreFromDrive = useCallback(
+    async (options?: { force?: boolean }): Promise<boolean> => {
+      if (!isLocalDataEmpty) {
+        return false;
+      }
+
+      if (autoRestoreAttemptedRef.current && !options?.force) {
+        return false;
+      }
+
+      autoRestoreAttemptedRef.current = true;
+
+      try {
+        const accessToken = await getValidDriveAccessToken();
+        if (!accessToken) {
+          autoRestoreAttemptedRef.current = options?.force ? true : false;
+          return false;
+        }
+
+        const folderId = await getOrCreateBackupFolder(accessToken, 'Money Manager Backups');
+        const files = await listBackupFiles(accessToken, folderId);
+        if (!files.length) {
+          return false;
+        }
+
+        const latest = files[0];
+        const jsonString = await downloadBackupFile(accessToken, latest.id);
+        const importedData = JSON.parse(jsonString);
+        await restoreBackupSnapshot(importedData);
+        return true;
+      } catch (error) {
+        console.error('Auto restore error:', error);
+        if (!options?.force) {
+          autoRestoreAttemptedRef.current = false;
+        }
+        return false;
+      }
+    },
+    [getValidDriveAccessToken, isLocalDataEmpty, restoreBackupSnapshot]
+  );
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
     }
-  }, [accounts, ledgerTransactions, notes, recurringRules, settings]);
+
+    void attemptAutoRestoreFromDrive();
+  }, [attemptAutoRestoreFromDrive, isHydrated]);
+
+  const transactionFingerprint = useMemo(() => {
+    if (ledgerTransactions.length === 0) {
+      return 'empty';
+    }
+
+    const latest = ledgerTransactions[0];
+    const marker = latest.updatedAt ?? latest.createdAt ?? latest.date;
+    return `${ledgerTransactions.length}-${marker.toISOString()}`;
+  }, [ledgerTransactions]);
+
+  useEffect(() => {
+    if (!isHydrated || !settings.autoBackup) {
+      return;
+    }
+
+    if (ledgerTransactions.length === 0) {
+      return;
+    }
+
+    const lastBackupAt = settings.lastBackupDate?.getTime() ?? 0;
+    if (Date.now() - lastBackupAt < AUTO_BACKUP_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    if (autoBackupTimeoutRef.current) {
+      clearTimeout(autoBackupTimeoutRef.current);
+    }
+
+    autoBackupTimeoutRef.current = setTimeout(() => {
+      void performDriveBackup();
+    }, AUTO_BACKUP_DEBOUNCE_MS);
+
+    return () => {
+      if (autoBackupTimeoutRef.current) {
+        clearTimeout(autoBackupTimeoutRef.current);
+      }
+    };
+  }, [
+    isHydrated,
+    ledgerTransactions.length,
+    performDriveBackup,
+    settings.autoBackup,
+    settings.lastBackupDate,
+    transactionFingerprint,
+  ]);
+
+  const backupToGoogleDrive = useCallback(async () => {
+    await performDriveBackup({ showAlert: true });
+  }, [performDriveBackup]);
 
   const restoreFromGoogleDrive = useCallback(async () => {
-    Alert.alert('Restore not available', 'Cloud restore is not enabled in offline mode.');
-  }, []);
+    if (!isLocalDataEmpty) {
+      Alert.alert(
+        'Restore blocked',
+        'Clear local data before restoring from Google Drive to avoid overwriting existing transactions.'
+      );
+      return;
+    }
+
+    const restored = await attemptAutoRestoreFromDrive({ force: true });
+    if (!restored) {
+      Alert.alert('Restore failed', 'No Google Drive backup was restored.');
+    }
+  }, [attemptAutoRestoreFromDrive, isLocalDataEmpty]);
 
   const clearAllData = useCallback(async () => {
     try {
@@ -1617,8 +1892,11 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     updateFinancialGoal,
     deleteFinancialGoal,
     updateUserProfile,
+    attemptAutoRestoreFromDrive,
   };
 });
+
+
 
 
 

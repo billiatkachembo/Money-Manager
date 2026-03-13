@@ -84,7 +84,11 @@ export default function TransactionsScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]}> 
       <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}> 
-        <View style={styles.filterContainer}>
+                <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterContainer}
+        >
           {FILTER_OPTIONS.map((option) => {
             const isActive = filter === option.key;
             return (
@@ -108,7 +112,7 @@ export default function TransactionsScreen() {
               </TouchableOpacity>
             );
           })}
-        </View>
+        </ScrollView>
 
         <View style={styles.summaryContainer}>
           <View style={[styles.summaryItem, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
@@ -177,11 +181,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   filterContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     paddingHorizontal: 16,
     marginBottom: 16,
     gap: 8,
+    alignItems: 'center',
   },
   filterButton: {
     borderRadius: 999,
@@ -251,6 +254,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
+
 
 
 

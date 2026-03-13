@@ -118,6 +118,29 @@ export const ALL_CATEGORIES: TransactionCategory[] = [
   ...MODAL_INCOME_CATEGORIES,
 ];
 
+export function normalizeCategoryLookup(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+export function resolveCanonicalCategoryId(value?: string | null): string | null {
+  if (!value) return null;
+  const normalized = normalizeCategoryLookup(value);
+  if (!normalized) return null;
+  const match = ALL_CATEGORIES.find(
+    (category) =>
+      normalizeCategoryLookup(category.id) === normalized ||
+      normalizeCategoryLookup(category.name) === normalized
+  );
+  return match ? match.id : null;
+}
+
+export function resolveCanonicalCategory(
+  category?: Partial<TransactionCategory> | null
+): TransactionCategory | null {
+  if (!category) return null;
+  const id = resolveCanonicalCategoryId(category.id ?? category.name ?? '');
+  return id ? ALL_CATEGORIES.find((entry) => entry.id === id) ?? null : null;
+}
 // Backwards-compatible alias for legacy imports.
 export const EXPENSE_CATEGORIES = MODAL_EXPENSE_CATEGORIES;
 export const INCOME_CATEGORIES = MODAL_INCOME_CATEGORIES;
@@ -220,3 +243,4 @@ export async function importReceipts(
   await updateNetWorth(transactions);
   return { transactions, skipped, errors };
 }
+

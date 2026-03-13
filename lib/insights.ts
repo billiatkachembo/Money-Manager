@@ -1,4 +1,5 @@
-import { Transaction, Account } from '@/types/transaction';
+import { computeBudgetSpendingForDate, getActiveBudgets } from '@/src/domain/budgeting';
+import { Transaction, Account, Budget, FinancialGoal, Insight } from '@/types/transaction';
 
 const CURRENCY_EPSILON = 0.005;
 
@@ -330,4 +331,99 @@ export function getLast6MonthsData(transactions: Transaction[]): {
   }
 
   return { months, income, expenses, net };
+}
+
+export function generateInsights(
+  transactions: Transaction[],
+  budgets: Budget[],
+  accounts: Account[],
+  goals: FinancialGoal[],
+  netBalance: number
+): Insight[] {
+  void accounts;
+  void goals;
+
+  if (transactions.length === 0) return [];
+
+  const insights: Insight[] = [];
+  const today = new Date();
+  const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  const { income, expenses } = computeMonthlyTotals(transactions, currentMonth);
+
+  if (netBalance < 0) {
+    insights.push({
+      id: 'negative-net-balance',
+      title: 'Net balance is negative',
+      message: 'Your overall balance is below zero. Consider reviewing expenses or income sources.',
+      severity: 'critical',
+      confidence: 0.7,
+    });
+  }
+
+  if (income === 0 && expenses > 0) {
+    insights.push({
+      id: 'no-income-this-month',
+      title: 'No income logged this month',
+      message: 'Expenses were recorded without matching income. Double-check recent deposits.',
+      severity: 'warning',
+      confidence: 0.6,
+    });
+  } else if (expenses > income) {
+    insights.push({
+      id: 'spend-over-income',
+      title: 'Spending exceeded income',
+      message: 'This month’s expenses are higher than income so far.',
+      severity: 'warning',
+      confidence: 0.6,
+    });
+  } else if (income > 0 && expenses > 0) {
+    insights.push({
+      id: 'positive-cash-flow',
+      title: 'Positive cash flow',
+      message: 'Income is currently higher than expenses this month. Keep it up.',
+      severity: 'info',
+      confidence: 0.5,
+    });
+  }
+
+  const activeBudgets = getActiveBudgets(budgets, today);
+  if (activeBudgets.length > 0) {
+    const exceeded = activeBudgets.filter((budget) => {
+      const spent = computeBudgetSpendingForDate(budget, transactions, today);
+      return budget.amount > 0 && spent >= budget.amount;
+    });
+
+    if (exceeded.length > 0) {
+      insights.push({
+        id: 'budgets-exceeded',
+        title: 'Budgets exceeded',
+        message: `${exceeded.length} budget${exceeded.length > 1 ? 's' : ''} have been exceeded this month.`,
+        severity: 'warning',
+        confidence: 0.65,
+      });
+    } else {
+      const near = activeBudgets.filter((budget) => {
+        const spent = computeBudgetSpendingForDate(budget, transactions, today);
+        return budget.amount > 0 && spent / budget.amount >= 0.9;
+      });
+
+      if (near.length > 0) {
+        insights.push({
+          id: 'budgets-near-limit',
+          title: 'Budgets nearing limit',
+          message: `${near.length} budget${near.length > 1 ? 's are' : ' is'} at 90% or more.`,
+          severity: 'info',
+          confidence: 0.55,
+        });
+      }
+    }
+  }
+
+  const severityRank: Record<Insight['severity'], number> = {
+    critical: 0,
+    warning: 1,
+    info: 2,
+  };
+
+  return insights.sort((a, b) => severityRank[a.severity] - severityRank[b.severity]);
 }

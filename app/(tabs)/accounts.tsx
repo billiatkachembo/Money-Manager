@@ -4,10 +4,12 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  FlatList,
   TouchableOpacity,
   Modal,
   TextInput,
   Alert,
+  Switch,
 } from 'react-native';
 import { Plus, PiggyBank, Pencil, Trash2, Wallet, CreditCard, TrendingUp, Landmark } from 'lucide-react-native';
 import { Account, Transaction } from '@/types/transaction';
@@ -27,6 +29,89 @@ const ACCOUNT_TYPE_OPTIONS: Array<{
   { type: 'cash', label: 'Cash', description: 'Wallet and petty cash', icon: Landmark },
 ];
 
+const ACCOUNT_GROUPS: Array<{ key: string; label: string; types: Array<Account['type']> }> = [
+  { key: 'cash_bank', label: 'Cash & Bank', types: ['checking', 'cash'] },
+  { key: 'savings', label: 'Savings', types: ['savings'] },
+  { key: 'credit', label: 'Credit', types: ['credit'] },
+  { key: 'investment', label: 'Investments', types: ['investment'] },
+];
+const ACCOUNT_COLOR_OPTIONS = [
+  '#2563EB',
+  '#16A34A',
+  '#0EA5E9',
+  '#F59E0B',
+  '#EF4444',
+  '#F97316',
+  '#8B5CF6',
+  '#14B8A6',
+  '#64748B',
+  '#111827',
+];
+
+const DEFAULT_ACCOUNT_COLORS: Record<Account['type'], string> = {
+  checking: '#2563EB',
+  savings: '#16A34A',
+  credit: '#EF4444',
+  investment: '#8B5CF6',
+  cash: '#F59E0B',
+};
+
+function getDefaultAccountColor(type: Account['type']): string {
+  return DEFAULT_ACCOUNT_COLORS[type] ?? '#2563EB';
+}
+
+function withAlphaColor(color: string, alphaHex: string): string {
+  if (color.startsWith('#') && color.length === 7) {
+    return color + alphaHex;
+  }
+
+  if (color.startsWith('#') && color.length === 4) {
+    const r = color[1];
+    const g = color[2];
+    const b = color[3];
+    return '#' + r + r + g + g + b + b + alphaHex;
+  }
+
+  return color;
+}
+
+function startOfDay(value: Date): Date {
+  const next = new Date(value);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function startOfMonth(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function formatSignedCurrency(formatCurrency: (value: number) => string, value: number): string {
+  const prefix = value >= 0 ? '+' : '-';
+  return `${prefix}${formatCurrency(Math.abs(value))}`;
+}
+
+function getFromAccountId(transaction: Transaction): string | undefined {
+  return transaction.fromAccountId ?? transaction.fromAccount;
+}
+
+function getToAccountId(transaction: Transaction): string | undefined {
+  return transaction.toAccountId ?? transaction.toAccount;
+}
+
+function computeTransactionNetWorthImpact(
+  transaction: Transaction,
+  activeAccountIds: Set<string>
+): number {
+  const fromAccountId = getFromAccountId(transaction);
+  const toAccountId = getToAccountId(transaction);
+  const debit = fromAccountId && activeAccountIds.has(fromAccountId) ? transaction.amount : 0;
+  const credit = toAccountId && activeAccountIds.has(toAccountId) ? transaction.amount : 0;
+  return roundCurrency(credit - debit);
+}
 interface AccountActivityEntry {
   transaction: Transaction;
   direction: 'incoming' | 'outgoing';
@@ -67,6 +152,9 @@ export default function AccountsScreen() {
   const [name, setName] = useState('');
   const [type, setType] = useState<Account['type']>('checking');
   const [balance, setBalance] = useState('0');
+  const [color, setColor] = useState<string>(getDefaultAccountColor('checking'));
+  const [isActive, setIsActive] = useState(true);
+  const [detailAccount, setDetailAccount] = useState<Account | null>(null);
 
   const orderedAccounts = useMemo(
     () => [...accounts].sort((left, right) => Number(right.isActive) - Number(left.isActive) || left.name.localeCompare(right.name)),
@@ -83,10 +171,55 @@ export default function AccountsScreen() {
     [activeAccounts]
   );
 
+  const activeAccountIds = useMemo(
+    () => new Set(activeAccounts.map((account) => account.id)),
+    [activeAccounts]
+  );
+
+  const netWorthChangeToday = useMemo(() => {
+    const today = startOfDay(new Date());
+    const change = transactions.reduce((sum, transaction) => {
+      if (transaction.date < today) {
+        return sum;
+      }
+      return sum + computeTransactionNetWorthImpact(transaction, activeAccountIds);
+    }, 0);
+    return roundCurrency(change);
+  }, [activeAccountIds, transactions]);
+
+  const netWorthChangeMonth = useMemo(() => {
+    const monthStart = startOfMonth(new Date());
+    const change = transactions.reduce((sum, transaction) => {
+      if (transaction.date < monthStart) {
+        return sum;
+      }
+      return sum + computeTransactionNetWorthImpact(transaction, activeAccountIds);
+    }, 0);
+    return roundCurrency(change);
+  }, [activeAccountIds, transactions]);
+
+  const groupedAccounts = useMemo(() => {
+    const usedTypes = new Set<Account['type']>();
+    const groups = ACCOUNT_GROUPS.map((group) => {
+      const accountsForGroup = orderedAccounts.filter((account) => group.types.includes(account.type));
+      group.types.forEach((type) => usedTypes.add(type));
+      return { ...group, accounts: accountsForGroup };
+    });
+
+    const otherAccounts = orderedAccounts.filter((account) => !usedTypes.has(account.type));
+    if (otherAccounts.length > 0) {
+      groups.push({ key: 'other', label: 'Other', types: [], accounts: otherAccounts });
+    }
+
+    return groups.filter((group) => group.accounts.length > 0);
+  }, [orderedAccounts]);
+
   const resetForm = () => {
     setName('');
     setType('checking');
     setBalance('0');
+    setColor(getDefaultAccountColor('checking'));
+    setIsActive(true);
     setEditing(null);
     setShowModal(false);
   };
@@ -96,6 +229,8 @@ export default function AccountsScreen() {
     setName('');
     setType(initialType);
     setBalance('0');
+    setColor(getDefaultAccountColor(initialType));
+    setIsActive(true);
     setShowModal(true);
   };
 
@@ -104,6 +239,8 @@ export default function AccountsScreen() {
     setName(account.name);
     setType(account.type);
     setBalance(String(account.balance));
+    setColor(account.color ?? getDefaultAccountColor(account.type));
+    setIsActive(account.isActive);
     setShowModal(true);
   };
 
@@ -118,8 +255,9 @@ export default function AccountsScreen() {
         ...editing,
         name: name.trim(),
         type,
-        color: editing.color,
+        color: color || getDefaultAccountColor(type),
         icon: editing.icon,
+        isActive,
       });
       resetForm();
       return;
@@ -136,9 +274,9 @@ export default function AccountsScreen() {
       type,
       balance: parsed,
       currency: settings.currency || 'ZMW',
-      color: type === 'savings' ? '#16A34A' : '#667eea',
+      color: color || getDefaultAccountColor(type),
       icon: type,
-      isActive: true,
+      isActive,
     });
     resetForm();
   };
@@ -225,6 +363,12 @@ export default function AccountsScreen() {
     return accountActivityById.get(accountId) ?? EMPTY_ACCOUNT_ACTIVITY;
   };
 
+  const detailFlow = detailAccount ? getAccountFlow(detailAccount.id) : EMPTY_ACCOUNT_ACTIVITY;
+  const detailNetTransfers = detailFlow.transfersIn - detailFlow.transfersOut;
+  const detailTypeMeta = detailAccount
+    ? ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === detailAccount.type)
+    : undefined;
+
   const formatTimestamp = (date: Date) => {
     return new Intl.DateTimeFormat('en-US', {
       month: 'short',
@@ -266,11 +410,29 @@ export default function AccountsScreen() {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Balance</Text>
+      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
         <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatCurrency(netBalance)}</Text>
-        <Text style={[styles.summaryMeta, { color: theme.colors.textSecondary }]}>
-          Lifetime Net Cash Flow {lifetimeNetCashFlow > 0 ? '+' : lifetimeNetCashFlow < 0 ? '-' : ''}{formatCurrency(Math.abs(lifetimeNetCashFlow))}
+        <View style={styles.summaryChangeRow}>
+          <Text
+            style={[
+              styles.summaryChange,
+              { color: netWorthChangeToday >= 0 ? theme.colors.success : theme.colors.error },
+            ]}
+          >
+            {formatSignedCurrency(formatCurrency, netWorthChangeToday)} today
+          </Text>
+          <Text
+            style={[
+              styles.summaryChange,
+              { color: netWorthChangeMonth >= 0 ? theme.colors.success : theme.colors.error },
+            ]}
+          >
+            {formatSignedCurrency(formatCurrency, netWorthChangeMonth)} this month
+          </Text>
+        </View>
+        <Text style={[styles.summaryMeta, { color: theme.colors.textSecondary }]}> 
+          Total earned - spent {formatSignedCurrency(formatCurrency, lifetimeNetCashFlow)}
         </Text>
         <Text style={[styles.summarySub, { color: theme.colors.textSecondary }]}> 
           {activeAccounts.length} active account{activeAccounts.length === 1 ? '' : 's'}, {savingsAccounts.length} savings account{savingsAccounts.length === 1 ? '' : 's'}
@@ -301,85 +463,179 @@ export default function AccountsScreen() {
         </View>
       ) : (
         <View style={styles.list}>
-          {orderedAccounts.map((account) => {
-            const flow = getAccountFlow(account.id);
-            const activity = flow.transactions;
-            const typeMeta = ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === account.type);
-            const TypeIcon = typeMeta?.icon ?? Wallet;
+          {groupedAccounts.map((group) => (
+            <View key={group.key} style={styles.groupSection}>
+              <Text style={[styles.groupTitle, { color: theme.colors.textSecondary }]}>{group.label}</Text>
+              {group.accounts.map((account) => {
+                const flow = getAccountFlow(account.id);
+                const typeMeta = ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === account.type);
+                const TypeIcon = typeMeta?.icon ?? Wallet;
+                const accentColor = account.color ?? getDefaultAccountColor(account.type);
 
-            return (
-              <View
-                key={account.id}
-                style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
-              >
-                <View style={styles.rowBetween}>
-                  <View style={styles.accountIdentity}>
-                    <View style={[styles.accountBadge, { backgroundColor: account.type === 'savings' ? '#DCFCE7' : theme.colors.background }]}> 
-                      <TypeIcon size={18} color={account.type === 'savings' ? '#16A34A' : theme.colors.primary} />
-                    </View>
-                    <View style={styles.accountMeta}>
-                      <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
-                      <Text style={[styles.type, { color: theme.colors.textSecondary }]}>
-                        {typeMeta?.label ?? account.type}
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.actions}>
-                    <TouchableOpacity style={styles.iconButton} onPress={() => openEdit(account)}>
-                      <Pencil size={16} color={theme.colors.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.iconButton} onPress={() => removeAccount(account.id, account.name)}>
-                      <Trash2 size={16} color={theme.colors.error} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <Text style={[styles.balance, { color: theme.colors.text }]}>{formatCurrency(account.balance)}</Text>
-
-                <View style={styles.flowRow}>
-                  <Text style={[styles.flowText, { color: theme.colors.success }]}>Income {formatCurrency(flow.income)}</Text>
-                  <Text style={[styles.flowText, { color: theme.colors.error }]}>Expense {formatCurrency(flow.expenses)}</Text>
-                </View>
-                <View style={styles.flowRow}>
-                  <Text style={[styles.flowText, { color: theme.colors.success }]}>Transfers in {formatCurrency(flow.transfersIn)}</Text>
-                  <Text style={[styles.flowText, { color: theme.colors.warning }]}>Transfers out {formatCurrency(flow.transfersOut)}</Text>
-                </View>
-
-                {activity.length > 0 && (
-                  <View style={[styles.activitySection, { borderTopColor: theme.colors.border }]}>
-                    <Text style={[styles.activityTitle, { color: theme.colors.textSecondary }]}>Transactions</Text>
-                    {activity.map((entry, index) => (
-                      <View
-                        key={`${account.id}-${entry.transaction.id}-${entry.direction}`}
-                        style={[
-                          styles.activityRow,
-                          index > 0 && {
-                            borderTopWidth: StyleSheet.hairlineWidth,
-                            borderTopColor: theme.colors.border,
-                          },
-                        ]}
-                      >
-                        <View style={styles.activityInfo}>
-                          <Text style={[styles.activityName, { color: theme.colors.text }]}>
-                            {getActivityTitle(account.id, entry)}
-                          </Text>
-                          <Text style={[styles.activityMeta, { color: theme.colors.textSecondary }]}>
-                            {entry.transaction.category.name} - {formatTimestamp(entry.transaction.date)}
-                          </Text>
+                return (
+                  <TouchableOpacity
+                    key={account.id}
+                    activeOpacity={0.9}
+                    onPress={() => setDetailAccount(account)}
+                    style={[
+                      styles.card,
+                      { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+                      !account.isActive && styles.cardMuted,
+                    ]}
+                  >
+                    <View style={styles.rowBetween}>
+                      <View style={styles.accountIdentity}>
+                        <View style={[styles.accountBadge, { backgroundColor: withAlphaColor(accentColor, '22') }]}> 
+                          <TypeIcon size={18} color={accentColor} />
                         </View>
-                        <Text style={[styles.activityAmount, { color: getActivityAmountColor(entry) }]}>
-                          {entry.direction === 'incoming' ? '+' : '-'}{formatCurrency(entry.transaction.amount)}
-                        </Text>
+                        <View style={styles.accountMeta}>
+                          <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
+                          <View style={styles.typeRow}>
+                            <Text style={[styles.type, { color: theme.colors.textSecondary }]}>
+                              {typeMeta?.label ?? account.type}
+                            </Text>
+                            {!account.isActive && (
+                              <View style={[styles.hiddenPill, { backgroundColor: theme.colors.border }]}>
+                                <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}>Hidden</Text>
+                              </View>
+                            )}
+                          </View>
+                        </View>
                       </View>
-                    ))}
-                  </View>
-                )}
-              </View>
-            );
-          })}
+                      <View style={styles.actions}>
+                        <TouchableOpacity style={styles.iconButton} onPress={() => openEdit(account)}>
+                          <Pencil size={16} color={theme.colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.iconButton} onPress={() => removeAccount(account.id, account.name)}>
+                          <Trash2 size={16} color={theme.colors.error} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <Text style={[styles.balance, { color: theme.colors.text }]}>{formatCurrency(account.balance)}</Text>
+
+                    <View style={styles.flowRow}>
+                      <Text style={[styles.flowText, { color: theme.colors.success }]}>Income {formatCurrency(flow.income)}</Text>
+                      <Text style={[styles.flowText, { color: theme.colors.error }]}>Expense {formatCurrency(flow.expenses)}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ))}
         </View>
       )}
+      <Modal
+        visible={!!detailAccount}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setDetailAccount(null)}
+      >
+        <View style={[styles.detailModal, { backgroundColor: theme.colors.background }]}>
+          <View style={styles.rowBetween}>
+            <TouchableOpacity onPress={() => setDetailAccount(null)}>
+              <Text style={[styles.modalButton, { color: theme.colors.textSecondary }]}>Close</Text>
+            </TouchableOpacity>
+            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Account Details</Text>
+            {detailAccount ? (
+              <TouchableOpacity
+                onPress={() => {
+                  setDetailAccount(null);
+                  openEdit(detailAccount);
+                }}
+              >
+                <Text style={[styles.modalButton, { color: theme.colors.primary }]}>Edit</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.modalSpacer} />
+            )}
+          </View>
 
+          {detailAccount ? (
+            <FlatList
+              data={detailFlow.transactions}
+              keyExtractor={(entry) => `${detailAccount.id}-${entry.transaction.id}-${entry.direction}`}
+              contentContainerStyle={styles.detailContent}
+              showsVerticalScrollIndicator={false}
+              ListHeaderComponent={
+                <View>
+                  <View
+                    style={[
+                      styles.detailCard,
+                      { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+                    ]}
+                  >
+                    <Text style={[styles.detailName, { color: theme.colors.text }]}>{detailAccount.name}</Text>
+                    <Text style={[styles.detailType, { color: theme.colors.textSecondary }]}>
+                      {detailTypeMeta?.label ?? detailAccount.type}
+                    </Text>
+                    <Text style={[styles.detailBalance, { color: theme.colors.text }]}>
+                      {formatCurrency(detailAccount.balance)}
+                    </Text>
+                    <View style={styles.detailStatsRow}>
+                      <View style={styles.detailStat}>
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+                        <Text style={[styles.detailStatValue, { color: theme.colors.success }]}>
+                          +{formatCurrency(detailFlow.income)}
+                        </Text>
+                      </View>
+                      <View style={styles.detailStat}>
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Expense</Text>
+                        <Text style={[styles.detailStatValue, { color: theme.colors.error }]}>
+                          -{formatCurrency(detailFlow.expenses)}
+                        </Text>
+                      </View>
+                      <View style={styles.detailStat}>
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Net transfers</Text>
+                        <Text
+                          style={[
+                            styles.detailStatValue,
+                            { color: detailNetTransfers >= 0 ? theme.colors.success : theme.colors.warning },
+                          ]}
+                        >
+                          {formatSignedCurrency(formatCurrency, detailNetTransfers)}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  <Text style={[styles.detailSectionTitle, { color: theme.colors.textSecondary }]}>Transactions</Text>
+                </View>
+              }
+              ListEmptyComponent={
+                <View style={[styles.emptyState, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+                  <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>No activity yet</Text>
+                  <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
+                    Start adding transactions to see activity for this account.
+                  </Text>
+                </View>
+              }
+              renderItem={({ item }) => (
+                <View
+                  style={[
+                    styles.detailActivityCard,
+                    { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+                  ]}
+                >
+                  <View style={styles.activityRow}>
+                    <View style={styles.activityInfo}>
+                      <Text style={[styles.activityName, { color: theme.colors.text }]}>
+                        {getActivityTitle(detailAccount.id, item)}
+                      </Text>
+                      <Text style={[styles.activityMeta, { color: theme.colors.textSecondary }]}>
+                        {item.transaction.category.name} - {formatTimestamp(item.transaction.date)}
+                      </Text>
+                    </View>
+                    <Text style={[styles.activityAmount, { color: getActivityAmountColor(item) }]}>
+                      {item.direction === 'incoming' ? '+' : '-'}{formatCurrency(item.transaction.amount)}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            />
+          ) : null}
+        </View>
+      </Modal>
       <Modal visible={showModal} animationType="slide" presentationStyle="pageSheet" onRequestClose={resetForm}>
         <View style={[styles.modal, { backgroundColor: theme.colors.background }]}> 
           <View style={styles.rowBetween}>
@@ -448,6 +704,42 @@ export default function AccountsScreen() {
               );
             })}
           </View>
+
+          <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>Account Color</Text>
+          <View style={styles.colorRow}>
+            {ACCOUNT_COLOR_OPTIONS.map((option) => {
+              const selected = color === option;
+              return (
+                <TouchableOpacity
+                  key={option}
+                  onPress={() => setColor(option)}
+                  style={[
+                    styles.colorSwatch,
+                    { backgroundColor: option, borderColor: selected ? theme.colors.primary : 'transparent' },
+                  ]}
+                >
+                  {selected ? <View style={styles.colorSwatchInner} /> : null}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={[styles.formHint, { color: theme.colors.textSecondary }]}>Choose a color to spot this account quickly.</Text>
+
+          <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>Visibility</Text>
+          <View style={[styles.visibilityRow, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={styles.visibilityText}>
+              <Text style={[styles.visibilityTitle, { color: theme.colors.text }]}>Include in net worth</Text>
+              <Text style={[styles.visibilityHint, { color: theme.colors.textSecondary }]}>
+                Toggle off to hide this account from totals and dashboard.
+              </Text>
+            </View>
+            <Switch
+              value={isActive}
+              onValueChange={setIsActive}
+              trackColor={{ true: theme.colors.primary, false: theme.colors.border }}
+              thumbColor={'#ffffff'}
+            />
+          </View>
         </View>
       </Modal>
     </ScrollView>
@@ -464,6 +756,8 @@ const styles = StyleSheet.create({
   },
   summaryLabel: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
   summaryValue: { fontSize: 30, fontWeight: '800', marginTop: 4 },
+  summaryChangeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  summaryChange: { fontSize: 12, fontWeight: '700' },
   summaryMeta: { fontSize: 13, fontWeight: '600', marginTop: 6 },
   summarySub: { fontSize: 12, marginTop: 6 },
   actionRow: {
@@ -508,7 +802,10 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '700', marginTop: 12, marginBottom: 6 },
   emptyText: { fontSize: 14, lineHeight: 20, textAlign: 'center' },
   list: { padding: 16, gap: 12 },
+  groupSection: { marginBottom: 8 },
+  groupTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
   card: { borderRadius: 18, padding: 16, borderWidth: 1 },
+  cardMuted: { opacity: 0.7 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   accountIdentity: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   accountBadge: {
@@ -521,7 +818,17 @@ const styles = StyleSheet.create({
   },
   accountMeta: { flex: 1 },
   name: { fontSize: 16, fontWeight: '700' },
-  type: { fontSize: 12, textTransform: 'capitalize', marginTop: 2 },
+  typeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
+  type: { fontSize: 12, textTransform: 'capitalize' },
+  hiddenPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  hiddenPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
   actions: { flexDirection: 'row', gap: 12, marginLeft: 12 },
   iconButton: { padding: 4 },
   balance: { fontSize: 24, fontWeight: '800', marginTop: 14, marginBottom: 10 },
@@ -562,6 +869,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  detailModal: { flex: 1, padding: 16 },
+  detailContent: { paddingBottom: 24 },
+  detailCard: { borderRadius: 18, padding: 16, borderWidth: 1, marginBottom: 16 },
+  detailName: { fontSize: 20, fontWeight: '700' },
+  detailType: { fontSize: 12, textTransform: 'capitalize', marginTop: 4 },
+  detailBalance: { fontSize: 28, fontWeight: '800', marginTop: 12, marginBottom: 12 },
+  detailStatsRow: { flexDirection: 'row', gap: 12 },
+  detailStat: { flex: 1 },
+  detailStatLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
+  detailStatValue: { fontSize: 14, fontWeight: '700' },
+  detailSectionTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
+  detailActivityCard: { borderRadius: 14, padding: 12, borderWidth: 1, marginBottom: 10 },
+  modalSpacer: { width: 60 },
+
   modal: { flex: 1, padding: 16 },
   modalButton: { fontSize: 16, fontWeight: '600' },
   modalTitle: { fontSize: 18, fontWeight: '700' },
@@ -583,6 +904,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
     lineHeight: 18,
+  },
+  colorRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  colorSwatch: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  colorSwatchInner: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#ffffff',
+  },
+  visibilityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginTop: 8,
+  },
+  visibilityText: {
+    flex: 1,
+    marginRight: 12,
+  },
+  visibilityTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  visibilityHint: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
   },
   infoBanner: {
     borderWidth: 1,
@@ -624,6 +986,25 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

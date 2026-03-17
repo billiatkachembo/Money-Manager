@@ -7,14 +7,12 @@ import {
   ScrollView,
   TextInput,
   TouchableOpacity,
-  Modal,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
-import { X } from 'lucide-react-native';
+import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/store/theme-store';
 import type { CalculatorForm, CalculatorKey, CalculatorResult } from '@/hooks/useFinancialCalculators';
 import { CALCULATOR_CONFIG } from '@/components/planning/calculatorConfig';
+import { AppBottomSheet } from '@/components/ui/AppBottomSheet';
 
 interface CalculatorModalProps {
   activeCalculator: CalculatorKey | null;
@@ -41,205 +39,189 @@ export function CalculatorModal({
 
   const calculator = CALCULATOR_CONFIG[activeCalculator];
 
+  const handleCalculatePress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    onCalculate(activeCalculator);
+  };
+
   return (
-    <Modal visible={!!activeCalculator} animationType="slide" presentationStyle="pageSheet">
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={[styles.modalContainer, { backgroundColor: theme.colors.surface }]}
-      >
-        <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}
-        >
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close calculator" onPress={onClose}>
-            <X size={24} color={theme.colors.textSecondary} />
-          </TouchableOpacity>
-          <Text style={[styles.modalTitle, { color: theme.colors.text }]}>{calculator.title}</Text>
-          <View style={{ width: 24 }} />
+    <AppBottomSheet
+      visible={!!activeCalculator}
+      title={calculator.title}
+      snapPoints={['85%']}
+      initialSnapIndex={0}
+      onClose={onClose}
+    >
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        <Text style={[styles.description, { color: theme.colors.textSecondary }]}>
+          {calculator.description}
+        </Text>
+
+        <View style={styles.calculatorForm}>
+          {calculator.fields.map((field) => {
+            const Icon = field.icon;
+            return (
+              <View key={field.key} style={styles.inputGroup}>
+                <View style={styles.inputLabel}>
+                  <Icon size={18} color={theme.colors.textSecondary} />
+                  <Text style={[styles.inputLabelText, { color: theme.colors.text }]}>
+                    {field.label}
+                  </Text>
+                </View>
+                <TextInput
+                  style={[
+                    styles.input,
+                    {
+                      backgroundColor: theme.colors.background,
+                      borderColor: theme.colors.border,
+                      color: theme.colors.text,
+                    },
+                  ]}
+                  placeholder={field.placeholder}
+                  placeholderTextColor={theme.colors.textSecondary}
+                  value={calculatorForm[field.key]}
+                  onChangeText={(text) => onFieldChange(field.key, text)}
+                  keyboardType={field.keyboardType ?? 'numeric'}
+                />
+              </View>
+            );
+          })}
         </View>
 
-        <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
-          <Text style={[styles.modalDescription, { color: theme.colors.textSecondary }]}
-          >
-            {calculator.description}
-          </Text>
+        <TouchableOpacity
+          style={[styles.calculateButton, { backgroundColor: theme.colors.primary }]}
+          accessibilityRole="button"
+          accessibilityLabel={`Calculate ${calculator.title}`}
+          onPress={handleCalculatePress}
+        >
+          <Text style={styles.calculateButtonText}>Calculate</Text>
+        </TouchableOpacity>
 
-          <View style={styles.calculatorForm}>
-            {calculator.fields.map((field) => {
-              const Icon = field.icon;
+        {calculatorResult && (
+          <View
+            style={[
+              styles.resultContainer,
+              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+            ]}
+          >
+            <Text style={[styles.resultTitle, { color: theme.colors.text }]}>
+              {calculatorResult.title}
+            </Text>
+            {Object.entries(calculatorResult).map(([key, value]) => {
+              if (key === 'title') return null;
               return (
-                <View key={field.key} style={styles.inputGroup}>
-                  <View style={styles.inputLabel}>
-                    <Icon size={16} color={theme.colors.textSecondary} />
-                    <Text style={[styles.inputLabelText, { color: theme.colors.text }]}>
-                      {field.label}
-                    </Text>
-                  </View>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      {
-                        backgroundColor: theme.colors.background,
-                        borderColor: theme.colors.border,
-                        color: theme.colors.text,
-                      },
-                    ]}
-                    placeholder={field.placeholder}
-                    placeholderTextColor={theme.colors.textSecondary}
-                    value={calculatorForm[field.key]}
-                    onChangeText={(text) => onFieldChange(field.key, text)}
-                    keyboardType={field.keyboardType ?? 'numeric'}
-                  />
+                <View key={key} style={styles.resultRow}>
+                  <Text style={[styles.resultLabel, { color: theme.colors.textSecondary }]}>
+                    {key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase())}:
+                  </Text>
+                  <Text style={[styles.resultValue, { color: theme.colors.text }]}>
+                    {String(value)}
+                  </Text>
                 </View>
               );
             })}
-          </View>
-
-          <TouchableOpacity
-            style={[styles.calculateButton, { backgroundColor: theme.colors.primary }]}
-            accessibilityRole="button"
-            accessibilityLabel={`Calculate ${calculator.title}`}
-            onPress={() => onCalculate(activeCalculator)}
-          >
-            <Text style={styles.calculateButtonText}>Calculate</Text>
-          </TouchableOpacity>
-
-          {calculatorResult && (
-            <View
-              style={[
-                styles.resultContainer,
-                { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-              ]}
+            <TouchableOpacity
+              style={[styles.saveResultButton, { borderColor: theme.colors.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="Save calculator result"
+              onPress={() => {
+                Alert.alert('Save Result', 'This feature will save the calculation result to your notes');
+              }}
             >
-              <Text style={[styles.resultTitle, { color: theme.colors.text }]}>
-                {calculatorResult.title}
-              </Text>
-              {Object.entries(calculatorResult).map(([key, value]) => {
-                if (key === 'title') return null;
-                return (
-                  <View key={key} style={styles.resultRow}>
-                    <Text style={[styles.resultLabel, { color: theme.colors.textSecondary }]}>
-                      {key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase())}:
-                    </Text>
-                    <Text style={[styles.resultValue, { color: theme.colors.text }]}>
-                      {String(value)}
-                    </Text>
-                  </View>
-                );
-              })}
-              <TouchableOpacity
-                style={[styles.saveResultButton, { borderColor: theme.colors.border }]}
-                accessibilityRole="button"
-                accessibilityLabel="Save calculator result"
-                onPress={() => {
-                  Alert.alert('Save Result', 'This feature will save the calculation result to your notes');
-                }}
-              >
-                <Text style={[styles.saveResultText, { color: theme.colors.primary }]}>Save to Notes</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </Modal>
+              <Text style={[styles.saveResultText, { color: theme.colors.primary }]}>Save to Notes</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </ScrollView>
+    </AppBottomSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  modalContainer: {
-    flex: 1,
+  content: {
+    paddingBottom: 20,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    borderBottomWidth: 1,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    textAlign: 'center',
-    flex: 1,
-  },
-  modalContent: {
-    flex: 1,
-    padding: 16,
-  },
-  modalDescription: {
-    fontSize: 14,
+  description: {
+    fontSize: 15,
     marginBottom: 24,
-    lineHeight: 20,
+    lineHeight: 22,
     textAlign: 'center',
   },
   calculatorForm: {
-    gap: 16,
+    gap: 18,
+    marginBottom: 24,
   },
   inputGroup: {
-    gap: 8,
+    gap: 10,
   },
   inputLabel: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   inputLabelText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 15,
+    fontWeight: '600',
   },
   input: {
-    borderWidth: 1,
-    borderRadius: 12,
+    borderWidth: 1.5,
+    borderRadius: 14,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     fontSize: 16,
   },
   calculateButton: {
     paddingVertical: 16,
-    borderRadius: 12,
+    borderRadius: 14,
     alignItems: 'center',
-    marginTop: 24,
-    marginBottom: 32,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 3,
   },
   calculateButtonText: {
-    color: 'white',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: 'white',
+    letterSpacing: -0.3,
   },
   resultContainer: {
+    borderWidth: 1.5,
     borderRadius: 16,
-    padding: 20,
-    borderWidth: 1,
-    marginBottom: 20,
+    padding: 18,
+    marginTop: 12,
   },
   resultTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
-    marginBottom: 16,
-    textAlign: 'center',
+    marginBottom: 14,
   },
   resultRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0,0,0,0.1)',
+    borderBottomColor: 'rgba(0, 0, 0, 0.06)',
   },
   resultLabel: {
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '500',
   },
   resultValue: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
   },
   saveResultButton: {
-    marginTop: 16,
     paddingVertical: 12,
+    marginTop: 14,
     borderRadius: 12,
+    borderWidth: 1.5,
     alignItems: 'center',
-    borderWidth: 1,
   },
   saveResultText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
 });

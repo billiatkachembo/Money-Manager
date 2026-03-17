@@ -18,7 +18,7 @@ import {
   TransactionCategory,
   UserProfile,
 } from '@/types/transaction';
-import { EXPENSE_CATEGORIES } from '@/constants/categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, resolveCanonicalCategory } from '@/constants/categories';
 import { findCurrencyOption } from '@/constants/currencies';
 import {
   AppSettings,
@@ -47,11 +47,13 @@ import {
 } from '@/src/domain/financial-health';
 import { computeInsights } from '@/src/domain/insights';
 import { computeBehaviorMetrics } from '@/src/domain/analytics';
+import { computeFinancialIntelligence } from '@/src/domain/financial-intelligence';
 import {
   getFarmCostBreakdown,
   getSeasonalFarmSummary,
 } from '@/src/domain/farming';
 import { learnMerchantCategory as learnMerchantCategoryInternal } from '@/utils/ai/merchant-intelligence';
+import { autoCategorizeTransaction } from '@/utils/ai/transaction-categorization';
 import {
   clearDriveAuth,
   downloadBackupFile,
@@ -98,11 +100,51 @@ const OPENING_BALANCE_CATEGORY: TransactionCategory = {
   color: '#9CA3AF',
 };
 
+const FALLBACK_EXPENSE_CATEGORY =
+  resolveCanonicalCategory({ id: 'other' }) ?? EXPENSE_CATEGORIES[0];
+const FALLBACK_INCOME_CATEGORY =
+  resolveCanonicalCategory({ id: 'other-income' }) ?? INCOME_CATEGORIES[0];
+const FALLBACK_DEBT_CATEGORY =
+  resolveCanonicalCategory({ id: 'debt' }) ?? EXPENSE_CATEGORIES.find((category) => category.id === 'debt') ?? FALLBACK_EXPENSE_CATEGORY;
+
+function resolveTransactionCategory(
+  transactionData: Omit<Transaction, 'id' | 'createdAt'>,
+  merchantProfiles: MerchantProfile[]
+): TransactionCategory | null {
+  if (transactionData.type === 'transfer') {
+    return TRANSFER_CATEGORY;
+  }
+
+  if (transactionData.type === 'debt') {
+    return resolveCanonicalCategory(transactionData.category) ?? transactionData.category ?? FALLBACK_DEBT_CATEGORY;
+  }
+
+  const canonical = resolveCanonicalCategory(transactionData.category);
+  if (canonical) {
+    return canonical;
+  }
+
+  const autoCategory = autoCategorizeTransaction({
+    description: transactionData.description,
+    merchant: transactionData.merchant,
+    type: transactionData.type,
+    merchantProfiles,
+  });
+  if (autoCategory) {
+    return autoCategory;
+  }
+
+  return transactionData.type === 'income' ? FALLBACK_INCOME_CATEGORY : FALLBACK_EXPENSE_CATEGORY;
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   currency: 'USD',
   language: 'en',
   darkMode: false,
   notifications: true,
+  quickAddNotificationEnabled: false,
+  dailyReminderEnabled: false,
+  dailyReminderTime: '18:00',
   biometricAuth: false,
   autoBackup: false,
   averageDebtInterestRate: 0.18,
@@ -348,9 +390,20 @@ function normalizeSettingsData(value: Partial<AppSettings> | AppSettings | undef
     twoFactorEnabled: value?.security?.twoFactorEnabled ?? defaultSecurity.twoFactorEnabled,
   };
 
+  const quickAddNotificationEnabled =
+    typeof value?.quickAddNotificationEnabled === 'boolean'
+      ? value.quickAddNotificationEnabled
+      : DEFAULT_SETTINGS.quickAddNotificationEnabled;
+
+  const dailyReminderEnabled = value?.dailyReminderEnabled ?? DEFAULT_SETTINGS.dailyReminderEnabled!;
+  const dailyReminderTime = value?.dailyReminderTime ?? DEFAULT_SETTINGS.dailyReminderTime!;
+
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...value,
+    quickAddNotificationEnabled,
+    dailyReminderEnabled,
+    dailyReminderTime,
     privacy,
     security,
   };
@@ -615,6 +668,31 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         const alreadyExceeded = nextAlerts.some(
           (alert) => alert.budgetId === budget.id && alert.type === 'exceeded'
         );
+        const alreadyCritical = nextAlerts.some(
+          (alert) => alert.budgetId === budget.id && alert.type === 'critical'
+        );
+
+        if (budget.alertAtLimit && percent >= 120 && !alreadyCritical) {
+          nextAlerts.unshift({
+            id: generateId(),
+            budgetId: budget.id,
+            type: 'critical',
+            message: `Critical: ${budget.category?.name} budget is above 120% (${formatCurrency(spent)}).`,
+            date: new Date(),
+            isRead: false,
+          });
+        }
+
+        if (budget.alertAtLimit && percent >= 100 && percent < 120 && !alreadyExceeded) {
+          nextAlerts.unshift({
+            id: generateId(),
+            budgetId: budget.id,
+            type: 'exceeded',
+            message: `You exceeded ${budget.category?.name} budget (${formatCurrency(spent)}).`,
+            date: new Date(),
+            isRead: false,
+          });
+        }
 
         if (budget.alertAt80Percent && percent >= 80 && percent < 100 && !already80) {
           nextAlerts.unshift({
@@ -622,17 +700,6 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
             budgetId: budget.id,
             type: '80percent',
             message: `You reached 80% of ${budget.category?.name} budget (${formatCurrency(spent)}).`,
-            date: new Date(),
-            isRead: false,
-          });
-        }
-
-        if (budget.alertAtLimit && percent >= 100 && !alreadyExceeded) {
-          nextAlerts.unshift({
-            id: generateId(),
-            budgetId: budget.id,
-            type: 'exceeded',
-            message: `You exceeded ${budget.category?.name} budget (${formatCurrency(spent)}).`,
             date: new Date(),
             isRead: false,
           });
@@ -778,17 +845,49 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         const recomputedAccounts = recomputeAllBalances(loaded.accounts, mergedTransactions);
         const integrity = validateLedgerIntegrity(mergedTransactions);
 
+        const normalizedSettings = normalizeSettingsData(loaded.settings);
+        const normalizedUserProfile = normalizeUserProfileData(loaded.userProfile);
+        const earliestTransactionDate = mergedTransactions.length
+          ? mergedTransactions[mergedTransactions.length - 1].date
+          : undefined;
+        const joinDateCandidate =
+          normalizedUserProfile.joinDate.getTime() === DEFAULT_USER_PROFILE.joinDate.getTime()
+            ? undefined
+            : normalizedUserProfile.joinDate;
+        const existingFirstUsedAt = normalizedSettings.firstUsedAt;
+        const shouldUpdateFirstUsedAt =
+          !existingFirstUsedAt ||
+          existingFirstUsedAt.getTime() === DEFAULT_USER_PROFILE.joinDate.getTime();
+        const inferredFirstUsedAt = earliestTransactionDate ?? joinDateCandidate ?? new Date();
+        const nextFirstUsedAt = shouldUpdateFirstUsedAt ? inferredFirstUsedAt : existingFirstUsedAt;
+        const shouldUpdateJoinDate =
+          !loaded.userProfile?.joinDate ||
+          normalizedUserProfile.joinDate.getTime() === DEFAULT_USER_PROFILE.joinDate.getTime();
+        const nextSettings = shouldUpdateFirstUsedAt
+          ? { ...normalizedSettings, firstUsedAt: nextFirstUsedAt }
+          : normalizedSettings;
+        const nextUserProfile = shouldUpdateJoinDate
+          ? { ...normalizedUserProfile, joinDate: nextFirstUsedAt }
+          : normalizedUserProfile;
+
         setLedgerTransactions(mergedTransactions);
         setAccounts(recomputedAccounts);
         setNotes(loaded.notes);
         setBudgets(loaded.budgets);
         setBudgetAlerts(loaded.budgetAlerts);
         setFinancialGoals(loaded.financialGoals);
-        setUserProfile(loaded.userProfile);
-        setSettings({ ...DEFAULT_SETTINGS, ...loaded.settings });
+        setUserProfile(nextUserProfile);
+        setSettings(nextSettings);
         setRecurringRules(updatedRules);
         setLedgerIssues(integrity.issues);
         setIsHydrated(true);
+
+        if (shouldUpdateFirstUsedAt || shouldUpdateJoinDate) {
+          await savePersistedPatch({
+            settings: nextSettings,
+            userProfile: nextUserProfile,
+          });
+        }
 
         const rulesChanged =
           JSON.stringify(updatedRules.map((rule) => rule.lastMaterializedAt)) !==
@@ -822,6 +921,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       const fromAccountId = transactionData.fromAccountId ?? transactionData.fromAccount;
       const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
       const date = parseDate(transactionData.date);
+      const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles);
 
       let nextTransactions = [...ledgerTransactions];
       let primary: Transaction | null = null;
@@ -841,7 +941,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           amount: transactionData.amount,
           date,
           description: transactionData.description,
-          category: transactionData.category ?? TRANSFER_CATEGORY,
+          category: resolvedCategory ?? TRANSFER_CATEGORY,
           fromAccountId,
           toAccountId,
           createdAt: now,
@@ -862,6 +962,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           date,
           createdAt: now,
           updatedAt: now,
+          category: resolvedCategory ?? transactionData.category ?? FALLBACK_EXPENSE_CATEGORY,
           fromAccount: fromAccountId,
           toAccount: toAccountId,
           fromAccountId,
@@ -882,11 +983,22 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       applyLedgerState(nextTransactions, accounts, nextRules);
 
+      if (primary && primary.type !== 'transfer' && primary.category?.id) {
+        const merchantLabel = primary.merchant ?? primary.description;
+        if (merchantLabel) {
+          const nextProfiles = learnMerchantCategoryInternal(merchantLabel, primary.category.id, merchantProfiles);
+          if (nextProfiles !== merchantProfiles) {
+            setMerchantProfiles(nextProfiles);
+            void persistPatch({ merchantProfiles: nextProfiles });
+          }
+        }
+      }
+
       if (primary) {
         pushBudgetAlerts(primary, nextTransactions);
       }
     },
-    [accounts, applyLedgerState, ledgerTransactions, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const updateTransaction = useCallback(
@@ -902,6 +1014,19 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         date: parseDate(updatedTransaction.date),
         updatedAt: new Date(),
       });
+
+      const previousCategoryId = current.category?.id;
+      const nextCategoryId = normalizedUpdated.category?.id;
+      if (nextCategoryId && nextCategoryId !== previousCategoryId) {
+        const merchantLabel = normalizedUpdated.merchant ?? normalizedUpdated.description;
+        if (merchantLabel) {
+          const nextProfiles = learnMerchantCategoryInternal(merchantLabel, nextCategoryId, merchantProfiles);
+          if (nextProfiles !== merchantProfiles) {
+            setMerchantProfiles(nextProfiles);
+            void persistPatch({ merchantProfiles: nextProfiles });
+          }
+        }
+      }
 
       let nextTransactions: Transaction[];
 
@@ -967,7 +1092,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       applyLedgerState(nextTransactions, accounts, recurringRules);
       pushBudgetAlerts(normalizedUpdated, nextTransactions);
     },
-    [accounts, applyLedgerState, ledgerTransactions, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const deleteTransaction = useCallback(
@@ -1338,6 +1463,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
         const recurringEndDate = parseOptionalDate(transactionData.recurringEndDate);
         const updatedAt = parseOptionalDate(transactionData.updatedAt) ?? date;
+        const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles);
 
         if (!Number.isFinite(amount) || amount <= 0) {
           skippedCount += 1;
@@ -1352,7 +1478,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           continue;
         }
 
-        if (transactionData.type !== 'transfer' && !transactionData.category) {
+        if (transactionData.type !== 'transfer' && !resolvedCategory) {
           skippedCount += 1;
           continue;
         }
@@ -1362,7 +1488,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           amount,
           date,
           description,
-          category: transactionData.category ?? TRANSFER_CATEGORY,
+          category: resolvedCategory ?? TRANSFER_CATEGORY,
           fromAccount: fromAccountId,
           toAccount: toAccountId,
           fromAccountId,
@@ -1382,7 +1508,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
             amount,
             date,
             description,
-            category: transactionData.category ?? TRANSFER_CATEGORY,
+            category: resolvedCategory ?? TRANSFER_CATEGORY,
             fromAccountId: fromAccountId!,
             toAccountId: toAccountId!,
             createdAt: date,
@@ -1408,7 +1534,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
             createdAt: date,
             updatedAt,
             recurringEndDate,
-            category: transactionData.category!,
+            category: resolvedCategory ?? transactionData.category ?? FALLBACK_EXPENSE_CATEGORY,
             fromAccount: fromAccountId,
             toAccount: toAccountId,
             fromAccountId,
@@ -1432,7 +1558,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       return { importedCount, skippedCount };
     },
-    [accounts, applyLedgerState, ledgerTransactions, recurringRules, visibleTransactions]
+    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, recurringRules, visibleTransactions]
   );
 
   const restoreBackupSnapshot = useCallback(
@@ -1790,7 +1916,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [financialHealthMetrics]
   );
 
-  const insights = useMemo(
+  const baseInsights = useMemo(
     () =>
       computeInsights(
         {
@@ -1805,6 +1931,49 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       ),
     [behaviorMetrics.insightContext, financialHealthMetrics]
   );
+
+  const financialIntelligence = useMemo(
+    () =>
+      computeFinancialIntelligence({
+        transactions: visibleTransactions,
+        budgets,
+        debtAccounts,
+        netBalance,
+        monthlyIncome: behaviorMetrics.currentMonth.income,
+        monthlyExpenses: behaviorMetrics.currentMonth.expenses,
+        monthlyNet: behaviorMetrics.currentMonth.net,
+        formatCurrency,
+        averageDebtInterestRate: settings.averageDebtInterestRate,
+        referenceDate: new Date(),
+      }),
+    [
+      behaviorMetrics.currentMonth.expenses,
+      behaviorMetrics.currentMonth.income,
+      behaviorMetrics.currentMonth.net,
+      budgets,
+      debtAccounts,
+      formatCurrency,
+      netBalance,
+      settings.averageDebtInterestRate,
+      visibleTransactions,
+    ]
+  );
+
+  const insights = useMemo(() => {
+    if (financialIntelligence.insights.length === 0) {
+      return baseInsights;
+    }
+    const map = new Map<string, Insight>();
+    for (const insight of baseInsights) {
+      map.set(insight.id, insight);
+    }
+    for (const insight of financialIntelligence.insights) {
+      if (!map.has(insight.id)) {
+        map.set(insight.id, insight);
+      }
+    }
+    return Array.from(map.values());
+  }, [baseInsights, financialIntelligence.insights]);
 
   const farmSummary: SeasonalFarmSummary = useMemo(
     () => getSeasonalFarmSummary(visibleTransactions),
@@ -1852,6 +2021,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     financialHealthScore,
     healthScore: financialHealthScore,
     insights,
+    financialIntelligence,
     farmSummary,
     farmCostBreakdown,
     homeSnapshot,
@@ -1895,6 +2065,39 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     attemptAutoRestoreFromDrive,
   };
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

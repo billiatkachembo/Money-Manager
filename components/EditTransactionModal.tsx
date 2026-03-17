@@ -18,6 +18,7 @@ import * as Icons from 'lucide-react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 import { Transaction, TransactionCategory } from '@/types/transaction';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 
@@ -31,12 +32,26 @@ interface EditTransactionModalProps {
 function parseDateInput(value: string): Date | null {
   const normalized = value.trim();
   if (!normalized) return null;
-  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
-    ? new Date(`${normalized}T00:00:00`)
-    : new Date(normalized);
+
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const dayFirstMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dayFirstMatch) {
+    const [, day, month, year] = dayFirstMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
+
   return parsed;
 }
 
@@ -46,7 +61,7 @@ function formatIsoDate(value?: Date): string {
   if (Number.isNaN(parsed.getTime())) {
     return '';
   }
-  return parsed.toISOString().split('T')[0];
+  return formatDateDDMMYYYY(parsed);
 }
 
 export function EditTransactionModal({ visible, transaction, onClose, onSave }: EditTransactionModalProps) {
@@ -72,7 +87,8 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     if (transaction) {
       setAmount(transaction.amount.toString());
       setDescription(transaction.description || '');
-      setDate(new Date(transaction.date));
+      const parsedDate = new Date(transaction.date);
+      setDate(Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate);
       setType(transaction.type);
 
       const categoryPool = transaction.type === 'income'
@@ -245,7 +261,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     const trimmedDueDate = dueDate.trim();
     const parsedDueDate = trimmedDueDate ? parseDateInput(trimmedDueDate) : null;
     if (trimmedDueDate && !parsedDueDate) {
-      Alert.alert('Error', 'Please enter a valid due date in YYYY-MM-DD format');
+      Alert.alert('Error', 'Please enter a valid due date in DD-MM-YYYY format');
       return;
     }
 
@@ -284,11 +300,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
   };
 
   const formatDate = (date: Date) => {
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+    return formatDateDDMMYYYY(date);
   };
 
   const calculatorButtons = [
@@ -593,7 +605,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   style={[styles.dateInputText, { color: theme.colors.text }]}
                   value={dueDate}
                   onChangeText={setDueDate}
-                  placeholder="Due date (YYYY-MM-DD)"
+                  placeholder="Due date (DD-MM-YYYY)"
                   placeholderTextColor={theme.colors.textSecondary}
                 />
               </View>

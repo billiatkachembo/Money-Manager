@@ -8,17 +8,54 @@ import {
   TouchableOpacity,
   useWindowDimensions,
 } from 'react-native';
-import { PieChart, LineChart } from 'react-native-chart-kit';
+import {
+  VictoryArea,
+  VictoryAxis,
+  VictoryBar,
+  VictoryChart,
+  VictoryGroup,
+  VictoryLine,
+  VictoryPie,
+  VictoryTooltip,
+  createContainer,
+} from 'victory-native';
+import { Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
 import { ArrowDownRight, ArrowUpRight, DollarSign, X } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 import {
   computeNetWorthProgress,
   computeExpenseCategoryBreakdown,
   computeExpenseDistribution,
   computeQuickStats,
 } from '@/src/domain/analytics';
+import { deriveAccountBalance } from '@/src/domain/ledger';
 import type { Transaction } from '@/types/transaction';
+
+const chartPalette = {
+  income: '#22C55E',
+  expenses: '#EF4444',
+  savings: '#3B82F6',
+  investments: '#8B5CF6',
+  debt: '#F97316',
+  netWorth: '#60A5FA',
+  growth: '#34D399',
+  netFlow: '#FBBF24',
+};
+
+const categoryPalette = [
+  '#60A5FA',
+  '#F9A8D4',
+  '#FCA5A5',
+  '#A7F3D0',
+  '#93C5FD',
+  '#FDBA74',
+  '#A78BFA',
+  '#FCD34D',
+];
+
+const VoronoiCursorContainer = createContainer('voronoi', 'cursor') as React.ComponentType<any>;
 
 function toMonthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -58,6 +95,100 @@ function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs >= 1_000_000_000) {
+    return `${sign}${roundCurrency(abs / 1_000_000_000)}b`;
+  }
+  if (abs >= 1_000_000) {
+    return `${sign}${roundCurrency(abs / 1_000_000)}m`;
+  }
+  if (abs >= 1_000) {
+    return `${sign}${roundCurrency(abs / 1_000)}k`;
+  }
+  return `${sign}${Math.round(abs)}`;
+}
+
+function formatShortMonthLabel(date: Date): string {
+  return date.toLocaleDateString('en-US', { month: 'short' });
+}
+
+function formatShortDayLabel(date: Date): string {
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function truncateLabel(label: string, maxLength = 10): string {
+  if (label.length <= maxLength) {
+    return label;
+  }
+  return `${label.slice(0, maxLength - 1)}...`;
+}
+
+function clamp(value: number, min = 0, max = 1): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function estimateMonthsToTarget(
+  current: number,
+  target: number,
+  monthlySavings: number,
+  annualReturn: number
+): number | null {
+  if (!Number.isFinite(target) || target <= 0) {
+    return null;
+  }
+  if (current >= target) {
+    return 0;
+  }
+  if (monthlySavings <= 0 && annualReturn <= 0) {
+    return null;
+  }
+
+  const monthlyRate = annualReturn / 12;
+  let balance = current;
+  let months = 0;
+
+  while (balance < target && months < 600) {
+    balance = balance * (1 + monthlyRate) + monthlySavings;
+    months += 1;
+  }
+
+  return months < 600 ? months : null;
+}
+
+function formatDurationShort(months: number | null): string | null {
+  if (months === null || !Number.isFinite(months)) {
+    return null;
+  }
+  if (months <= 0) {
+    return '0 mo';
+  }
+  if (months < 12) {
+    return `${Math.max(1, Math.round(months))} mo`;
+  }
+  const years = months / 12;
+  return `${roundCurrency(years)} yrs`;
+}
+
+function formatDurationLong(months: number | null): string | null {
+  if (months === null || !Number.isFinite(months)) {
+    return null;
+  }
+  if (months <= 0) {
+    return '0 months';
+  }
+  if (months < 12) {
+    const rounded = Math.max(1, Math.round(months));
+    return `${rounded} months`;
+  }
+  const years = roundCurrency(months / 12);
+  return `${years} years`;
+}
+
 function getChangeColor(value: number): string {
   if (value > 0.01) {
     return '#16A34A';
@@ -90,16 +221,76 @@ function computeTransactionNetWorthImpact(
 interface MonthContributionItem {
   transaction: Transaction;
   netWorthImpact: number;
-  fromAccountName?: string;
-  toAccountName?: string;
+  fromAccountName: string;
+  toAccountName: string;
 }
 
-export default function AnalyticsScreen() {
-  const { transactions, allTransactions, accounts, getTotalIncome, getTotalExpenses, formatCurrency } = useTransactionStore();
+interface MilestoneCard {
+  id: string;
+  title: string;
+  targetLabel: string;
+  currentLabel: string;
+  target: number;
+  current: number;
+  progress: number;
+  estimatedMonths?: number | null;
+  insights?: string[];
+  achieved?: boolean;
+  tone?: 'positive' | 'warning';
+}
+
+const AnalyticsScreen = React.memo(function AnalyticsScreen() {
+  const { transactions, allTransactions, accounts, debtAccounts, getTotalIncome, getTotalExpenses, formatCurrency, financialIntelligence } = useTransactionStore();
   const { theme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
+  const advisorInsights = financialIntelligence.insights ?? [];
+  const budgetSuggestions = financialIntelligence.budgetSuggestions ?? [];
+  const cashflowRunway = financialIntelligence.cashflowRunway;
+  const netWorthSimulation = financialIntelligence.netWorthSimulation;
+  const debtPayoffPlan = financialIntelligence.debtPayoff;
+  const milestoneProgress = financialIntelligence.milestones;
+
+  const netWorthForecastData = useMemo(() => {
+    if (!netWorthSimulation) {
+      return null;
+    }
+
+    const data = netWorthSimulation.points.map((point) => ({
+      x: new Date(point.year, 0, 1),
+      y: point.netWorth,
+    }));
+
+    const tickValues = netWorthSimulation.points
+      .filter((_, index) => index % 2 === 0)
+      .map((point) => new Date(point.year, 0, 1));
+
+    return { data, tickValues };
+  }, [netWorthSimulation]);
 
   const chartWidth = Math.max(screenWidth - 32, 260);
+  const gridColor = theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)';
+  const axisLabelColor = theme.isDark ? 'rgba(255,255,255,0.7)' : 'rgba(15,23,42,0.6)';
+  const tooltipFlyoutStyle = useMemo(
+    () => ({
+      fill: theme.isDark ? '#0F172A' : '#FFFFFF',
+      stroke: theme.colors.border,
+      strokeWidth: 1,
+    }),
+    [theme.colors.border, theme.isDark]
+  );
+  const tooltipTextStyle = useMemo(
+    () => ({
+      fill: theme.isDark ? 'rgba(255,255,255,0.9)' : 'rgba(15,23,42,0.8)',
+      fontSize: 11,
+      fontWeight: '600',
+    }),
+    [theme.isDark]
+  );
+  const chartPadding = useMemo(() => ({ top: 16, bottom: 40, left: 50, right: 16 }), []);
+  const chartAnimation = useMemo(
+    () => ({ duration: 900, easing: 'cubicOut' as const }),
+    []
+  );
   const today = new Date();
   const currentMonth = toMonthKey(today);
   const elapsedDays = Math.max(1, today.getDate());
@@ -122,21 +313,44 @@ export default function AnalyticsScreen() {
     [currentMonthTransactions]
   );
 
-  const pieChartData = useMemo(() => {
+  const categoryBarData = useMemo(() => {
+    return categorySpending
+      .slice()
+      .sort((left, right) => right.amount - left.amount)
+      .slice(0, 5)
+      .map((category, index) => ({
+        x: truncateLabel(category.categoryName, 10),
+        y: category.amount,
+        fullLabel: category.categoryName,
+        fill: category.color ?? categoryPalette[index % categoryPalette.length],
+      }));
+  }, [categorySpending]);
+
+  const topCategory = useMemo(() => {
+    if (categorySpending.length === 0) {
+      return null;
+    }
+
+    return categorySpending.reduce((top, item) => (item.amount > top.amount ? item : top), categorySpending[0]);
+  }, [categorySpending]);
+
+  const expenseDonutData = useMemo(() => {
     if (categorySpending.length === 0) {
       return [];
     }
 
-    const legendColor = theme.isDark ? '#E5E7EB' : '#374151';
-    return computeExpenseDistribution(categorySpending, 5).map((entry) => ({
-      name: entry.name,
-      amount: entry.amount,
-      color: entry.color,
-      legendFontColor: legendColor,
-      legendFontSize: 11,
-      legendFontSpacing: 4,
+    const distribution = computeExpenseDistribution(categorySpending, 5);
+    return distribution.map((entry, index) => ({
+      x: entry.name,
+      y: entry.amount,
+      color: entry.color ?? categoryPalette[index % categoryPalette.length],
     }));
-  }, [categorySpending, theme.isDark]);
+  }, [categorySpending]);
+
+  const expenseDonutColors = useMemo(
+    () => expenseDonutData.map((entry) => entry.color),
+    [expenseDonutData]
+  );
 
   const transactionsByDay = useMemo(() => {
     const map = new Map<string, { income: number; expenses: number }>();
@@ -156,34 +370,34 @@ export default function AnalyticsScreen() {
     return map;
   }, [transactions]);
 
-  const trendData = useMemo(() => {
+  const trendSeries = useMemo(() => {
     const recentDays = buildRecentDays(14);
     const expenses = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.expenses ?? 0);
     const income = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.income ?? 0);
+    const net = income.map((value, index) => (value ?? 0) - (expenses[index] ?? 0));
+
+    const tickValues = recentDays.filter((_, index) => index % 2 === 0);
+    const totalExpenses = roundCurrency(expenses.reduce((sum, value) => sum + value, 0));
 
     return {
-      labels: recentDays.map((date, index) => (index % 2 === 0 ? `${date.getMonth() + 1}/${date.getDate()}` : '')),
-      datasets: [
-        {
-          data: expenses,
-          color: (opacity = 1) => `rgba(220, 38, 38, ${opacity})`,
-          strokeWidth: 2,
-        },
-        {
-          data: income,
-          color: (opacity = 1) => `rgba(22, 163, 74, ${opacity})`,
-          strokeWidth: 2,
-        },
-        {
-          data: income.map((value, index) => value - expenses[index]),
-          color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
-          strokeWidth: 2,
-        },
-      ],
+      expenseData: recentDays.map((date, index) => ({
+        x: date,
+        y: expenses[index] ?? 0,
+      })),
+      incomeData: recentDays.map((date, index) => ({
+        x: date,
+        y: income[index] ?? 0,
+      })),
+      netData: recentDays.map((date, index) => ({
+        x: date,
+        y: net[index] ?? 0,
+      })),
+      tickValues,
+      totalExpenses,
     };
   }, [transactionsByDay]);
 
-  const monthlyComparisonData = useMemo(() => {
+  const monthlyComparisonSeries = useMemo(() => {
     const recentMonths = buildRecentMonths(6);
     const labels = recentMonths.map((month) => month.toLocaleDateString('en-US', { month: 'short' }));
     const expenses = recentMonths.map((month) => getTotalExpenses(toMonthKey(month)));
@@ -191,18 +405,16 @@ export default function AnalyticsScreen() {
 
     return {
       labels,
-      datasets: [
-        {
-          data: expenses,
-          color: (opacity = 1) => `rgba(220, 38, 38, ${opacity})`,
-          strokeWidth: 2,
-        },
-        {
-          data: income,
-          color: (opacity = 1) => `rgba(22, 163, 74, ${opacity})`,
-          strokeWidth: 2,
-        },
-      ],
+      expenseData: labels.map((label, index) => ({
+        x: label,
+        y: expenses[index] ?? 0,
+      })),
+      incomeData: labels.map((label, index) => ({
+        x: label,
+        y: income[index] ?? 0,
+      })),
+      totalIncome: roundCurrency(income.reduce((sum, value) => sum + value, 0)),
+      totalExpenses: roundCurrency(expenses.reduce((sum, value) => sum + value, 0)),
     };
   }, [getTotalExpenses, getTotalIncome, transactions]);
 
@@ -211,8 +423,278 @@ export default function AnalyticsScreen() {
     [accounts, allTransactions]
   );
 
+  const accountBalanceById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const account of accounts) {
+      map.set(account.id, deriveAccountBalance(account.id, allTransactions));
+    }
+    return map;
+  }, [accounts, allTransactions]);
+
+  const liquidBalance = useMemo(
+    () =>
+      accounts
+        .filter(
+          (account) =>
+            account.isActive !== false && ['checking', 'savings', 'cash'].includes(account.type)
+        )
+        .reduce((sum, account) => sum + (accountBalanceById.get(account.id) ?? 0), 0),
+    [accounts, accountBalanceById]
+  );
+
+  const investmentBalance = useMemo(
+    () =>
+      accounts
+        .filter((account) => account.isActive !== false && account.type === 'investment')
+        .reduce((sum, account) => sum + (accountBalanceById.get(account.id) ?? 0), 0),
+    [accounts, accountBalanceById]
+  );
+
+  const averageMonthlyExpenses = useMemo(() => {
+    const recentMonths = buildRecentMonths(3);
+    if (recentMonths.length === 0) {
+      return 0;
+    }
+
+    const totals = recentMonths.map((month) => {
+      const key = toMonthKey(month);
+      return transactions
+        .filter((transaction) => transaction.type === 'expense' && toMonthKey(transaction.date) === key)
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+    });
+
+    return roundCurrency(totals.reduce((sum, value) => sum + value, 0) / totals.length);
+  }, [transactions]);
+
+  const monthlySavings = Math.max(0, netWorthSimulation?.monthlySavings ?? (monthlyIncome - monthlyExpenses));
+  const annualReturn = netWorthSimulation?.annualReturn ?? 0.05;
+
+  const emergencyFundTarget = roundCurrency(averageMonthlyExpenses * 6);
+  const emergencyFundProgress = emergencyFundTarget > 0 ? clamp(liquidBalance / emergencyFundTarget) : 0;
+  const emergencyFundMonths = averageMonthlyExpenses > 0
+    ? roundCurrency(liquidBalance / averageMonthlyExpenses)
+    : null;
+  const emergencyFundEtaMonths = emergencyFundTarget > 0
+    ? estimateMonthsToTarget(liquidBalance, emergencyFundTarget, monthlySavings, 0)
+    : null;
+
+  const debtBalance = useMemo(
+    () =>
+      debtAccounts
+        .filter((account) => account.direction === 'borrowed')
+        .reduce((sum, account) => sum + account.balance, 0),
+    [debtAccounts]
+  );
+
+  const debtPayments = useMemo(
+    () =>
+      transactions
+        .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
+        .reduce((sum, transaction) => sum + transaction.amount, 0),
+    [transactions]
+  );
+
+  const originalDebt = Math.max(debtBalance + debtPayments, debtBalance);
+  const debtProgress = originalDebt > 0 ? clamp(1 - debtBalance / originalDebt) : 1;
+  const debtEtaMonths = debtPayoffPlan ? debtPayoffPlan[debtPayoffPlan.recommendedStrategy].months : null;
+
+  const investmentTarget = 1000;
+  const investmentProgress = investmentTarget > 0 ? clamp(investmentBalance / investmentTarget) : 0;
+  const investmentEtaMonths = investmentTarget > 0
+    ? estimateMonthsToTarget(investmentBalance, investmentTarget, monthlySavings, annualReturn)
+    : null;
+
+  const netWorthTarget = milestoneProgress?.nextMilestone ?? null;
+  const netWorthMilestoneProgress = netWorthTarget
+    ? clamp(netWorthProgress.currentNetWorth / netWorthTarget)
+    : 1;
+  const netWorthEtaMonths = netWorthTarget
+    ? estimateMonthsToTarget(netWorthProgress.currentNetWorth, netWorthTarget, monthlySavings, annualReturn)
+    : null;
+
+  const financialIndependenceTarget = roundCurrency(averageMonthlyExpenses * 12 * 25);
+  const financialIndependenceProgress = financialIndependenceTarget > 0
+    ? clamp(investmentBalance / financialIndependenceTarget)
+    : 0;
+  const financialIndependenceEtaMonths = financialIndependenceTarget > 0
+    ? estimateMonthsToTarget(investmentBalance, financialIndependenceTarget, monthlySavings, annualReturn)
+    : null;
+
+  const milestoneCards = useMemo(() => {
+    const cards: MilestoneCard[] = [];
+
+    const emergencyInsights: string[] = [];
+    if (emergencyFundMonths !== null) {
+      emergencyInsights.push(`You have ${emergencyFundMonths} months of emergency savings. Goal: 6 months.`);
+    } else {
+      emergencyInsights.push('Track at least three months of expenses to estimate your emergency fund target.');
+    }
+
+    if (emergencyFundTarget > 0 && monthlySavings > 0) {
+      const baseMonths = emergencyFundEtaMonths;
+      const boostedMonths = estimateMonthsToTarget(
+        liquidBalance,
+        emergencyFundTarget,
+        monthlySavings + 200,
+        0
+      );
+      if (baseMonths !== null && boostedMonths !== null && baseMonths > boostedMonths) {
+        const diff = baseMonths - boostedMonths;
+        const diffText = formatDurationLong(diff);
+        if (diffText) {
+          emergencyInsights.push(`Saving ${formatCurrency(200)} more per month could reach your emergency fund ${diffText} earlier.`);
+        }
+      }
+    }
+
+    cards.push({
+      id: 'emergency-fund',
+      title: 'Emergency Fund',
+      targetLabel: 'Target',
+      currentLabel: 'Saved',
+      target: emergencyFundTarget,
+      current: liquidBalance,
+      progress: emergencyFundProgress,
+      estimatedMonths: emergencyFundEtaMonths,
+      insights: emergencyInsights,
+      achieved: emergencyFundProgress >= 1 && emergencyFundTarget > 0,
+    });
+
+    const debtInsights: string[] = [];
+    if (debtBalance <= 0) {
+      debtInsights.push('No active debt detected. Great job staying debt-free.');
+    } else if (debtEtaMonths !== null) {
+      const etaText = formatDurationLong(debtEtaMonths);
+      if (etaText) {
+        debtInsights.push(`You could become debt-free in ${etaText} if you maintain your current payments.`);
+      }
+    }
+
+    cards.push({
+      id: 'debt-freedom',
+      title: 'Debt Freedom',
+      targetLabel: 'Original Debt',
+      currentLabel: 'Remaining',
+      target: originalDebt,
+      current: debtBalance,
+      progress: debtProgress,
+      estimatedMonths: debtEtaMonths,
+      insights: debtInsights,
+      achieved: debtBalance <= 0,
+      tone: debtBalance > 0 ? 'warning' : 'positive',
+    });
+
+    const investmentInsights: string[] = [];
+    if (investmentBalance < investmentTarget) {
+      investmentInsights.push('Starting with $1,000 can begin your long-term growth.');
+    } else {
+      investmentInsights.push('You have started investing. Keep the momentum going.');
+    }
+
+    cards.push({
+      id: 'first-investment',
+      title: 'First Investment',
+      targetLabel: 'Target',
+      currentLabel: 'Invested',
+      target: investmentTarget,
+      current: investmentBalance,
+      progress: investmentProgress,
+      estimatedMonths: investmentEtaMonths,
+      insights: investmentInsights,
+      achieved: investmentProgress >= 1,
+    });
+
+    const netWorthInsights: string[] = [];
+    if (!netWorthTarget) {
+      netWorthInsights.push('You have achieved the highest net worth milestone in this list.');
+    } else if (netWorthEtaMonths !== null) {
+      const etaText = formatDurationLong(netWorthEtaMonths);
+      if (etaText) {
+        netWorthInsights.push(`You could reach ${formatCurrency(netWorthTarget)} in about ${etaText}.`);
+      }
+    }
+
+    cards.push({
+      id: 'net-worth',
+      title: 'Net Worth Milestone',
+      targetLabel: 'Next Milestone',
+      currentLabel: 'Current Net Worth',
+      target: netWorthTarget ?? netWorthProgress.currentNetWorth,
+      current: netWorthProgress.currentNetWorth,
+      progress: netWorthMilestoneProgress,
+      estimatedMonths: netWorthEtaMonths,
+      insights: netWorthInsights,
+      achieved: !netWorthTarget,
+    });
+
+    const fiInsights: string[] = [];
+    if (financialIndependenceTarget <= 0) {
+      fiInsights.push('Track expenses to estimate your financial independence target.');
+    } else if (financialIndependenceEtaMonths !== null) {
+      const etaText = formatDurationLong(financialIndependenceEtaMonths);
+      if (etaText) {
+        fiInsights.push(`Your investments could support annual expenses in about ${etaText}.`);
+      }
+    }
+
+    if (financialIndependenceTarget > 0 && monthlySavings > 0) {
+      const baseMonths = financialIndependenceEtaMonths;
+      const boostedMonths = estimateMonthsToTarget(
+        investmentBalance,
+        financialIndependenceTarget,
+        monthlySavings + 100,
+        annualReturn
+      );
+      if (baseMonths !== null && boostedMonths !== null && baseMonths > boostedMonths) {
+        const diff = baseMonths - boostedMonths;
+        const diffText = formatDurationLong(diff);
+        if (diffText) {
+          fiInsights.push(`Investing ${formatCurrency(100)} more per month could reach financial independence ${diffText} earlier.`);
+        }
+      }
+    }
+
+    cards.push({
+      id: 'financial-independence',
+      title: 'Financial Independence',
+      targetLabel: 'Target',
+      currentLabel: 'Invested',
+      target: financialIndependenceTarget,
+      current: investmentBalance,
+      progress: financialIndependenceProgress,
+      estimatedMonths: financialIndependenceEtaMonths,
+      insights: fiInsights,
+      achieved: financialIndependenceProgress >= 1 && financialIndependenceTarget > 0,
+    });
+
+    return cards;
+  }, [
+    annualReturn,
+    debtBalance,
+    debtEtaMonths,
+    emergencyFundEtaMonths,
+    emergencyFundMonths,
+    emergencyFundProgress,
+    emergencyFundTarget,
+    financialIndependenceEtaMonths,
+    financialIndependenceProgress,
+    financialIndependenceTarget,
+    formatCurrency,
+    investmentBalance,
+    investmentEtaMonths,
+    investmentProgress,
+    liquidBalance,
+    milestoneProgress,
+    monthlySavings,
+    netWorthEtaMonths,
+    netWorthMilestoneProgress,
+    netWorthProgress.currentNetWorth,
+    netWorthTarget,
+    originalDebt,
+  ]);
+
   const activeAccountIds = useMemo(
-    () => new Set(accounts.filter((account) => account.isActive !== false).map((account) => account.id)),
+    () => new Set(accounts.filter((account) => account.isActive !== false).map((account) => account.id as string)),
     [accounts]
   );
 
@@ -246,29 +728,28 @@ export default function AnalyticsScreen() {
     });
   }, [monthlyNetFlowByMonth, netWorthProgress.points]);
 
-  const netWorthChartData = useMemo(
-    () => ({
-      labels: netWorthProgress.labels,
-      datasets: [
-        {
-          data: netWorthProgress.netWorth,
-          color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
-          strokeWidth: 2,
-        },
-        {
-          data: netWorthProgress.cumulativeGrowth,
-          color: (opacity = 1) => `rgba(20, 184, 166, ${opacity})`,
-          strokeWidth: 2,
-        },
-        {
-          data: cumulativeNetFlow,
-          color: (opacity = 1) => `rgba(234, 179, 8, ${opacity})`,
-          strokeWidth: 2,
-        },
-      ],
-    }),
-    [cumulativeNetFlow, netWorthProgress]
-  );
+  const netWorthSeries = useMemo(() => {
+    const dates = netWorthProgress.points.map((point) => {
+      const [year, month] = point.month.split('-').map(Number);
+      return new Date(year, (month ?? 1) - 1, 1);
+    });
+
+    return {
+      netWorthData: dates.map((date, index) => ({
+        x: date,
+        y: netWorthProgress.netWorth[index] ?? 0,
+      })),
+      growthData: dates.map((date, index) => ({
+        x: date,
+        y: netWorthProgress.cumulativeGrowth[index] ?? 0,
+      })),
+      flowData: dates.map((date, index) => ({
+        x: date,
+        y: cumulativeNetFlow[index] ?? 0,
+      })),
+      tickValues: dates.filter((_, index) => index % 2 === 0),
+    };
+  }, [cumulativeNetFlow, netWorthProgress]);
 
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(0);
   const [showMonthDrillDown, setShowMonthDrillDown] = useState(false);
@@ -365,45 +846,25 @@ export default function AnalyticsScreen() {
   }, [monthContributionItems]);
 
   const hasTrendData = useMemo(
-    () => trendData.datasets.some((dataset) => dataset.data.some((value) => value !== 0)),
-    [trendData]
+    () =>
+      trendSeries.expenseData.some((point) => point.y !== 0) ||
+      trendSeries.incomeData.some((point) => point.y !== 0) ||
+      trendSeries.netData.some((point) => point.y !== 0),
+    [trendSeries]
   );
 
   const hasComparisonData = useMemo(
-    () => monthlyComparisonData.datasets.some((dataset) => dataset.data.some((value) => value !== 0)),
-    [monthlyComparisonData]
+    () =>
+      monthlyComparisonSeries.expenseData.some((point) => point.y !== 0) ||
+      monthlyComparisonSeries.incomeData.some((point) => point.y !== 0),
+    [monthlyComparisonSeries]
   );
 
-  const chartConfig = {
-    backgroundColor: theme.colors.surface,
-    backgroundGradientFrom: theme.colors.surface,
-    backgroundGradientTo: theme.colors.surface,
-    decimalPlaces: 0,
-    labelFontSize: 10,
-    color: (opacity = 1) => `rgba(102, 126, 234, ${opacity})`,
-    labelColor: (opacity = 1) =>
-      theme.isDark ? `rgba(255, 255, 255, ${opacity})` : `rgba(51, 51, 51, ${opacity})`,
-    style: {
-      borderRadius: 16,
-    },
-    propsForDots: {
-      r: '3',
-      strokeWidth: '2',
-      stroke: theme.colors.primary,
-    },
-    propsForBackgroundLines: {
-      strokeDasharray: '',
-      stroke: theme.colors.border,
-      strokeWidth: 1,
-    },
-    fillShadowGradient: theme.colors.primary,
-    fillShadowGradientOpacity: 0.08,
-  };
 
   return (
     <>
       <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>This Month</Text>
         <View style={styles.summaryRow}>
           <View style={styles.summaryItem}>
@@ -435,6 +896,9 @@ export default function AnalyticsScreen() {
         </View>
         {!hasActiveAccounts ? (
           <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
               Add at least one active account to track net worth.
             </Text>
@@ -471,7 +935,7 @@ export default function AnalyticsScreen() {
             </View>
             <View style={[styles.netWorthGrowthRow, { borderTopColor: theme.colors.border }]}>
               <Text style={[styles.netWorthGrowthLabel, { color: theme.colors.textSecondary }]}>
-                Cumulative Growth (since {netWorthProgress.labels[0] ?? 'start'})
+                Cumulative Growth (since {netWorthProgress.labels[0] || 'start'})
               </Text>
               <Text
                 style={[
@@ -497,34 +961,128 @@ export default function AnalyticsScreen() {
             </View>
             <View style={[styles.legendRow, styles.netWorthLegendRow]}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#667eea' }]} />
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.netWorth }]} />
                 <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net Worth</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#14B8A6' }]} />
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.growth }]} />
                 <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Cumulative Growth</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#EAB308' }]} />
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.netFlow }]} />
                 <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Cumulative Inflow/Outflow</Text>
               </View>
             </View>
             <View style={styles.chartContainer}>
-              <LineChart
-                data={netWorthChartData}
+              <VictoryChart
                 width={chartWidth}
                 height={220}
-                chartConfig={chartConfig}
-                style={styles.lineChartStyle}
-                withDots={true}
-                withShadow={false}
-                formatXLabel={(label) => label}
-                getDotColor={(_value, index) =>
-                  getChangeColor(netWorthProgress.monthOverMonthChange[index] ?? 0)
+                padding={chartPadding}
+                scale={{ x: 'time' }}
+                domainPadding={{ y: 12, x: 12 }}
+                containerComponent={
+                  <VoronoiCursorContainer
+                    cursorDimension="x"
+                    cursorComponent={
+                      <VictoryLine
+                        style={{
+                          data: {
+                            stroke: gridColor,
+                            strokeWidth: 1,
+                          },
+                        }}
+                      />
+                    }
+                  />
                 }
-                onDataPointClick={({ index }) => setSelectedMonthIndex(index)}
-                bezier
-              />
+              >
+                <Defs>
+                  <SvgLinearGradient id="netWorthGradient" x1="0" y1="0" x2="0" y2="1">
+                    <Stop offset="0%" stopColor={chartPalette.netWorth} stopOpacity={0.28} />
+                    <Stop offset="100%" stopColor={chartPalette.netWorth} stopOpacity={0} />
+                  </SvgLinearGradient>
+                </Defs>
+                <VictoryAxis
+                  tickValues={netWorthSeries.tickValues}
+                  tickFormat={(value) => formatShortMonthLabel(new Date(value))}
+                  style={{
+                    axis: { stroke: 'transparent' },
+                    ticks: { stroke: 'transparent' },
+                    tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                    grid: { stroke: 'transparent' },
+                  }}
+                />
+                <VictoryAxis
+                  dependentAxis
+                  tickCount={3}
+                  tickFormat={(value) => formatCompactNumber(value)}
+                  style={{
+                    axis: { stroke: 'transparent' },
+                    ticks: { stroke: 'transparent' },
+                    tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                    grid: { stroke: gridColor },
+                  }}
+                />
+                <VictoryArea
+                  data={netWorthSeries.netWorthData}
+                  interpolation="natural"
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      stroke: chartPalette.netWorth,
+                      strokeWidth: 2.2,
+                      fill: 'url(#netWorthGradient)',
+                    },
+                  }}
+                  labels={({ datum }) =>
+                    `${formatShortMonthLabel(new Date(datum.x))} ${new Date(datum.x).getFullYear()}
+${formatCurrency(datum.y)}`
+                  }
+                  labelComponent={
+                    <VictoryTooltip
+                      flyoutStyle={tooltipFlyoutStyle}
+                      style={tooltipTextStyle}
+                      pointerLength={6}
+                      cornerRadius={10}
+                      renderInPortal={false}
+                    />
+                  }
+                />
+                <VictoryLine
+                  data={netWorthSeries.netWorthData}
+                  interpolation="natural"
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      stroke: chartPalette.netWorth,
+                      strokeWidth: 2.2,
+                    },
+                  }}
+                />
+                <VictoryLine
+                  data={netWorthSeries.growthData}
+                  interpolation="natural"
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      stroke: chartPalette.growth,
+                      strokeWidth: 1.6,
+                      strokeDasharray: '4,4',
+                    },
+                  }}
+                />
+                <VictoryLine
+                  data={netWorthSeries.flowData}
+                  interpolation="natural"
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      stroke: chartPalette.netFlow,
+                      strokeWidth: 1.6,
+                    },
+                  }}
+                />
+              </VictoryChart>
             </View>
             {selectedMonthPoint ? (
               <View
@@ -566,7 +1124,7 @@ export default function AnalyticsScreen() {
             ) : null}
             <View style={styles.monthSelectorRow}>
               {netWorthProgress.points.map((point, index) => {
-                const change = netWorthProgress.monthOverMonthChange[index] ?? 0;
+                const change = netWorthProgress.monthOverMonthChange[index] - 0;
                 const isSelected = index === safeSelectedMonthIndex;
                 const changeColor = getChangeColor(change);
 
@@ -607,7 +1165,7 @@ export default function AnalyticsScreen() {
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
           <View style={styles.cardSubtitle}>
@@ -615,126 +1173,367 @@ export default function AnalyticsScreen() {
             <Text style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}>{formatCurrency(monthlyExpenses)} total</Text>
           </View>
         </View>
-        {pieChartData.length === 0 ? (
+        <View style={styles.chartSummary}>
+          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(monthlyExpenses)}</Text>
+          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>total expenses this month</Text>
+        </View>
+        {expenseDonutData.length === 0 ? (
           <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
           </View>
         ) : (
           <View style={styles.chartContainer}>
-            <PieChart
-              data={pieChartData}
-              width={chartWidth}
-              height={240}
-              chartConfig={chartConfig}
-              accessor="amount"
-              backgroundColor="transparent"
-              paddingLeft="10"
-              absolute
-              hasLegend={true}
-            />
+            <View style={styles.donutWrapper}>
+              <VictoryPie
+                data={expenseDonutData}
+                colorScale={expenseDonutColors}
+                width={chartWidth}
+                height={220}
+                innerRadius={60}
+                radius={90}
+                padAngle={1.5}
+                animate={chartAnimation}
+                labels={() => ''}
+                style={{
+                  data: {
+                    stroke: theme.colors.surface,
+                    strokeWidth: 2,
+                  },
+                }}
+              />
+              <View style={styles.donutCenter}>
+                <Text style={[styles.donutLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
+                <Text style={[styles.donutValue, { color: theme.colors.text }]}>{formatCurrency(monthlyExpenses)}</Text>
+              </View>
+            </View>
           </View>
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>14-Day Trend</Text>
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
+              <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
               <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
+              <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
               <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#667eea' }]} />
+              <View style={[styles.legendDot, { backgroundColor: chartPalette.savings }]} />
               <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
             </View>
           </View>
         </View>
+        <View style={styles.chartSummary}>
+          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(trendSeries.totalExpenses)}</Text>
+          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>last 14 days spend</Text>
+        </View>
         {!hasTrendData ? (
           <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No transactions in the last 14 days</Text>
           </View>
         ) : (
           <View style={styles.chartContainer}>
-            <LineChart
-              data={trendData}
+            <VictoryChart
               width={chartWidth}
-              height={240}
-              chartConfig={chartConfig}
-              formatXLabel={(label) => label}
-              xLabelsOffset={-10}
-              style={styles.lineChartStyle}
-              withDots={true}
-              withShadow={true}
-              bezier
-            />
+              height={220}
+              padding={chartPadding}
+              scale={{ x: 'time' }}
+              domainPadding={{ y: 12 }}
+              containerComponent={
+                <VoronoiCursorContainer
+                  cursorDimension="x"
+                  cursorComponent={
+                    <VictoryLine
+                      style={{
+                        data: {
+                          stroke: gridColor,
+                          strokeWidth: 1,
+                        },
+                      }}
+                    />
+                  }
+                />
+              }
+            >
+              <Defs>
+                <SvgLinearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
+                  <Stop offset="0%" stopColor={chartPalette.expenses} stopOpacity={0.28} />
+                  <Stop offset="100%" stopColor={chartPalette.expenses} stopOpacity={0} />
+                </SvgLinearGradient>
+              </Defs>
+              <VictoryAxis
+                tickValues={trendSeries.tickValues}
+                tickFormat={(value) => formatShortDayLabel(new Date(value))}
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: 'transparent' },
+                }}
+              />
+              <VictoryAxis
+                dependentAxis
+                tickCount={3}
+                tickFormat={(value) => formatCompactNumber(value)}
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: gridColor },
+                }}
+              />
+              <VictoryArea
+                data={trendSeries.expenseData}
+                interpolation="natural"
+                animate={chartAnimation}
+                style={{
+                  data: {
+                    stroke: chartPalette.expenses,
+                    strokeWidth: 2,
+                    fill: 'url(#trendGradient)',
+                  },
+                }}
+                labels={({ datum }) =>
+                  `${formatShortDayLabel(new Date(datum.x))}
+${formatCurrency(datum.y)}`
+                }
+                labelComponent={
+                  <VictoryTooltip
+                    flyoutStyle={tooltipFlyoutStyle}
+                    style={tooltipTextStyle}
+                    pointerLength={6}
+                    cornerRadius={10}
+                    renderInPortal={false}
+                  />
+                }
+              />
+              <VictoryLine
+                data={trendSeries.incomeData}
+                interpolation="natural"
+                animate={chartAnimation}
+                style={{
+                  data: {
+                    stroke: chartPalette.income,
+                    strokeWidth: 1.8,
+                  },
+                }}
+              />
+              <VictoryLine
+                data={trendSeries.netData}
+                interpolation="natural"
+                animate={chartAnimation}
+                style={{
+                  data: {
+                    stroke: chartPalette.savings,
+                    strokeWidth: 1.6,
+                    strokeDasharray: '3,3',
+                  },
+                }}
+              />
+            </VictoryChart>
           </View>
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>6-Month Income vs Expenses</Text>
           <View style={styles.legendRow}>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
+              <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
               <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
             </View>
             <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
+              <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
               <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
             </View>
           </View>
         </View>
+        <View style={styles.chartSummary}>
+          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatSignedCurrency(formatCurrency, monthlyIncome - monthlyExpenses)}</Text>
+          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>net this month</Text>
+        </View>
         {!hasComparisonData ? (
           <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No data for comparison</Text>
           </View>
         ) : (
           <View style={styles.chartContainer}>
-            <LineChart
-              data={monthlyComparisonData}
+            <VictoryChart
               width={chartWidth}
               height={220}
-              chartConfig={chartConfig}
-              style={styles.lineChartStyle}
-              withDots={true}
-              withShadow={false}
-              fromZero={true}
-            />
+              padding={chartPadding}
+              domainPadding={{ x: 20, y: 12 }}
+            >
+              <VictoryAxis
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: 'transparent' },
+                }}
+              />
+              <VictoryAxis
+                dependentAxis
+                tickCount={3}
+                tickFormat={(value) => formatCompactNumber(value)}
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: gridColor },
+                }}
+              />
+              <VictoryGroup offset={14}>
+                <VictoryBar
+                  data={monthlyComparisonSeries.incomeData}
+                  barWidth={12}
+                  cornerRadius={{ top: 6, bottom: 6 }}
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      fill: chartPalette.income,
+                    },
+                  }}
+                />
+                <VictoryBar
+                  data={monthlyComparisonSeries.expenseData}
+                  barWidth={12}
+                  cornerRadius={{ top: 6, bottom: 6 }}
+                  animate={chartAnimation}
+                  style={{
+                    data: {
+                      fill: chartPalette.expenses,
+                    },
+                  }}
+                />
+              </VictoryGroup>
+            </VictoryChart>
           </View>
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
+        <View style={styles.chartSummary}>
+          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(topCategory?.amount ?? 0)}</Text>
+          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
+            {topCategory ? `${topCategory.categoryName} top category` : 'Top category'}
+          </Text>
+        </View>
         {categorySpending.length === 0 ? (
           <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
           </View>
         ) : (
-          <View style={styles.categoriesList}>
-            {categorySpending.map((category) => {
-              const percentage = Math.max(category.share * 100, 2);
+          <View style={styles.chartContainer}>
+            <VictoryChart
+              width={chartWidth}
+              height={220}
+              padding={{ top: 16, bottom: 40, left: 32, right: 16 }}
+              domainPadding={{ x: 18, y: 12 }}
+            >
+              <VictoryAxis
+                tickValues={categoryBarData.map((item) => item.x)}
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: 'transparent' },
+                }}
+              />
+              <VictoryAxis
+                dependentAxis
+                tickCount={3}
+                tickFormat={(value) => formatCompactNumber(value)}
+                style={{
+                  axis: { stroke: 'transparent' },
+                  ticks: { stroke: 'transparent' },
+                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                  grid: { stroke: gridColor },
+                }}
+              />
+              <VictoryBar
+                data={categoryBarData}
+                barWidth={14}
+                cornerRadius={{ top: 6, bottom: 6 }}
+                animate={chartAnimation}
+                style={{
+                  data: {
+                    fill: ({ datum }) => datum.fill,
+                  },
+                }}
+              />
+            </VictoryChart>
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
+        <View style={styles.statsGrid}>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Transactions This Month</Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{formatCurrency(quickStats.averageDailySpend)}</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Daily Spend</Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.activeCategories}</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Active Categories</Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+            <Text style={[styles.statValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
+              {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
+            </Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Net This Month</Text>
+          </View>
+        </View>
+      </View>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Smart Advisor</Text>
+        {advisorInsights.length === 0 ? (
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
+              No insights yet. Add more transactions to unlock guidance.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.insightList}>
+            {advisorInsights.map((insight) => {
+              const toneColor =
+                insight.severity === 'critical'
+                  ? theme.colors.error
+                  : insight.severity === 'warning'
+                    ? theme.colors.warning
+                    : theme.colors.success;
+
               return (
-                <View key={category.categoryId} style={styles.categoryRow}>
-                  <View style={styles.categoryInfo}>
-                    <View style={[styles.categoryDot, { backgroundColor: category.color }]} />
-                    <Text style={[styles.categoryName, { color: theme.colors.text }]}>{category.categoryName}</Text>
-                  </View>
-                  <View style={styles.categoryAmount}>
-                    <View style={styles.categoryMeta}>
-                      <Text style={[styles.categoryAmountText, { color: theme.colors.text }]}>{formatCurrency(category.amount)}</Text>
-                      <Text style={[styles.categoryShareText, { color: theme.colors.textSecondary }]}>{formatPercentage(category.share)}</Text>
-                    </View>
-                    <View style={[styles.progressBarContainer, { backgroundColor: theme.isDark ? theme.colors.background : '#f0f0f0' }]}>
-                      <View style={[styles.progressBar, { width: `${percentage}%`, backgroundColor: category.color }]} />
-                    </View>
-                  </View>
+                <View key={insight.id} style={[styles.insightRow, { borderColor: theme.colors.border }]}>
+                  <Text style={[styles.insightTitle, { color: toneColor }]}>{insight.title}</Text>
+                  <Text style={[styles.insightMessage, { color: theme.colors.textSecondary }]}>{insight.message}</Text>
                 </View>
               );
             })}
@@ -742,27 +1541,288 @@ export default function AnalyticsScreen() {
         )}
       </View>
 
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
-        <View style={styles.statsGrid}>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Transactions This Month</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{formatCurrency(quickStats.averageDailySpend)}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Daily Spend</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.activeCategories}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Active Categories</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.statValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
-              {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Smart Budget Suggestions</Text>
+        {budgetSuggestions.length === 0 ? (
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
+              Not enough spending history to suggest budgets yet.
             </Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Net This Month</Text>
           </View>
+        ) : (
+          <View style={styles.suggestionList}>
+            {budgetSuggestions.slice(0, 3).map((suggestion) => (
+              <View key={suggestion.categoryId} style={[styles.suggestionRow, { borderColor: theme.colors.border }]}>
+                <View style={styles.suggestionMain}>
+                  <Text style={[styles.suggestionCategory, { color: theme.colors.text }]}>{suggestion.categoryName}</Text>
+                  <Text style={[styles.suggestionNote, { color: theme.colors.textSecondary }]}>{suggestion.note}</Text>
+                </View>
+                <View style={styles.suggestionValues}>
+                  <Text style={[styles.suggestionValue, { color: theme.colors.text }]}>
+                    {formatCurrency(suggestion.suggestedBudget)}
+                  </Text>
+                  {suggestion.currentBudget ? (
+                    <Text style={[styles.suggestionSub, { color: theme.colors.textSecondary }]}>
+                      Current {formatCurrency(suggestion.currentBudget)}
+                    </Text>
+                  ) : null}
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Cashflow Runway</Text>
+        {!cashflowRunway ? (
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+              <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No runway data yet.</Text>
+          </View>
+        ) : (
+          <View>
+            <Text style={[styles.runwayValue, { color: theme.colors.text }]}>
+              {cashflowRunway.daysUntilEmpty === null ? 'Stable'
+                : `${Math.max(0, Math.floor(cashflowRunway.daysUntilEmpty))} days`}
+            </Text>
+            <Text style={[styles.runwaySubtext, { color: theme.colors.textSecondary }]}>
+              Daily burn {formatCurrency(cashflowRunway.dailyBurnRate)} - {cashflowRunway.remainingDaysInMonth} days left
+            </Text>
+            {cashflowRunway.willRunOut ? (
+              <Text style={[styles.runwayAlert, { color: theme.colors.warning }]}>Funds may run out before month end.</Text>
+            ) : null}
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Forecast</Text>
+        {!netWorthSimulation ? (
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+              <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No forecast data yet.</Text>
+          </View>
+        ) : (
+          <View>
+            <View style={styles.forecastHeader}>
+              <Text style={[styles.forecastValue, { color: theme.colors.text }]}>
+                {formatCurrency(netWorthSimulation.futureValue)}
+              </Text>
+              <Text style={[styles.forecastMeta, { color: theme.colors.textSecondary }]}>
+                Projected in {netWorthSimulation.years} years
+              </Text>
+              <Text style={[styles.forecastSub, { color: theme.colors.textSecondary }]}>
+                Contributions {formatCurrency(netWorthSimulation.totalContributions)} - Growth {formatCurrency(netWorthSimulation.investmentGrowth)}
+              </Text>
+            </View>
+            {netWorthForecastData ? (
+              <View style={styles.chartContainer}>
+                <VictoryChart
+                  width={chartWidth}
+                  height={220}
+                  padding={chartPadding}
+                  scale={{ x: 'time' }}
+                  domainPadding={{ y: 12, x: 12 }}
+                  containerComponent={
+                    <VoronoiCursorContainer
+                      cursorDimension="x"
+                      cursorComponent={
+                        <VictoryLine
+                          style={{
+                            data: {
+                              stroke: gridColor,
+                              strokeWidth: 1,
+                            },
+                          }}
+                        />
+                      }
+                    />
+                  }
+                >
+                  <Defs>
+                    <SvgLinearGradient id="forecastGradient" x1="0" y1="0" x2="0" y2="1">
+                      <Stop offset="0%" stopColor={chartPalette.investments} stopOpacity={0.25} />
+                      <Stop offset="100%" stopColor={chartPalette.investments} stopOpacity={0} />
+                    </SvgLinearGradient>
+                  </Defs>
+                  <VictoryAxis
+                    tickValues={netWorthForecastData.tickValues}
+                    tickFormat={(value) => new Date(value).getFullYear().toString()}
+                    style={{
+                      axis: { stroke: 'transparent' },
+                      ticks: { stroke: 'transparent' },
+                      tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                      grid: { stroke: 'transparent' },
+                    }}
+                  />
+                  <VictoryAxis
+                    dependentAxis
+                    tickCount={3}
+                    tickFormat={(value) => formatCompactNumber(value)}
+                    style={{
+                      axis: { stroke: 'transparent' },
+                      ticks: { stroke: 'transparent' },
+                      tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                      grid: { stroke: gridColor },
+                    }}
+                  />
+                  <VictoryArea
+                    data={netWorthForecastData.data}
+                    interpolation="natural"
+                    animate={chartAnimation}
+                    style={{
+                      data: {
+                        stroke: chartPalette.investments,
+                        strokeWidth: 2.2,
+                        fill: 'url(#forecastGradient)',
+                      },
+                    }}
+                    labels={({ datum }) =>
+                      `${new Date(datum.x).getFullYear()}
+${formatCurrency(datum.y)}`
+                    }
+                    labelComponent={
+                      <VictoryTooltip
+                        flyoutStyle={tooltipFlyoutStyle}
+                        style={tooltipTextStyle}
+                        pointerLength={6}
+                        cornerRadius={10}
+                        renderInPortal={false}
+                      />
+                    }
+                  />
+                </VictoryChart>
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Debt Payoff Optimizer</Text>
+        {!debtPayoffPlan ? (
+          <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+              <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No active debts to optimize.</Text>
+          </View>
+        ) : (
+          <View>
+            <View style={styles.debtGrid}>
+              <View style={[styles.debtItem, { borderColor: theme.colors.border }]}>
+                <Text style={[styles.debtLabel, { color: theme.colors.textSecondary }]}>Snowball</Text>
+                <Text style={[styles.debtValue, { color: theme.colors.text }]}>{debtPayoffPlan.snowball.months} mo</Text>
+                <Text style={[styles.debtSub, { color: theme.colors.textSecondary }]}>
+                  Interest {formatCurrency(debtPayoffPlan.snowball.totalInterest)}
+                </Text>
+              </View>
+              <View style={[styles.debtItem, { borderColor: theme.colors.border }]}>
+                <Text style={[styles.debtLabel, { color: theme.colors.textSecondary }]}>Avalanche</Text>
+                <Text style={[styles.debtValue, { color: theme.colors.text }]}>{debtPayoffPlan.avalanche.months} mo</Text>
+                <Text style={[styles.debtSub, { color: theme.colors.textSecondary }]}>
+                  Interest {formatCurrency(debtPayoffPlan.avalanche.totalInterest)}
+                </Text>
+              </View>
+            </View>
+            <Text style={[styles.debtRecommendation, { color: theme.colors.textSecondary }]}>
+              Recommended: {debtPayoffPlan.recommendedStrategy}
+            </Text>
+            {debtPayoffPlan.interestSaved > 0 ? (
+              <Text style={[styles.debtRecommendation, { color: theme.colors.success }]}>
+                Potential interest saved {formatCurrency(debtPayoffPlan.interestSaved)}
+              </Text>
+            ) : null}
+          </View>
+        )}
+      </View>
+
+      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Milestones</Text>
+        <View style={styles.milestoneList}>
+          {milestoneCards.map((milestone) => {
+            const progressPercent = Math.min(100, Math.round(clamp(milestone.progress) * 100));
+            const etaText = formatDurationShort(milestone.estimatedMonths ?? null);
+            const achieved = milestone.achieved ?? milestone.progress >= 1;
+            const toneColor = milestone.tone === 'warning'
+              ? theme.colors.warning
+              : achieved
+                ? theme.colors.success
+                : theme.colors.primary;
+
+            return (
+              <View
+                key={milestone.id}
+                style={[
+                  styles.milestoneCard,
+                  {
+                    borderColor: theme.colors.border,
+                    backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                  },
+                ]}
+              >
+                <View style={styles.milestoneHeaderRow}>
+                  <Text style={[styles.milestoneTitle, { color: theme.colors.text }]}>{milestone.title}</Text>
+                  {achieved ? (
+                    <View
+                      style={[
+                        styles.milestoneBadge,
+                        { borderColor: theme.colors.success, backgroundColor: theme.colors.success + '22' },
+                      ]}
+                    >
+                      <Text style={[styles.milestoneBadgeText, { color: theme.colors.success }]}>Achieved</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <View style={styles.milestoneRow}>
+                  <Text style={[styles.milestoneLabel, { color: theme.colors.textSecondary }]}>
+                    {milestone.targetLabel}
+                  </Text>
+                  <Text style={[styles.milestoneAmount, { color: theme.colors.text }]}>
+                    {formatCurrency(milestone.target)}
+                  </Text>
+                </View>
+                <View style={styles.milestoneRow}>
+                  <Text style={[styles.milestoneLabel, { color: theme.colors.textSecondary }]}>
+                    {milestone.currentLabel}
+                  </Text>
+                  <Text style={[styles.milestoneAmount, { color: theme.colors.text }]}>
+                    {formatCurrency(milestone.current)}
+                  </Text>
+                </View>
+                <View style={[styles.progressTrack, { backgroundColor: theme.colors.border, marginTop: 10 }]}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      {
+                        width: `${progressPercent}%`,
+                        backgroundColor: toneColor,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={[styles.milestoneMeta, { color: theme.colors.textSecondary }]}>
+                  Progress {progressPercent}%{etaText ? ` - Est ${etaText}` : ''}
+                </Text>
+                {milestone.insights?.map((insight, index) => (
+                  <Text
+                    key={`${milestone.id}-insight-${index}`}
+                    style={[styles.milestoneInsight, { color: theme.colors.textSecondary }]}
+                  >
+                    {insight}
+                  </Text>
+                ))}
+              </View>
+            );
+          })}
         </View>
       </View>
       </ScrollView>
@@ -838,6 +1898,9 @@ export default function AnalyticsScreen() {
             <ScrollView contentContainerStyle={styles.monthModalBody}>
               {monthContributionItems.length === 0 ? (
                 <View style={styles.emptyState}>
+            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
+                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+            </View>
                   <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>
                     No visible transactions in this month.
                   </Text>
@@ -853,11 +1916,11 @@ export default function AnalyticsScreen() {
                         {item.transaction.description || 'Untitled transaction'}
                       </Text>
                       <Text style={[styles.monthTxMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-                        {item.transaction.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        {' · '}
+                        {formatDateDDMMYYYY(item.transaction.date)}
+                        {' - '}
                         {item.transaction.type}
                         {(item.fromAccountName || item.toAccountName)
-                          ? ` · ${item.fromAccountName ?? 'External'} -> ${item.toAccountName ?? 'External'}`
+                          ? ` - ${item.fromAccountName ?? 'External'} -> ${item.toAccountName ?? 'External'}`
                           : ''}
                       </Text>
                     </View>
@@ -878,7 +1941,9 @@ export default function AnalyticsScreen() {
       </Modal>
     </>
   );
-}
+});
+
+export default AnalyticsScreen;
 
 const styles = StyleSheet.create({
   container: {
@@ -889,6 +1954,11 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 16,
     borderWidth: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
   card: {
     marginHorizontal: 16,
@@ -896,6 +1966,11 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 16,
     borderWidth: 1,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
   cardTitle: {
     fontSize: 18,
@@ -1073,6 +2148,34 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  chartSummary: {
+    marginBottom: 12,
+  },
+  chartSummaryValue: {
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  chartSummaryLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  donutWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  donutCenter: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  donutLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  donutValue: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
   legendRow: {
     flexDirection: 'row',
     gap: 12,
@@ -1095,6 +2198,7 @@ const styles = StyleSheet.create({
   chartContainer: {
     alignItems: 'center',
     marginVertical: 8,
+    paddingVertical: 4,
   },
   lineChartStyle: {
     marginVertical: 8,
@@ -1156,6 +2260,20 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: 'center',
     paddingVertical: 32,
+    gap: 10,
+  },
+  emptyStateIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyStateDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
   },
   emptyStateText: {
     fontSize: 14,
@@ -1273,5 +2391,192 @@ const styles = StyleSheet.create({
   monthTxImpact: {
     fontSize: 13,
     fontWeight: '700',
+  },
+  insightList: {
+    gap: 12,
+  },
+  insightRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
+  },
+  insightTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  insightMessage: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  suggestionList: {
+    gap: 12,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  suggestionMain: {
+    flex: 1,
+  },
+  suggestionCategory: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  suggestionNote: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  suggestionValues: {
+    alignItems: 'flex-end',
+    minWidth: 110,
+  },
+  suggestionValue: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  suggestionSub: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  runwayValue: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  runwaySubtext: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  runwayAlert: {
+    marginTop: 8,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  forecastHeader: {
+    marginBottom: 12,
+  },
+  forecastValue: {
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  forecastMeta: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  forecastSub: {
+    fontSize: 12,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  debtGrid: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 8,
+  },
+  debtItem: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
+  debtLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  debtValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  debtSub: {
+    fontSize: 11,
+  },
+  debtRecommendation: {
+    fontSize: 12,
+    marginTop: 4,
+  },
+  milestoneList: {
+    gap: 12,
+  },
+  milestoneCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+  },
+  milestoneHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    gap: 8,
+  },
+  milestoneTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  milestoneBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  milestoneBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  milestoneRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  milestoneLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  milestoneAmount: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  milestoneMeta: {
+    fontSize: 12,
+    marginTop: 6,
+  },
+  milestoneInsight: {
+    fontSize: 12,
+    marginTop: 6,
+    lineHeight: 16,
+  },
+  milestoneValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  progressTrack: {
+    height: 8,
+    borderRadius: 6,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  progressFill: {
+    height: '100%',
+  },
+  milestoneSub: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  milestoneEta: {
+    fontSize: 11,
+    marginTop: 4,
   },
 });

@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { DollarSign, Edit3, PiggyBank, Plus, Target, Trash2, TrendingUp } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 import { useTransactionStore } from '@/store/transaction-store';
 import type { FinancialGoal } from '@/types/transaction';
 
@@ -147,7 +148,7 @@ export function GoalsSection() {
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
-      Alert.alert('Error', 'Enter the target date as YYYY-MM-DD');
+      Alert.alert('Error', 'Enter the target date as DD-MM-YYYY');
       return;
     }
 
@@ -239,7 +240,7 @@ export function GoalsSection() {
               styles.input,
               { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text },
             ]}
-            placeholder="Target date (YYYY-MM-DD)"
+            placeholder="Target date (DD-MM-YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={goalForm.targetDate}
             onChangeText={(text) => setGoalForm((current) => ({ ...current, targetDate: text }))}
@@ -354,7 +355,7 @@ export function GoalsSection() {
                 </View>
                 <Text style={[styles.targetDate, { color: theme.colors.textSecondary }]}
                 >
-                  Target: {goal.targetDate.toLocaleDateString()}
+                  Target: {formatDateDDMMYYYY(goal.targetDate)}
                 </Text>
               </View>
 

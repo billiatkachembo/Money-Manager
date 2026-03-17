@@ -11,14 +11,12 @@ import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown } from 'lucide-reac
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction } from '@/types/transaction';
+import { formatDateDDMMYYYY, formatDateWithWeekday } from '@/utils/date';
 import { TransactionItem } from '@/components/TransactionItem';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
 
 function toDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return formatDateDDMMYYYY(date);
 }
 
 function isSameDay(left: Date, right: Date): boolean {
@@ -246,12 +244,7 @@ export default function CalendarScreen() {
       <View style={[styles.selectedDateSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <View style={styles.selectedHeader}>
           <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}> 
-            {selectedDate.toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
+            {formatDateWithWeekday(selectedDate)}
           </Text>
           <TouchableOpacity onPress={() => selectDate(new Date())}>
             <Text style={[styles.todayLink, { color: theme.colors.primary }]}>Today</Text>

@@ -103,7 +103,7 @@ export function BudgetsSection() {
 
     const startDate = parseIsoDateInput(newBudget.startDate.trim());
     if (!startDate) {
-      Alert.alert('Error', 'Please enter a valid date in YYYY-MM-DD format');
+      Alert.alert('Error', 'Please enter a valid date in DD-MM-YYYY format');
       return;
     }
 
@@ -233,7 +233,7 @@ export function BudgetsSection() {
               styles.input,
               { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text },
             ]}
-            placeholder="Start date (YYYY-MM-DD)"
+            placeholder="Start date (DD-MM-YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newBudget.startDate}
             onChangeText={(text) => setNewBudget((current) => ({ ...current, startDate: text }))}

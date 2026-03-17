@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Wallet, TrendingUp, BarChart3 } from 'lucide-react-native';
@@ -144,7 +144,7 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard({
 
         {insights.overspending ? (
           <Text style={[styles.warning, { color: warningColor }]}>
-            Spending currently exceeds income this month
+            Spending is above income this month
           </Text>
         ) : null}
       </View>
@@ -168,7 +168,8 @@ const styles = StyleSheet.create({
   header: {
     color: 'white',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
+    letterSpacing: 0.3,
     marginBottom: 6,
   },
   row: {
@@ -191,6 +192,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
     fontSize: 11,
     fontWeight: '500',
+    letterSpacing: 0.2,
   },
   value: {
     color: 'white',
@@ -202,8 +204,11 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
   },
   warning: {
-    marginTop: 8,
+    marginTop: 10,
     fontSize: 12,
     fontWeight: '600',
+    lineHeight: 16,
   },
 });
+
+

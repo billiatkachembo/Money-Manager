@@ -1,4 +1,4 @@
-export type TransactionType = 'income' | 'expense' | 'transfer' | 'debt';
+﻿export type TransactionType = 'income' | 'expense' | 'transfer' | 'debt';
 
 export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
@@ -10,6 +10,7 @@ export interface Transaction {
   id: string;
   amount: number;
   description: string;
+  note?: string;
   category: TransactionCategory;
   type: TransactionType;
   date: Date;
@@ -83,7 +84,7 @@ export interface Budget {
 export interface BudgetAlert {
   id: string;
   budgetId: string;
-  type: '80percent' | 'exceeded';
+  type: '80percent' | 'exceeded' | 'critical';
   message: string;
   date: Date;
   isRead: boolean;
@@ -123,6 +124,32 @@ export interface FinancialGoal {
   priority: 'high' | 'medium' | 'low';
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AppSettings {
+  currency: string;
+  language: string;
+  darkMode: boolean;
+  notifications: boolean;
+  quickAddNotificationEnabled?: boolean;
+  dailyReminderEnabled?: boolean;
+  dailyReminderTime?: string;
+  biometricAuth: boolean;
+  autoBackup: boolean;
+  averageDebtInterestRate?: number;
+  lastBackupDate?: Date;
+  firstUsedAt?: Date;
+  privacy?: {
+    hideAmounts: boolean;
+    requireAuth: boolean;
+    dataSharing: boolean;
+    analytics: boolean;
+  };
+  security?: {
+    autoLock: number;
+    passwordEnabled: boolean;
+    twoFactorEnabled: boolean;
+  };
 }
 
 export interface UserProfile {
@@ -185,3 +212,5 @@ export interface SeasonalFarmSummary {
   farmProfit: number;
   costBreakdown: FarmCategoryBreakdown[];
 }
+
+

@@ -29,6 +29,7 @@ import {
   ChevronRight,
 } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 import { useTransactionStore } from '@/store/transaction-store';
 import { EXPENSE_CATEGORIES } from '@/constants/categories';
 import { TransactionCategory } from '@/types/transaction';
@@ -225,7 +226,7 @@ export default function PlanningScreen() {
 
     const startDate = parseIsoDateInput(newBudget.startDate.trim());
     if (!startDate) {
-      Alert.alert('Error', 'Please enter a valid date in YYYY-MM-DD format');
+      Alert.alert('Error', 'Please enter a valid date in DD-MM-YYYY format');
       return;
     }
 
@@ -290,7 +291,7 @@ export default function PlanningScreen() {
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
-      Alert.alert('Error', 'Enter the target date as YYYY-MM-DD');
+      Alert.alert('Error', 'Enter the target date as DD-MM-YYYY');
       return;
     }
 
@@ -452,9 +453,9 @@ export default function PlanningScreen() {
       totalYears: (scenarioWithExtra.totalMonths / 12).toFixed(1),
       totalInterest: formatCurrency(scenarioWithExtra.totalInterest),
       totalPaid: formatCurrency(principal + scenarioWithExtra.totalInterest),
-      payoffDate: new Date(
-        new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths)
-      ).toLocaleDateString(),
+      payoffDate: formatDateDDMMYYYY(
+        new Date(new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths))
+      ),
     };
 
     if (extraPayment > 0 && baselineScenario.paidOff) {
@@ -660,7 +661,7 @@ export default function PlanningScreen() {
           />
           <TextInput
             style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
-            placeholder="Target date (YYYY-MM-DD)"
+            placeholder="Target date (DD-MM-YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newGoal.targetDate}
             onChangeText={(text) => setNewGoal({ ...newGoal, targetDate: text })}
@@ -751,7 +752,7 @@ export default function PlanningScreen() {
                   </Text>
                 </View>
                 <Text style={[styles.targetDate, { color: theme.colors.textSecondary }]}>
-                  Target: {goal.targetDate.toLocaleDateString()}
+                  Target: {formatDateDDMMYYYY(goal.targetDate)}
                 </Text>
               </View>
             </View>
@@ -839,7 +840,7 @@ export default function PlanningScreen() {
 
           <TextInput
             style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
-            placeholder="Start date (YYYY-MM-DD)"
+            placeholder="Start date (DD-MM-YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newBudget.startDate}
             onChangeText={(text) => setNewBudget((current) => ({ ...current, startDate: text }))}

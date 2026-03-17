@@ -44,6 +44,10 @@ interface BackupRestoreModalProps {
   theme: ThemeLike;
   backupStatus: BackupState;
   backupMessage: string;
+  driveConnected?: boolean;
+  driveAccountLabel?: string;
+  onConnectDrive?: () => void;
+  onDisconnectDrive?: () => void;
   onExportData: () => void;
   onImportData: () => void;
   onExportCsv: () => void;
@@ -90,6 +94,10 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
   theme,
   backupStatus,
   backupMessage,
+  driveConnected,
+  driveAccountLabel,
+  onConnectDrive,
+  onDisconnectDrive,
   onExportData,
   onImportData,
   onExportCsv,
@@ -100,6 +108,8 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
   onRestoreHistoryItem,
 }: BackupRestoreModalProps) {
   const isProcessing = backupStatus === 'backingup' || backupStatus === 'restoring';
+  const isDriveConnected = Boolean(driveConnected);
+  const driveStatusLabel = driveAccountLabel ?? (isDriveConnected ? 'Connected' : 'No account connected');
 
   return (
     <Modal
@@ -139,6 +149,41 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
             </View>
           ) : null}
 
+          <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Backup Accounts</Text>
+          <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
+            Connect a Google Drive account to enable automatic backups.
+          </Text>
+          <View style={[styles.accountRow, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+            <View style={styles.accountInfo}>
+              <View style={[styles.accountIcon, { backgroundColor: theme.colors.primary + '20' }]}>
+                <UploadCloud size={18} color={theme.colors.primary} />
+              </View>
+              <View style={styles.accountText}>
+                <Text style={[styles.accountTitle, { color: theme.colors.text }]}>Google Drive</Text>
+                <Text style={[styles.accountSubtitle, { color: theme.colors.textSecondary }]}>
+                  {driveStatusLabel}
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[
+                styles.accountAction,
+                {
+                  backgroundColor: isDriveConnected ? theme.colors.surface : theme.colors.primary,
+                  borderColor: theme.colors.border,
+                },
+              ]}
+              onPress={isDriveConnected ? onDisconnectDrive : onConnectDrive}
+              disabled={isProcessing || (!onConnectDrive && !onDisconnectDrive)}
+            >
+              <Text style={[
+                styles.accountActionText,
+                { color: isDriveConnected ? theme.colors.primary : '#FFFFFF' },
+              ]}>
+                {isDriveConnected ? 'Disconnect' : 'Add account'}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Cloud Backup</Text>
           <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
             Creates a full JSON snapshot and uploads it directly to Google Drive.
@@ -307,6 +352,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  accountRow: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  accountInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  accountIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  accountText: {
+    flex: 1,
+  },
+  accountTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  accountSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  accountAction: {
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  accountActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
   emptyHistoryText: {
     fontSize: 13,
     marginTop: 4,
@@ -327,4 +415,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+
 

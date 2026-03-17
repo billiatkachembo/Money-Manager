@@ -7,13 +7,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Modal,
   KeyboardAvoidingView,
   TextInput,
   Switch,
   Alert,
   Linking,
   Platform,
+  Modal,
 } from 'react-native';
 import { 
   User, 
@@ -34,6 +34,7 @@ import {
   Mail,
   MessageCircle,
   ExternalLink,
+  Info,
   CheckCircle,
   Lock,
   Eye,
@@ -55,6 +56,23 @@ import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transac
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupRestoreModal';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
+import { BlurView } from 'expo-blur';
+import {
+  ProfileHeader,
+  ProfileStats,
+  MenuGrid,
+  CurrencyPickerModal,
+  LanguagePickerModal,
+  AutoLockPickerModal,
+  EditProfileModal,
+  PrivacySecurityModal,
+  HelpSupportModal,
+  SettingsModal,
+  ImportModal,
+} from '@/components/profile';
+import { enableQuickAddNotificationAsync, disableQuickAddNotificationAsync, enableDailyReminderAsync, disableDailyReminderAsync } from '@/src/notifications/quick-add-notification';
 import {
   clearDriveAuth,
   downloadBackupFile,
@@ -70,6 +88,30 @@ import {
 
 WebBrowser.maybeCompleteAuthSession();
 
+const DEFAULT_REMINDER_TIME = '18:00';
+
+function parseReminderTime(value?: string | null): Date {
+  const fallback = new Date();
+  const [hourString, minuteString] = (value ?? DEFAULT_REMINDER_TIME).split(':');
+  const hour = Number.parseInt(hourString ?? '', 10);
+  const minute = Number.parseInt(minuteString ?? '', 10);
+  const safeHour = Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 18;
+  const safeMinute = Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0;
+  fallback.setHours(safeHour, safeMinute, 0, 0);
+  return fallback;
+}
+
+function toReminderTimeValue(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function formatReminderTime(value?: string | null): string {
+  const date = parseReminderTime(value);
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 interface UserProfile {
   name: string;
   email: string;
@@ -82,6 +124,9 @@ interface UserProfile {
 
 interface AppSettings {
   notifications: boolean;
+  quickAddNotificationEnabled: boolean;
+  dailyReminderEnabled?: boolean;
+  dailyReminderTime?: string;
   darkMode: boolean;
   currency: string;
   language: string;
@@ -135,14 +180,18 @@ export default function ProfileScreen() {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showHelpSupport, setShowHelpSupport] = useState<boolean>(false);
   const [showBackupRestore, setShowBackupRestore] = useState<boolean>(false);
-  const [showImportModal, setShowImportModal] = useState<boolean>(false);
   const [showPrivacySecurity, setShowPrivacySecurity] = useState<boolean>(false);
-  const [showCurrencyPicker, setShowCurrencyPicker] = useState<boolean>(false);
-  const [showLanguagePicker, setShowLanguagePicker] = useState<boolean>(false);
-  const [showAutoLockPicker, setShowAutoLockPicker] = useState<boolean>(false);
-  const [importFormat, setImportFormat] = useState<'json' | 'csv'>('json');
-  const [importText, setImportText] = useState<string>('');
+  const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
+  const [reminderTime, setReminderTime] = useState<Date>(() => parseReminderTime(settings.dailyReminderTime));
+
   const [editForm, setEditForm] = useState<UserProfile>(userProfile);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFormat, setImportFormat] = useState<'json' | 'csv'>('json');
+  const [importText, setImportText] = useState('');
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
+  const [showLanguagePicker, setShowLanguagePicker] = useState(false);
+  const [showAutoLockPicker, setShowAutoLockPicker] = useState(false);
+
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
   const [backupMessage, setBackupMessage] = useState<string>('');
   const [backupHistory, setBackupHistory] = useState<BackupHistoryItem[]>([]);
@@ -207,6 +256,30 @@ export default function ProfileScreen() {
 
   const currencies = CURRENCY_OPTIONS;
 
+  const settingsSnapPoints = useMemo(() => ['85%'], []);
+  const editorSnapPoints = useMemo(() => ['80%'], []);
+  const sheetSnapPoints = useMemo(() => ['70%'], []);
+  const pickerSnapPoints = useMemo(() => ['50%'], []);
+  const timeSnapPoints = useMemo(() => ['30%'], []);
+
+  const renderBackdrop = useCallback(
+    (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
+      <BottomSheetBackdrop
+        {...props}
+        appearsOnIndex={0}
+        disappearsOnIndex={-1}
+        pressBehavior="close"
+      >
+        <BlurView
+          intensity={theme.isDark ? 32 : 24}
+          tint={theme.isDark ? 'dark' : 'light'}
+          style={StyleSheet.absoluteFill}
+        />
+      </BottomSheetBackdrop>
+    ),
+    [theme.isDark]
+  );
+
   const importCategories = useMemo(() => {
     const map = new Map<string, (typeof ALL_CATEGORIES)[number]>();
 
@@ -228,6 +301,10 @@ export default function ProfileScreen() {
   useEffect(() => {
     setAvatarError(false);
   }, [userProfile.avatar]);
+
+  useEffect(() => {
+    setReminderTime(parseReminderTime(settings.dailyReminderTime));
+  }, [settings.dailyReminderTime]);
 
   useEffect(() => {
     let isMounted = true;
@@ -254,6 +331,8 @@ export default function ProfileScreen() {
     { code: 'it', name: 'Italian' },
     { code: 'pt', name: 'Portuguese' },
   ];
+
+  const selectedLanguageLabel = languages.find((language) => language.code === settings.language)?.name ?? 'English';
 
   const autoLockOptions = [
     { value: 0, label: 'Immediately' },
@@ -292,6 +371,12 @@ export default function ProfileScreen() {
   const autoLockShort = getAutoLockLabel(selectedAutoLockValue, true);
   const memberSinceDate = settings.firstUsedAt ?? userProfile.joinDate;
   const selectedCurrencyCode = (settings.currency || 'ZMW').toUpperCase();
+  const reminderTimeLabel = formatReminderTime(settings.dailyReminderTime);
+  const lastBackupDate = settings.lastBackupDate ? new Date(settings.lastBackupDate) : null;
+  const lastBackupText =
+    lastBackupDate && !Number.isNaN(lastBackupDate.getTime())
+      ? `Last backup ${lastBackupDate.toLocaleDateString()}`
+      : undefined;
 
   const resetBackupStatus = () => {
     setTimeout(() => {
@@ -447,6 +532,13 @@ export default function ProfileScreen() {
     );
   };
 
+  const openExportPrompt = () => {
+    Alert.alert('Export Data', 'Choose an export format.', [
+      { text: 'Full Backup (JSON)', onPress: handleExportData },
+      { text: 'Transactions CSV', onPress: handleExportCsv },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   const handleImportData = () => openImportModal('json');
   const handleImportCsv = () => openImportModal('csv');
   const handleRestoreFromHistoryItem = (_item: BackupHistoryItem) => {
@@ -869,6 +961,83 @@ export default function ProfileScreen() {
     });
   };
 
+  const handleQuickAddToggle = async (value: boolean) => {
+    if (value) {
+      const enabled = await enableQuickAddNotificationAsync({ requestPermission: true });
+      if (!enabled) {
+        Alert.alert(
+          'Notifications Disabled',
+          'Please enable notifications to use Quick Add from the notification bar.'
+        );
+        updateSettings({ quickAddNotificationEnabled: false });
+        return;
+      }
+    } else {
+      await disableQuickAddNotificationAsync();
+    }
+
+    updateSettings({ quickAddNotificationEnabled: value });
+  };
+
+  const handleDailyReminderToggle = async (value: boolean) => {
+    if (value) {
+      const nextTime = settings.dailyReminderTime ?? DEFAULT_REMINDER_TIME;
+      const enabled = await enableDailyReminderAsync(nextTime, { requestPermission: true });
+      if (!enabled) {
+        Alert.alert(
+          'Notifications Disabled',
+          'Please enable notifications to schedule daily reminders.'
+        );
+        updateSettings({ dailyReminderEnabled: false });
+        return;
+      }
+
+      updateSettings({ dailyReminderEnabled: true, dailyReminderTime: nextTime });
+      return;
+    }
+
+    await disableDailyReminderAsync();
+    updateSettings({ dailyReminderEnabled: false });
+  };
+
+  const applyReminderTime = async (date: Date) => {
+    const nextValue = toReminderTimeValue(date);
+    setReminderTime(date);
+    updateSettings({ dailyReminderTime: nextValue });
+
+    if (settings.dailyReminderEnabled) {
+      const enabled = await enableDailyReminderAsync(nextValue, { requestPermission: false });
+      if (!enabled) {
+        Alert.alert('Reminder not scheduled', 'Please enable notifications to schedule daily reminders.');
+      }
+    }
+  };
+
+  const handleReminderTimeChange = (event: DateTimePickerEvent, selected?: Date) => {
+    if (!selected) {
+      if (Platform.OS === 'android') {
+        setShowReminderTimePicker(false);
+      }
+      return;
+    }
+
+    if (Platform.OS === 'android') {
+      setShowReminderTimePicker(false);
+      void applyReminderTime(selected);
+    } else {
+      setReminderTime(selected);
+    }
+  };
+
+  const handleReminderTimeCancel = () => {
+    setReminderTime(parseReminderTime(settings.dailyReminderTime));
+    setShowReminderTimePicker(false);
+  };
+
+  const handleReminderTimeConfirm = () => {
+    setShowReminderTimePicker(false);
+    void applyReminderTime(reminderTime);
+  };
   const handleCurrencySelect = (currencyCode: string) => {
     updateSetting('currency', currencyCode);
     setShowCurrencyPicker(false);
@@ -1225,229 +1394,23 @@ export default function ProfileScreen() {
       </View>
       
 {/* App Settings Modal */}
-<Modal visible={showSettings} animationType="slide" presentationStyle="pageSheet">
-  <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-    
-    <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
-      <TouchableOpacity onPress={() => setShowSettings(false)}>
-        <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>
-          Done
-        </Text>
-      </TouchableOpacity>
-
-      <Text style={[styles.modalTitle, { color: theme.colors.text }]}>
-        App Settings
-      </Text>
-                
-      <View style={styles.spacer} />
-    </View>
-
-    <ScrollView style={styles.modalContent}>
-
-      {/* Notifications Section */}
-<View style={styles.settingsSection}>
-  <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
-    Notifications
-  </Text>
-
-  <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-    <View style={styles.settingInfo}>
-      <Bell size={20} color="#667eea" />
-
-      <View style={styles.settingText}>
-        <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-          Push Notifications
-        </Text>
-        <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-          Receive alerts for transactions
-        </Text>
-      </View>
-    </View>
-
-    <Switch
-      value={!!settings.notifications}
-      onValueChange={(value) => updateSetting("notifications", value)}
-      trackColor={{ false: "#e0e0e0", true: "#667eea" }}
-      thumbColor={settings.notifications ? "#fff" : "#f4f3f4"}
-      ios_backgroundColor="#e0e0e0"
-    />
-  </View>
-</View>
-
-      {/* Profile */}
-      <View style={styles.settingsSection}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
-          Profile
-        </Text>
-
-        <TouchableOpacity
-          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-          onPress={() => openSettingsDestination(openEditProfile)}
-        >
-          <View style={styles.settingInfo}>
-            <Edit3 size={20} color="#667eea" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                Edit Profile
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Update your personal details
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-            Open
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-          onPress={() => openSettingsDestination(() => setShowLanguagePicker(true))}
-        >
-          <View style={styles.settingInfo}>
-            <Globe size={20} color="#667eea" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                Language
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                {languages.find(l => l.code === settings.language)?.name ?? settings.language}
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-            {settings.language?.toUpperCase()}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Privacy & Backup */}
-      <View style={styles.settingsSection}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
-          Privacy & Backup
-        </Text>
-
-        <TouchableOpacity
-          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-          onPress={() => openSettingsDestination(() => setShowBackupRestore(true))}
-        >
-          <View style={styles.settingInfo}>
-            <Download size={20} color="#667eea" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                Backup Center
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Manage JSON, CSV, and Drive backups
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-            Open
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-          onPress={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
-        >
-          <View style={styles.settingInfo}>
-            <Shield size={20} color="#667eea" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                Privacy
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Review privacy and security controls
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>
-            Open
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-          onPress={() => {
-            setShowSettings(false);
-            setTimeout(handleClearData, 250);
-          }}
-        >
-          <View style={styles.settingInfo}>
-            <Trash2 size={20} color="#F44336" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: "#F44336" }]}>
-                Clear Data
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Permanently delete transactions and accounts
-              </Text>
-            </View>
-          </View>
-
-          <Text style={[styles.settingValue, { color: "#F44336" }]}>
-            Reset
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Backup */}
-      <View style={styles.settingsSection}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>
-          Backup
-        </Text>
-
-        <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-          <View style={styles.settingInfo}>
-            <Download size={20} color="#667eea" />
-
-            <View style={styles.settingText}>
-              <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                Auto Backup
-              </Text>
-
-              <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
-                Automatically backup to Google Drive
-              </Text>
-            </View>
-          </View>
-
-          <Switch
-            value={!!settings.autoBackup}
-            onValueChange={(value) => updateSetting("autoBackup", value)}
-            trackColor={{ false: "#e0e0e0", true: "#667eea" }}
-            thumbColor={settings.autoBackup ? "#fff" : "#f4f3f4"}
-          />
-        </View>
-
-        {settings.lastBackupDate && (
-          <View style={styles.lastBackupInfo}>
-            <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>
-              Last backup: {settings.lastBackupDate.toLocaleDateString()} at{" "}
-              {settings.lastBackupDate.toLocaleTimeString()}
-            </Text>
-          </View>
-        )}
-      </View>
-
-    </ScrollView>
-  </View>
-</Modal>
+<SettingsModal
+        visible={showSettings}
+        onClose={() => setShowSettings(false)}
+        theme={theme}
+        settings={settings}
+        updateSettings={updateSettings}
+        openEditProfile={openEditProfile}
+        toggleTheme={toggleTheme}
+        onClearData={handleClearData}
+        onBackupRestore={() => setShowBackupRestore(true)}
+        onPrivacySecurity={() => setShowPrivacySecurity(true)}
+        userProfile={userProfile}
+        languages={languages}
+        onShowLanguagePicker={() => setShowLanguagePicker(true)}
+        onShowCurrencyPicker={() => setShowCurrencyPicker(true)}
+        onShowAutoLockPicker={() => setShowAutoLockPicker(true)}
+      />
 
       <BackupRestoreModal
         show={showBackupRestore}
@@ -2464,18 +2427,3 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

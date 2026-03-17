@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TrendingUp, TrendingDown } from 'lucide-react-native';
@@ -102,7 +102,7 @@ export const BalanceCard = React.memo(function BalanceCard({ balance, income, ex
     [spendingInsight.dailySafeSpend, formatCurrency]
   );
   const formattedDaysUntilBroke = React.useMemo(() => {
-    if (!Number.isFinite(daysUntilBroke)) return '∞';
+    if (!Number.isFinite(daysUntilBroke)) return 'N/A';
     return Math.floor(daysUntilBroke).toString();
   }, [daysUntilBroke]);
   const brokeColor = daysUntilBroke <= 7 ? '#FF5252' : '#FFFFFF';
@@ -166,13 +166,13 @@ export const BalanceCard = React.memo(function BalanceCard({ balance, income, ex
 
           {spendingInsight.pace > 0 && (
             <Text style={[styles.paceWarning, { color: warningColor }]}>
-              Spending ahead of pace this month
+              Spending ahead of monthly pace
             </Text>
           )}
 
           {spendingInsight.pace < 0 && (
             <Text style={styles.paceGood}>
-              Spending below monthly pace
+              Under monthly pace
             </Text>
           )}
         </View>
@@ -188,7 +188,7 @@ export const BalanceCard = React.memo(function BalanceCard({ balance, income, ex
         </View>
 
         {financialState.overspending ? (
-          <Text style={[styles.warning, { color: warningColor }]}>Spending exceeds income</Text>
+          <Text style={[styles.warning, { color: warningColor }]}>Spending is above income this month</Text>
         ) : null}
       </View>
     </LinearGradient>
@@ -212,6 +212,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.8)',
     fontSize: 12,
     fontWeight: '500',
+    letterSpacing: 0.3,
     marginBottom: 6,
   },
   balance: {
@@ -246,6 +247,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255, 255, 255, 0.7)',
     fontSize: 11,
     fontWeight: '500',
+    letterSpacing: 0.2,
   },
   statValue: {
     color: 'white',
@@ -267,6 +269,7 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.7)',
     fontSize: 11,
     fontWeight: '500',
+    letterSpacing: 0.2,
   },
   dailyValue: {
     color: 'white',
@@ -282,6 +285,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontSize: 10,
     color: 'rgba(255,255,255,0.6)',
+    lineHeight: 14,
   },
   paceWarning: {
     marginTop: 6,
@@ -295,4 +299,6 @@ const styles = StyleSheet.create({
     color: '#A5D6A7',
   },
 });
+
+
 

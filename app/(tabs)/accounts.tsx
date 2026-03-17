@@ -15,6 +15,7 @@ import { Plus, PiggyBank, Pencil, Trash2, Wallet, CreditCard, TrendingUp, Landma
 import { Account, Transaction } from '@/types/transaction';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 
 const ACCOUNT_TYPE_OPTIONS: Array<{
   type: Account['type'];
@@ -138,7 +139,6 @@ export default function AccountsScreen() {
   const {
     accounts,
     transactions,
-    netBalance,
     lifetimeNetCashFlow,
     settings,
     formatCurrency,
@@ -165,6 +165,33 @@ export default function AccountsScreen() {
     () => orderedAccounts.filter((account) => account.isActive),
     [orderedAccounts]
   );
+
+  const { netWorthTotal, liabilitiesTotal, netTotal } = useMemo(() => {
+    let netWorth = 0;
+    let liabilities = 0;
+
+    for (const account of activeAccounts) {
+      if (account.type === 'credit') {
+        liabilities += Math.abs(account.balance);
+        continue;
+      }
+
+      if (account.balance < 0) {
+        liabilities += Math.abs(account.balance);
+      } else {
+        netWorth += account.balance;
+      }
+    }
+
+    const roundedNetWorth = roundCurrency(netWorth);
+    const roundedLiabilities = roundCurrency(liabilities);
+
+    return {
+      netWorthTotal: roundedNetWorth,
+      liabilitiesTotal: roundedLiabilities,
+      netTotal: roundCurrency(roundedNetWorth - roundedLiabilities),
+    };
+  }, [activeAccounts]);
 
   const savingsAccounts = useMemo(
     () => activeAccounts.filter((account) => account.type === 'savings'),
@@ -203,12 +230,14 @@ export default function AccountsScreen() {
     const groups = ACCOUNT_GROUPS.map((group) => {
       const accountsForGroup = orderedAccounts.filter((account) => group.types.includes(account.type));
       group.types.forEach((type) => usedTypes.add(type));
-      return { ...group, accounts: accountsForGroup };
+      const total = roundCurrency(accountsForGroup.reduce((sum, account) => sum + account.balance, 0));
+      return { ...group, accounts: accountsForGroup, total };
     });
 
     const otherAccounts = orderedAccounts.filter((account) => !usedTypes.has(account.type));
     if (otherAccounts.length > 0) {
-      groups.push({ key: 'other', label: 'Other', types: [], accounts: otherAccounts });
+      const total = roundCurrency(otherAccounts.reduce((sum, account) => sum + account.balance, 0));
+      groups.push({ key: 'other', label: 'Other', types: [], accounts: otherAccounts, total });
     }
 
     return groups.filter((group) => group.accounts.length > 0);
@@ -370,13 +399,13 @@ export default function AccountsScreen() {
     : undefined;
 
   const formatTimestamp = (date: Date) => {
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    }).format(date);
+    const safeDate = date instanceof Date ? date : new Date(date);
+    if (Number.isNaN(safeDate.getTime())) {
+      return '';
+    }
+
+    const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(safeDate);
+    return `${formatDateDDMMYYYY(safeDate)} ${time}`;
   };
 
   const getActivityTitle = (accountId: string, entry: AccountActivityEntry) => {
@@ -411,8 +440,26 @@ export default function AccountsScreen() {
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
       <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
-        <Text style={[styles.summaryValue, { color: theme.colors.text }]}>{formatCurrency(netBalance)}</Text>
+        <View style={styles.summaryMetricsRow}>
+          <View style={styles.summaryMetric}>
+            <Text style={[styles.summaryMetricLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
+            <Text style={[styles.summaryMetricValue, { color: theme.colors.primary }]}>
+              {formatCurrency(netWorthTotal)}
+            </Text>
+          </View>
+          <View style={styles.summaryMetric}>
+            <Text style={[styles.summaryMetricLabel, { color: theme.colors.textSecondary }]}>Liabilities</Text>
+            <Text style={[styles.summaryMetricValue, { color: theme.colors.error }]}>
+              {formatCurrency(liabilitiesTotal)}
+            </Text>
+          </View>
+          <View style={styles.summaryMetric}>
+            <Text style={[styles.summaryMetricLabel, { color: theme.colors.textSecondary }]}>Total</Text>
+            <Text style={[styles.summaryMetricValue, { color: theme.colors.text }]}>
+              {formatCurrency(netTotal)}
+            </Text>
+          </View>
+        </View>
         <View style={styles.summaryChangeRow}>
           <Text
             style={[
@@ -465,7 +512,10 @@ export default function AccountsScreen() {
         <View style={styles.list}>
           {groupedAccounts.map((group) => (
             <View key={group.key} style={styles.groupSection}>
-              <Text style={[styles.groupTitle, { color: theme.colors.textSecondary }]}>{group.label}</Text>
+              <View style={styles.groupHeader}>
+                <Text style={[styles.groupTitle, { color: theme.colors.textSecondary }]}>{group.label}</Text>
+                <Text style={[styles.groupTotal, { color: theme.colors.textSecondary }]}>{formatCurrency(group.total)}</Text>
+              </View>
               {group.accounts.map((account) => {
                 const flow = getAccountFlow(account.id);
                 const typeMeta = ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === account.type);
@@ -754,8 +804,14 @@ const styles = StyleSheet.create({
     padding: 18,
     borderWidth: 1,
   },
-  summaryLabel: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
-  summaryValue: { fontSize: 30, fontWeight: '800', marginTop: 4 },
+  summaryMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  summaryMetric: { flex: 1 },
+  summaryMetricLabel: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  summaryMetricValue: { fontSize: 18, fontWeight: '800', marginTop: 6 },
   summaryChangeRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
   summaryChange: { fontSize: 12, fontWeight: '700' },
   summaryMeta: { fontSize: 13, fontWeight: '600', marginTop: 6 },
@@ -803,7 +859,14 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 14, lineHeight: 20, textAlign: 'center' },
   list: { padding: 16, gap: 12 },
   groupSection: { marginBottom: 8 },
-  groupTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
+  groupHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  groupTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  groupTotal: { fontSize: 12, fontWeight: '700' },
   card: { borderRadius: 18, padding: 16, borderWidth: 1 },
   cardMuted: { opacity: 0.7 },
   rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

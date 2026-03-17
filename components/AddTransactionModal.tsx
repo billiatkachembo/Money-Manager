@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
+﻿/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -14,7 +14,9 @@ import {
   Image,
   Platform,
   ActivityIndicator,
+  Keyboard,
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import {
   X, 
   Calculator, 
@@ -36,16 +38,23 @@ import {
   Scan,
   CheckCircle,
 } from 'lucide-react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Icons from 'lucide-react-native';
 import { Transaction, TransactionCategory } from '@/types/transaction';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
+import { AmountCalculatorSheet } from '@/components/AmountCalculatorSheet';
+import { AccountSelectorSheet } from '@/components/AccountSelectorSheet';
+import { CategorySelectorSheet } from '@/components/CategorySelectorSheet';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { normalizeReceiptDate, ReceiptAiDraft, runReceiptOcr } from '@/utils/receiptOcr';
+import { useRouter } from 'expo-router';
+import { useBottomSheetController } from '@/hooks/useBottomSheetController';
 
 type NewTransactionInput = Omit<Transaction, 'id' | 'createdAt'>;
 
@@ -57,6 +66,14 @@ const TRANSFER_CATEGORY: TransactionCategory = {
 };
 
 const CATEGORY_CHIP_ESTIMATED_WIDTH = 108;
+
+const ACCOUNT_TYPE_ICONS = {
+  checking: Wallet,
+  savings: PiggyBank,
+  credit: CreditCard,
+  investment: TrendingUp,
+  cash: Landmark,
+} as const;
 
 const createEmptyOcrDetections = () => ({
   amount: false,
@@ -81,10 +98,21 @@ function parseDateInput(value: string): Date | null {
   const normalized = value.trim();
   if (!normalized) return null;
 
-  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
-    ? new Date(`${normalized}T00:00:00`)
-    : new Date(normalized);
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
 
+  const dayFirstMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dayFirstMatch) {
+    const [, day, month, year] = dayFirstMatch;
+    const date = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) {
     return null;
   }
@@ -225,6 +253,8 @@ interface AddTransactionModalProps {
 
 export function AddTransactionModal({ visible, onClose, initialType }: AddTransactionModalProps) {
   const { theme } = useTheme();
+  const router = useRouter();
+  const { activeSheet, openSheet, closeSheet } = useBottomSheetController<'calculator' | 'accounts' | 'category'>();
   const [type, setType] = useState<'income' | 'expense' | 'transfer' | 'debt'>('expense');
 
   useEffect(() => {
@@ -236,22 +266,19 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   }, [initialType, visible]);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
-  const [transactionDate, setTransactionDate] = useState('');
+  const [note, setNote] = useState('');
+  const [transactionDate, setTransactionDate] = useState<Date | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
   const [fromAccount, setFromAccount] = useState('');
   const [toAccount, setToAccount] = useState('');
+  const [accountSheetTarget, setAccountSheetTarget] = useState<'from' | 'to' | null>(null);
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurringFrequency, setRecurringFrequency] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('monthly');
-  const [recurringEndDate, setRecurringEndDate] = useState('');
-  const [showCalculator, setShowCalculator] = useState(false);
-  const [calculatorDisplay, setCalculatorDisplay] = useState('0');
-  const [calculatorInput, setCalculatorInput] = useState('');
-  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
-  const [categorySearch, setCategorySearch] = useState('');
-  const [fromAccountSearch, setFromAccountSearch] = useState('');
-  const [toAccountSearch, setToAccountSearch] = useState('');
-  const [showFromAccountDropdown, setShowFromAccountDropdown] = useState(false);
-  const [showToAccountDropdown, setShowToAccountDropdown] = useState(false);
+  const [recurringEndDate, setRecurringEndDate] = useState<Date | null>(null);
+  const [showTransactionDatePicker, setShowTransactionDatePicker] = useState(false);
+  const [showDueDatePicker, setShowDueDatePicker] = useState(false);
+  const [showRecurringEndDatePicker, setShowRecurringEndDatePicker] = useState(false);
+  const [calculatorDraft, setCalculatorDraft] = useState('');
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [ocrExtracted, setOcrExtracted] = useState(false);
@@ -259,7 +286,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   const [showImageActions, setShowImageActions] = useState(false);
   const [debtDirection, setDebtDirection] = useState<'borrowed' | 'lent'>('borrowed');
   const [counterparty, setCounterparty] = useState('');
-  const [dueDate, setDueDate] = useState('');
+  const [dueDate, setDueDate] = useState<Date | null>(null);
   const [interestRate, setInterestRate] = useState('');
   const [debtPayment, setDebtPayment] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<ReceiptAiDraft | null>(null);
@@ -278,14 +305,35 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
         : EXPENSE_CATEGORIES;
   }, [type]);
 
-  const filteredCategories = useMemo(() => {
-    const normalizedSearch = categorySearch.trim().toLowerCase();
-    if (!normalizedSearch) return categories;
+  const filteredCategories = useMemo(() => categories, [categories]);
 
-    return categories.filter((category) =>
-      category.name.toLowerCase().includes(normalizedSearch)
-    );
-  }, [categories, categorySearch]);
+  const displayTransactionDate = transactionDate ?? new Date();
+
+  const accountSheetTitle = useMemo(() => {
+    if (!accountSheetTarget) {
+      return 'Account';
+    }
+
+    if (type === 'transfer') {
+      return accountSheetTarget === 'from' ? 'From Account' : 'To Account';
+    }
+
+    return 'Account';
+  }, [accountSheetTarget, type]);
+  const accountSheetHeader = accountSheetTitle === 'Account' ? 'Accounts' : accountSheetTitle;
+
+  const accountSheetAccounts = useMemo(() => {
+    if (!accountSheetTarget) {
+      return accounts;
+    }
+
+    if (type !== 'transfer') {
+      return accounts;
+    }
+
+    const excludeId = accountSheetTarget === 'from' ? toAccount : fromAccount;
+    return accounts.filter((account) => account.id !== excludeId);
+  }, [accounts, accountSheetTarget, fromAccount, toAccount, type]);
 
   const aiCategoryName = useMemo(() => {
     if (!aiSuggestion) return null;
@@ -438,7 +486,10 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       }
 
       if (canMutateOcrState(requestId) && normalizedDate && (override || !transactionDate)) {
-        setTransactionDate(normalizedDate);
+        const parsedDate = parseDateInput(normalizedDate);
+        if (parsedDate) {
+          setTransactionDate(parsedDate);
+        }
       }
 
       if (canMutateOcrState(requestId)) {
@@ -539,20 +590,15 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
 
   const handleCategorySelect = (category: TransactionCategory) => {
     setSelectedCategory(category);
-    setCategorySearch(category.name);
   };
 
-  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
+    const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
     setType(nextType);
     setSelectedCategory(null);
-    setShowCategoryDropdown(false);
-    setCategorySearch('');
     setFromAccount('');
     setToAccount('');
-    setFromAccountSearch('');
-    setToAccountSearch('');
-    setShowFromAccountDropdown(false);
-    setShowToAccountDropdown(false);
+    setAccountSheetTarget(null);
+    closeSheet();
     setOcrDetections(createEmptyOcrDetections());
   };
 
@@ -605,22 +651,9 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       return;
     }
 
-    const parsedTransactionDate = transactionDate ? parseDateInput(transactionDate) : null;
-    if (transactionDate && !parsedTransactionDate) {
-      Alert.alert('Error', 'Please enter a valid transaction date in YYYY-MM-DD format');
-      return;
-    }
+    const resolvedDate = transactionDate ?? new Date();
 
-    const resolvedDate = parsedTransactionDate ?? new Date();
-
-    let parsedDueDate: Date | undefined;
-    if (type === 'debt' && dueDate) {
-      parsedDueDate = parseDateInput(dueDate) ?? undefined;
-      if (!parsedDueDate) {
-        Alert.alert('Error', 'Please enter a valid due date in YYYY-MM-DD format');
-        return;
-      }
-    }
+    const parsedDueDate = type === 'debt' ? dueDate ?? undefined : undefined;
 
     let parsedInterestRate: number | undefined;
     if (type === 'debt' && interestRate) {
@@ -634,11 +667,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
 
     let parsedRecurringEndDate: Date | undefined;
     if (isRecurring && recurringEndDate) {
-      parsedRecurringEndDate = parseDateInput(recurringEndDate) ?? undefined;
-      if (!parsedRecurringEndDate) {
-        Alert.alert('Error', 'Please enter a valid recurring end date in YYYY-MM-DD format');
-        return;
-      }
+      parsedRecurringEndDate = recurringEndDate;
 
       const recurringStartDate = new Date(resolvedDate);
       recurringStartDate.setHours(0, 0, 0, 0);
@@ -659,6 +688,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     }
 
     const trimmedDescription = description.trim();
+    const trimmedNote = note.trim();
     const merchantName =
       type === 'debt' ? (counterparty.trim() || trimmedDescription) : trimmedDescription;
     const transactionData: NewTransactionInput = {
@@ -668,6 +698,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       date: resolvedDate,
       category,
       merchant: merchantName || undefined,
+      note: trimmedNote || undefined,
       debtDirection: type === 'debt' ? debtDirection : undefined,
       counterparty: type === 'debt' ? (counterparty.trim() || merchantName || undefined) : undefined,
       dueDate: type === 'debt' ? parsedDueDate : undefined,
@@ -709,27 +740,25 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     handleClose();
   };
 
-  const handleClose = () => {
+    const handleClose = () => {
     ocrRequestIdRef.current += 1;
     ocrInFlightRef.current = false;
+    closeSheet();
+    setAccountSheetTarget(null);
     setAmount('');
     setDescription('');
-    setTransactionDate('');
+    setNote('');
+    setTransactionDate(null);
     setSelectedCategory(null);
     setFromAccount('');
     setToAccount('');
     setIsRecurring(false);
     setRecurringFrequency('monthly');
-    setRecurringEndDate('');
-    setShowCalculator(false);
-    setCalculatorDisplay('0');
-    setCalculatorInput('');
-    setShowCategoryDropdown(false);
-    setCategorySearch('');
-    setFromAccountSearch('');
-    setToAccountSearch('');
-    setShowFromAccountDropdown(false);
-    setShowToAccountDropdown(false);
+    setRecurringEndDate(null);
+    setShowTransactionDatePicker(false);
+    setShowDueDatePicker(false);
+    setShowRecurringEndDatePicker(false);
+    setCalculatorDraft('');
     setReceiptImage(null);
     setIsScanning(false);
     setOcrExtracted(false);
@@ -737,363 +766,119 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     setShowImageActions(false);
     setDebtDirection('borrowed');
     setCounterparty('');
-    setDueDate('');
+    setDueDate(null);
     setInterestRate('');
     setDebtPayment(false);
     setAiSuggestion(null);
     onClose();
   };
 
-  const handleCalculatorPress = (value: string) => {
-    if (value === 'C') {
-      setCalculatorDisplay('0');
-      setCalculatorInput('');
-    } else if (value === '=') {
-      try {
-        const result = evaluateCalculatorExpression(calculatorInput || calculatorDisplay);
-        const displayValue = toCalculatorDisplay(result);
-        setCalculatorDisplay(displayValue);
-        setAmount(displayValue);
-        setCalculatorInput('');
-      } catch (error) {
-        setCalculatorDisplay('Error');
-      }
-    } else if (value === '⌫') {
-      if (calculatorDisplay === 'Error') {
-        setCalculatorDisplay('0');
-        setCalculatorInput('');
-        return;
-      }
-
-      const newDisplay = calculatorDisplay.slice(0, -1) || '0';
-      setCalculatorDisplay(newDisplay);
-      setCalculatorInput(newDisplay);
-    } else {
-      if (calculatorDisplay === 'Error') {
-        const resetValue = value === '.' ? '0.' : value;
-        setCalculatorDisplay(resetValue);
-        setCalculatorInput(resetValue);
-        return;
-      }
-
-      if (value === '.') {
-        const activeChunk = (calculatorDisplay.split(/[+\-*/]/).pop() ?? '');
-        if (activeChunk.includes('.')) {
-          return;
-        }
-      }
-
-      const newDisplay = calculatorDisplay === '0' ? value : calculatorDisplay + value;
-      setCalculatorDisplay(newDisplay);
-      setCalculatorInput(newDisplay);
-    }
+  const closeActiveSheet = () => {
+    closeSheet();
+    setAccountSheetTarget(null);
   };
 
-  const calculatorButtons = [
-    ['C', '⌫', '/', '*'],
-    ['7', '8', '9', '-'],
-    ['4', '5', '6', '+'],
-    ['1', '2', '3', '='],
-    ['0', '.', '', ''],
-  ];
+  const openCalculatorSheet = () => {
+    Keyboard.dismiss();
+    setCalculatorDraft(amount);
+    openSheet('calculator');
+  };
 
-  const renderCategoryDropdown = () => {
-    if (type === 'transfer' || !showCategoryDropdown) return null;
+  const openCategorySheet = () => {
+    Keyboard.dismiss();
+    openSheet('category');
+  };
 
-    return (
-      <View style={[styles.dropdownContainer, { backgroundColor: theme.colors.surface }]}>
-        <View style={[styles.dropdownHeader, { borderBottomColor: theme.colors.border }]}>
-          <Search size={16} color={theme.colors.textSecondary} />
-          <TextInput
-            style={[styles.categorySearch, { color: theme.colors.text }]}
-            placeholder="Search categories..."
-            placeholderTextColor={theme.colors.textSecondary}
-            value={categorySearch}
-            onChangeText={setCategorySearch}
-            autoFocus
-          />
-        </View>
-        
-        <ScrollView style={styles.dropdownList} showsVerticalScrollIndicator={false}>
-          {filteredCategories.map((category) => {
-            if (!category?.id?.trim()) return null;
-            const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
-            const isSelected = selectedCategory?.id === category.id;
-            
-            return (
-              <TouchableOpacity
-                key={category.id}
-                style={[
-                  styles.dropdownItem,
-                  { backgroundColor: theme.colors.background },
-                  isSelected && { backgroundColor: theme.colors.primary + '20' },
-                ]}
-                onPress={() => {
-                  handleCategorySelect(category);
-                  setShowCategoryDropdown(false);
-                }}
-              >
-                <View style={styles.dropdownItemLeft}>
-                  <View style={[styles.dropdownIcon, { backgroundColor: category.color + '20' }]}>
-                    <IconComponent size={16} color={category.color} />
-                  </View>
-                  <Text style={[
-                    styles.dropdownItemText, 
-                    { color: theme.colors.text },
-                    isSelected && { color: theme.colors.primary, fontWeight: '600' }
-                  ]}>
-                    {category.name}
-                  </Text>
-                </View>
-                {isSelected && (
-                  <View style={[styles.checkmark, { backgroundColor: theme.colors.primary }]} />
-                )}
-              </TouchableOpacity>
-            );
-          })}
-          
-          {filteredCategories.length === 0 && (
-            <View style={styles.noResults}>
-              <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>
-                No categories found
-              </Text>
-            </View>
-          )}
-        </ScrollView>
-      </View>
-    );
+  const openAccountsSheet = (target: 'from' | 'to') => {
+    Keyboard.dismiss();
+    setAccountSheetTarget(target);
+    openSheet('accounts');
+  };
+
+  const handleCurrencyAction = () => {
+    closeActiveSheet();
+    handleClose();
+    router.replace('/(tabs)/profile');
+  };
+
+  const handleAccountsAction = () => {
+    closeActiveSheet();
+    handleClose();
+    router.replace('/(tabs)/accounts');
   };
 
   // Account selection components
   const renderAccountSelection = () => {
     const selectedFrom = accounts.find((account) => account.id === fromAccount);
     const selectedTo = accounts.find((account) => account.id === toAccount);
-    const normalizedFromSearch = fromAccountSearch.trim().toLowerCase();
-    const normalizedToSearch = toAccountSearch.trim().toLowerCase();
 
-    const accountTypeIcons = {
-      checking: Wallet,
-      savings: PiggyBank,
-      credit: CreditCard,
-      investment: TrendingUp,
-      cash: Landmark,
-    } as const;
-
-    const renderAccountOption = (
-      account: typeof accounts[0],
-      selectedId: string,
-      onSelect: (accountId: string, accountName: string) => void
-    ) => {
-      const isSelected = selectedId === account.id;
-      const AccountIcon = accountTypeIcons[account.type] ?? Wallet;
+    const renderAccountField = ({
+      label,
+      selectedAccount,
+      onPress,
+    }: {
+      label: string;
+      selectedAccount?: typeof accounts[0];
+      onPress: () => void;
+    }) => {
+      const AccountIcon = selectedAccount ? ACCOUNT_TYPE_ICONS[selectedAccount.type] ?? Wallet : Wallet;
+      const accentColor = selectedAccount?.color || theme.colors.primary;
 
       return (
-        <TouchableOpacity
-          key={account.id}
-          style={[
-            styles.transferDropdownItem,
-            { borderBottomColor: theme.colors.border },
-            isSelected && { backgroundColor: theme.colors.primary + '14' },
-          ]}
-          onPress={() => onSelect(account.id, account.name)}
-        >
-          <View style={styles.transferDropdownItemLeft}>
-            <View style={[styles.accountIcon, { backgroundColor: account.color + '20' }]}>
-              <AccountIcon size={18} color={account.color || theme.colors.primary} />
-            </View>
-            <View>
+        <View style={styles.inputGroup}>
+          <Text style={[styles.label, { color: theme.colors.text }]}>{label}</Text>
+          <TouchableOpacity
+            style={[
+              styles.selectorField,
+              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+            ]}
+            onPress={() => {
+              Keyboard.dismiss();
+              onPress();
+            }}
+          >
+            <View style={styles.selectorLeft}>
+              <View style={[styles.selectorIcon, { backgroundColor: accentColor + '20' }]}>
+                <AccountIcon size={18} color={accentColor} />
+              </View>
               <Text
                 style={[
-                  styles.transferDropdownLabel,
-                  { color: theme.colors.text },
-                  isSelected && { color: theme.colors.primary, fontWeight: '600' },
+                  styles.selectorValue,
+                  { color: selectedAccount ? theme.colors.text : theme.colors.textSecondary },
                 ]}
+                numberOfLines={1}
               >
-                {account.name}
-              </Text>
-              <Text style={[styles.transferDropdownBalance, { color: theme.colors.textSecondary }]}>
-                {formatCurrency(account.balance)}
+                {selectedAccount ? selectedAccount.name : 'Select account'}
               </Text>
             </View>
-          </View>
-          {isSelected && <View style={[styles.checkmark, { backgroundColor: theme.colors.primary }]} />}
-        </TouchableOpacity>
+            <ChevronDown size={18} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
       );
     };
 
-    const renderPicker = ({
-      label,
-      searchValue,
-      selectedAccount,
-      selectedId,
-      setSearch,
-      setSelected,
-      showDropdown,
-      setShowDropdown,
-      options,
-      emptyLabel,
-      placeholder,
-      onOpen,
-    }: {
-      label: string;
-      searchValue: string;
-      selectedAccount?: typeof accounts[0];
-      selectedId: string;
-      setSearch: (value: string) => void;
-      setSelected: (value: string) => void;
-      showDropdown: boolean;
-      setShowDropdown: (value: boolean) => void;
-      options: typeof accounts;
-      emptyLabel: string;
-      placeholder: string;
-      onOpen?: () => void;
-    }) => (
-      <View style={styles.inputGroup}>
-        <Text style={[styles.label, { color: theme.colors.text }]}>{label}</Text>
-        <View
-          style={[
-            styles.transferInputContainer,
-            { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
-          ]}
-        >
-          <Search size={16} color={theme.colors.textSecondary} />
-          <TextInput
-            style={[styles.transferAccountInput, { color: theme.colors.text }]}
-            value={searchValue}
-            onChangeText={(value) => {
-              setSearch(value);
-              setShowDropdown(true);
-              if (selectedAccount && value.trim().toLowerCase() !== selectedAccount.name.toLowerCase()) {
-                setSelected('');
-              }
-            }}
-            onFocus={() => {
-              setShowDropdown(true);
-              onOpen?.();
-            }}
-            placeholder={placeholder}
-            placeholderTextColor={theme.colors.textSecondary}
-          />
-          <TouchableOpacity
-            onPress={() => {
-              if (searchValue) {
-                setSearch('');
-                setSelected('');
-                setShowDropdown(true);
-                onOpen?.();
-              } else {
-                setShowDropdown(!showDropdown);
-                onOpen?.();
-              }
-            }}
-            style={styles.transferInputAction}
-          >
-            {searchValue ? (
-              <X size={16} color={theme.colors.textSecondary} />
-            ) : showDropdown ? (
-              <ChevronUp size={16} color={theme.colors.textSecondary} />
-            ) : (
-              <ChevronDown size={16} color={theme.colors.textSecondary} />
-            )}
-          </TouchableOpacity>
-        </View>
-        {showDropdown && (
-          <View style={[styles.transferDropdown, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-            {accounts.length === 0 ? (
-              <View style={styles.transferEmptyState}>
-                <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>Loading accounts...</Text>
-              </View>
-            ) : options.length === 0 ? (
-              <View style={styles.transferEmptyState}>
-                <Text style={[styles.emptyAccountsText, { color: theme.colors.textSecondary }]}>{emptyLabel}</Text>
-              </View>
-            ) : (
-              <ScrollView style={styles.transferDropdownList} nestedScrollEnabled>
-                {options.map((account: typeof accounts[0]) =>
-                  renderAccountOption(account, selectedId, (accountId, accountName) => {
-                    setSelected(accountId);
-                    setSearch(accountName);
-                    setShowDropdown(false);
-                  })
-                )}
-              </ScrollView>
-            )}
-          </View>
-        )}
-      </View>
-    );
-
     if (type === 'expense') {
-      const options = accounts.filter((account) => {
-        if (!normalizedFromSearch) return true;
-        return account.name.toLowerCase().includes(normalizedFromSearch);
-      });
-
-      return renderPicker({
+      return renderAccountField({
         label: 'Account',
-        searchValue: fromAccountSearch,
         selectedAccount: selectedFrom,
-        selectedId: fromAccount,
-        setSearch: setFromAccountSearch,
-        setSelected: setFromAccount,
-        showDropdown: showFromAccountDropdown,
-        setShowDropdown: setShowFromAccountDropdown,
-        options,
-        emptyLabel: 'No matching account',
-        placeholder: 'Type to find the account used',
-        onOpen: () => setShowToAccountDropdown(false),
+        onPress: () => openAccountsSheet('from'),
       });
     }
 
     if (type === 'income') {
-      const options = accounts.filter((account) => {
-        if (!normalizedToSearch) return true;
-        return account.name.toLowerCase().includes(normalizedToSearch);
-      });
-
-      return renderPicker({
+      return renderAccountField({
         label: 'Account',
-        searchValue: toAccountSearch,
         selectedAccount: selectedTo,
-        selectedId: toAccount,
-        setSearch: setToAccountSearch,
-        setSelected: setToAccount,
-        showDropdown: showToAccountDropdown,
-        setShowDropdown: setShowToAccountDropdown,
-        options,
-        emptyLabel: 'No matching account',
-        placeholder: 'Type to find the receiving account',
-        onOpen: () => setShowFromAccountDropdown(false),
+        onPress: () => openAccountsSheet('to'),
       });
     }
-    if (type === 'debt') {
-      const options = accounts.filter((account) => {
-        const search = debtDirection === 'borrowed' ? normalizedToSearch : normalizedFromSearch;
-        if (!search) return true;
-        return account.name.toLowerCase().includes(search);
-      });
 
-      return renderPicker({
+    if (type === 'debt') {
+      const selected = debtDirection === 'borrowed' ? selectedTo : selectedFrom;
+      return renderAccountField({
         label: 'Account',
-        searchValue: debtDirection === 'borrowed' ? toAccountSearch : fromAccountSearch,
-        selectedAccount: debtDirection === 'borrowed' ? selectedTo : selectedFrom,
-        selectedId: debtDirection === 'borrowed' ? toAccount : fromAccount,
-        setSearch: debtDirection === 'borrowed' ? setToAccountSearch : setFromAccountSearch,
-        setSelected: debtDirection === 'borrowed' ? setToAccount : setFromAccount,
-        showDropdown: debtDirection === 'borrowed' ? showToAccountDropdown : showFromAccountDropdown,
-        setShowDropdown: debtDirection === 'borrowed' ? setShowToAccountDropdown : setShowFromAccountDropdown,
-        options,
-        emptyLabel: 'No matching account',
-        placeholder: debtDirection === 'borrowed'
-          ? 'Type to find the receiving account'
-          : 'Type to find the funding account',
-        onOpen: () => {
-          if (debtDirection === 'borrowed') {
-            setShowFromAccountDropdown(false);
-          } else {
-            setShowToAccountDropdown(false);
-          }
-        },
+        selectedAccount: selected,
+        onPress: () => openAccountsSheet(debtDirection === 'borrowed' ? 'to' : 'from'),
       });
     }
 
@@ -1101,56 +886,28 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       return null;
     }
 
-    const fromOptions = accounts.filter((account) => {
-      if (account.id === toAccount) return false;
-      if (!normalizedFromSearch) return true;
-      return account.name.toLowerCase().includes(normalizedFromSearch);
-    });
-
-    const toOptions = accounts.filter((account) => {
-      if (account.id === fromAccount) return false;
-      if (!normalizedToSearch) return true;
-      return account.name.toLowerCase().includes(normalizedToSearch);
-    });
-
     return (
       <>
-        {renderPicker({
+        {renderAccountField({
           label: 'From Account',
-          searchValue: fromAccountSearch,
           selectedAccount: selectedFrom,
-          selectedId: fromAccount,
-          setSearch: setFromAccountSearch,
-          setSelected: setFromAccount,
-          showDropdown: showFromAccountDropdown,
-          setShowDropdown: setShowFromAccountDropdown,
-          options: fromOptions,
-          emptyLabel: 'No matching source account',
-          placeholder: 'Type to find source account',
-          onOpen: () => setShowToAccountDropdown(false),
+          onPress: () => openAccountsSheet('from'),
         })}
 
-        {renderPicker({
+        {renderAccountField({
           label: 'To Account',
-          searchValue: toAccountSearch,
           selectedAccount: selectedTo,
-          selectedId: toAccount,
-          setSearch: setToAccountSearch,
-          setSelected: setToAccount,
-          showDropdown: showToAccountDropdown,
-          setShowDropdown: setShowToAccountDropdown,
-          options: toOptions,
-          emptyLabel: 'No matching destination account',
-          placeholder: 'Type to find destination account',
-          onOpen: () => setShowFromAccountDropdown(false),
+          onPress: () => openAccountsSheet('to'),
         })}
 
         {fromAccount && toAccount && fromAccount !== toAccount && (
-          <View style={[styles.transferPreview, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+          <View style={[styles.transferPreview, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
             <Text style={[styles.transferPreviewTitle, { color: theme.colors.text }]}>Transfer Preview</Text>
             <View style={styles.transferPreviewRow}>
               <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>Amount:</Text>
-              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>{formatCurrency(parseFloat(amount) || 0)}</Text>
+              <Text style={[styles.transferPreviewValue, { color: theme.colors.text }]}>
+                {formatCurrency(parseFloat(amount) || 0)}
+              </Text>
             </View>
             <View style={styles.transferPreviewRow}>
               <Text style={[styles.transferPreviewLabel, { color: theme.colors.textSecondary }]}>From:</Text>
@@ -1165,7 +922,6 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       </>
     );
   };
-
   // Render receipt scanning section
   const renderReceiptSection = () => {
     if (type === 'transfer') return null;
@@ -1233,7 +989,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
         
         <Text style={[styles.receiptHint, { color: theme.colors.textSecondary }]}>
           {ocrExtracted 
-            ? '✓ Details extracted from receipt'
+            ? '? Details extracted from receipt'
             : 'Upload a receipt photo to automatically fill transaction details'}
         </Text>
 
@@ -1245,7 +1001,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 { color: ocrDetections.merchant ? '#10B981' : theme.colors.textSecondary },
               ]}
             >
-              {ocrDetections.merchant ? '✓ Merchant detected' : 'Merchant not detected'}
+              {ocrDetections.merchant ? '? Merchant detected' : 'Merchant not detected'}
             </Text>
             <Text
               style={[
@@ -1253,7 +1009,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 { color: ocrDetections.amount ? '#10B981' : theme.colors.textSecondary },
               ]}
             >
-              {ocrDetections.amount ? '✓ Amount detected' : 'Amount not detected'}
+              {ocrDetections.amount ? '? Amount detected' : 'Amount not detected'}
             </Text>
             <Text
               style={[
@@ -1261,7 +1017,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 { color: ocrDetections.date ? '#10B981' : theme.colors.textSecondary },
               ]}
             >
-              {ocrDetections.date ? '✓ Date detected' : 'Date not detected'}
+              {ocrDetections.date ? '? Date detected' : 'Date not detected'}
             </Text>
           </View>
         ) : null}
@@ -1293,6 +1049,9 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     );
   };
 
+  const categoryAccent = selectedCategory?.color ?? theme.colors.border;
+  const CategoryIcon = selectedCategory ? ((Icons as any)[selectedCategory.icon] || Icons.Circle) : Icons.Circle;
+
   return (
     <Modal
       visible={visible}
@@ -1300,6 +1059,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       presentationStyle="pageSheet"
       onRequestClose={handleClose}
     >
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={[styles.header, { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border }]}>
           <Text style={[styles.title, { color: theme.colors.text }]}>Add Transaction</Text>
@@ -1308,7 +1068,12 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
           </TouchableOpacity>
         </View>
 
-        <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        <ScrollView
+  style={styles.content}
+  showsVerticalScrollIndicator={false}
+  keyboardShouldPersistTaps="handled"
+  keyboardDismissMode="on-drag"
+>
           <View style={[styles.typeSelector, { backgroundColor: theme.colors.border }]}>
             <TouchableOpacity
               style={[
@@ -1369,66 +1134,103 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
               </Text>
             </TouchableOpacity>
           </View>
-
-          {renderReceiptSection()}
+          <View style={styles.inputGroup}>
+            <Text style={[styles.label, { color: theme.colors.text }]}>Date</Text>
+            <TouchableOpacity
+              style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+              onPress={() => {
+                Keyboard.dismiss();
+                setShowTransactionDatePicker(true);
+              }}
+              activeOpacity={0.8}
+            >
+              <Calendar size={16} color={theme.colors.primary} />
+              <Text
+                style={[
+                  styles.dateInput,
+                  { color: theme.colors.text },
+                ]}
+              >
+                {formatDateDDMMYYYY(displayTransactionDate)}
+              </Text>
+            </TouchableOpacity>
+            {showTransactionDatePicker ? (
+              <DateTimePicker
+                value={transactionDate ?? new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={(_, selectedDate) => {
+                  setShowTransactionDatePicker(false);
+                  if (selectedDate) {
+                    setTransactionDate(selectedDate);
+                  }
+                }}
+              />
+            ) : null}
+          </View>
 
           <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={[styles.label, { color: theme.colors.text }]}>Amount</Text>
+            <Text style={[styles.label, { color: theme.colors.text }]}>Amount</Text>
+            <TouchableOpacity
+              style={[
+                styles.amountField,
+                { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+                activeSheet === 'calculator' && { borderColor: theme.colors.primary, backgroundColor: theme.colors.primary + '12' },
+              ]}
+              onPress={() => {
+                openCalculatorSheet();
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.amountValue, { color: theme.colors.text }]}>
+                {formatCurrency(parseFloat(amount) || 0)}
+              </Text>
+              <View style={[styles.amountIcon, { backgroundColor: theme.colors.background }]}>
+                <Calculator size={18} color={theme.colors.primary} />
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {type !== 'transfer' ? (
+            <View style={styles.inputGroup}>
+              <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
               <TouchableOpacity
-                style={styles.calculatorButton}
-                onPress={() => setShowCalculator(!showCalculator)}
+                style={[styles.selectorField, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}
+                onPress={() => {
+                  openCategorySheet();
+                }}
               >
-                <Calculator size={16} color={theme.colors.primary} />
+                <View style={styles.selectorLeft}>
+                  <View style={[styles.selectorIcon, { backgroundColor: categoryAccent + '20' }]}>
+                    <CategoryIcon size={18} color={selectedCategory ? categoryAccent : theme.colors.textSecondary} />
+                  </View>
+                  <Text
+                    style={[
+                      styles.selectorValue,
+                      { color: selectedCategory ? theme.colors.text : theme.colors.textSecondary },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {selectedCategory ? selectedCategory.name : 'Select category'}
+                  </Text>
+                </View>
+                <ChevronDown size={18} color={theme.colors.textSecondary} />
               </TouchableOpacity>
             </View>
+          ) : null}
+
+          {renderAccountSelection()}
+
+          <View style={styles.inputGroup}>
+            <Text style={[styles.label, { color: theme.colors.text }]}>Note</Text>
             <TextInput
               style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
-              value={amount}
-              onChangeText={(text) => setAmount(sanitizeAmountInput(text))}
-              placeholder="0.00"
+              value={note}
+              onChangeText={setNote}
+              placeholder="Optional note"
               placeholderTextColor={theme.colors.textSecondary}
-              keyboardType="numeric"
               returnKeyType="next"
             />
-            {showCalculator && (
-              <View style={[styles.calculator, { backgroundColor: theme.colors.background }]}>
-                <View style={[styles.calculatorDisplay, { backgroundColor: theme.colors.surface }]}>
-                  <Text style={[styles.calculatorDisplayText, { color: theme.colors.text }]}>{calculatorDisplay}</Text>
-                </View>
-                <View style={styles.calculatorGrid}>
-                  {calculatorButtons.map((row, rowIndex) => (
-                    <View key={rowIndex} style={styles.calculatorRow}>
-                      {row.map((button, buttonIndex) => (
-                        button ? (
-                          <TouchableOpacity
-                            key={buttonIndex}
-                            style={[
-                              styles.calculatorKey,
-                              { backgroundColor: theme.colors.surface },
-                              button === '=' && { backgroundColor: theme.colors.primary },
-                              ['C', '⌫'].includes(button) && { backgroundColor: theme.colors.border },
-                            ]}
-                            onPress={() => handleCalculatorPress(button)}
-                          >
-                            <Text style={[
-                              styles.calculatorKeyText,
-                              { color: theme.colors.text },
-                              button === '=' && { color: 'white' },
-                              ['C', '⌫'].includes(button) && { color: theme.colors.textSecondary },
-                            ]}>
-                              {button}
-                            </Text>
-                          </TouchableOpacity>
-                        ) : (
-                          <View key={buttonIndex} style={styles.calculatorKey} />
-                        )
-                      ))}
-                    </View>
-                  ))}
-                </View>
-              </View>
-            )}
           </View>
 
           <View style={styles.inputGroup}>
@@ -1443,109 +1245,12 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
             />
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={[styles.label, { color: theme.colors.text }]}>Date</Text>
-            <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-              <Calendar size={16} color={theme.colors.primary} />
-              <TextInput
-                style={[styles.dateInput, { color: theme.colors.text }]}
-                value={transactionDate}
-                onChangeText={setTransactionDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={theme.colors.textSecondary}
-              />
-            </View>
-          </View>
-
-          {type !== 'transfer' ? (
-            <>
-              <View style={styles.inputGroup}>
-                <Text style={[styles.label, { color: theme.colors.text }]}>Category</Text>
-                <View style={[styles.categorySearchBox, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-                  <Search size={16} color={theme.colors.textSecondary} />
-                  <TextInput
-                    style={[styles.categorySearchInput, { color: theme.colors.text }]}
-                    placeholder="Search or scroll categories"
-                    placeholderTextColor={theme.colors.textSecondary}
-                    value={categorySearch}
-                    onChangeText={setCategorySearch}
-                  />
-                  {categorySearch ? (
-                    <TouchableOpacity onPress={() => setCategorySearch('')}>
-                      <X size={16} color={theme.colors.textSecondary} />
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
-                <FlatList
-                  ref={categoryListRef}
-                  data={filteredCategories}
-                  horizontal
-                  keyExtractor={(category) => category.id}
-                  getItemLayout={(_, index) => ({
-                    length: CATEGORY_CHIP_ESTIMATED_WIDTH,
-                    offset: CATEGORY_CHIP_ESTIMATED_WIDTH * index,
-                    index,
-                  })}
-                  showsHorizontalScrollIndicator={false}
-                  style={styles.categoryChipScroll}
-                  contentContainerStyle={styles.categoryChipRow}
-                  onScrollToIndexFailed={({ index }) => {
-                    const safeIndex = Math.max(0, Math.min(index, filteredCategories.length - 1));
-                    setTimeout(() => {
-                      categoryListRef.current?.scrollToIndex({
-                        index: safeIndex,
-                        animated: true,
-                        viewPosition: 0.5,
-                      });
-                    }, 80);
-                  }}
-                  renderItem={({ item: category }) => {
-                    const isSelected = selectedCategory?.id === category.id;
-                    const IconComponent = (Icons as any)[category.icon] || Icons.Circle;
-
-                    return (
-                      <TouchableOpacity
-                        key={category.id}
-                        style={[
-                          styles.categoryChip,
-                          {
-                            backgroundColor: theme.colors.surface,
-                            borderColor: isSelected ? theme.colors.primary : category.color,
-                          },
-                        ]}
-                        onPress={() => handleCategorySelect(category)}
-                      >
-                        <View style={[styles.categoryChipIcon, { backgroundColor: category.color + '20' }]}>
-                          <IconComponent size={18} color={category.color} />
-                        </View>
-                        <Text
-                          style={[
-                            styles.categoryChipText,
-                            { color: isSelected ? theme.colors.primary : theme.colors.textSecondary },
-                          ]}
-                        >
-                          {category.name}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  }}
-                />
-                {filteredCategories.length === 0 ? (
-                  <View style={styles.noResults}>
-                    <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>No categories found</Text>
-                  </View>
-                ) : null}
-              </View>
-              {renderAccountSelection()}
-            </>
-          ) : (
-            renderAccountSelection()
-          )}
+          {renderReceiptSection()}
 
           {type === 'debt' ? (
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: theme.colors.text }]}>Debt Details</Text>
-              <View style={[styles.debtDirectionRow, { backgroundColor: theme.colors.border }]}> 
+              <View style={[styles.debtDirectionRow, { backgroundColor: theme.colors.border }]}>
                 <TouchableOpacity
                   style={[
                     styles.debtDirectionButton,
@@ -1553,10 +1258,12 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                   ]}
                   onPress={() => setDebtDirection('borrowed')}
                 >
-                  <Text style={[
-                    styles.debtDirectionText,
-                    { color: debtDirection === 'borrowed' ? theme.colors.text : theme.colors.textSecondary },
-                  ]}>
+                  <Text
+                    style={[
+                      styles.debtDirectionText,
+                      { color: debtDirection === 'borrowed' ? theme.colors.text : theme.colors.textSecondary },
+                    ]}
+                  >
                     Borrowed
                   </Text>
                 </TouchableOpacity>
@@ -1567,10 +1274,12 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                   ]}
                   onPress={() => setDebtDirection('lent')}
                 >
-                  <Text style={[
-                    styles.debtDirectionText,
-                    { color: debtDirection === 'lent' ? theme.colors.text : theme.colors.textSecondary },
-                  ]}>
+                  <Text
+                    style={[
+                      styles.debtDirectionText,
+                      { color: debtDirection === 'lent' ? theme.colors.text : theme.colors.textSecondary },
+                    ]}
+                  >
                     Lent
                   </Text>
                 </TouchableOpacity>
@@ -1582,16 +1291,31 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 placeholder="Counterparty"
                 placeholderTextColor={theme.colors.textSecondary}
               />
-              <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+              <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                 <Calendar size={16} color={theme.colors.primary} />
-                <TextInput
-                  style={[styles.dateInput, { color: theme.colors.text }]}
-                  value={dueDate}
-                  onChangeText={setDueDate}
-                  placeholder="Due date (YYYY-MM-DD)"
-                  placeholderTextColor={theme.colors.textSecondary}
-                />
+                <TouchableOpacity
+                  style={styles.dateInput}
+                  onPress={() => setShowDueDatePicker(true)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[styles.dateInput, { color: dueDate ? theme.colors.text : theme.colors.textSecondary }]}>
+                    {dueDate ? formatDateDDMMYYYY(dueDate) : 'Due date (DD-MM-YYYY)'}
+                  </Text>
+                </TouchableOpacity>
               </View>
+              {showDueDatePicker ? (
+                <DateTimePicker
+                  value={dueDate ?? new Date()}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_, selectedDate) => {
+                    setShowDueDatePicker(false);
+                    if (selectedDate) {
+                      setDueDate(selectedDate);
+                    }
+                  }}
+                />
+              ) : null}
               <TextInput
                 style={[styles.input, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text }]}
                 value={interestRate}
@@ -1633,7 +1357,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 thumbColor={isRecurring ? '#fff' : '#f4f3f4'}
               />
             </View>
-            
+
             {isRecurring && (
               <>
                 <View style={styles.frequencySelector}>
@@ -1647,30 +1371,91 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                       ]}
                       onPress={() => setRecurringFrequency(freq)}
                     >
-                      <Text style={[
-                        styles.frequencyButtonText,
-                        { color: recurringFrequency === freq ? 'white' : theme.colors.textSecondary },
-                      ]}>
+                      <Text
+                        style={[
+                          styles.frequencyButtonText,
+                          { color: recurringFrequency === freq ? 'white' : theme.colors.textSecondary },
+                        ]}
+                      >
                         {freq.charAt(0).toUpperCase() + freq.slice(1)}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
-                
+
                 <View style={[styles.dateInputGroup, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                   <Calendar size={16} color={theme.colors.primary} />
-                  <TextInput
-                    style={[styles.dateInput, { color: theme.colors.text }]}
-                    value={recurringEndDate}
-                    onChangeText={setRecurringEndDate}
-                    placeholder="End date (YYYY-MM-DD)"
-                    placeholderTextColor={theme.colors.textSecondary}
-                  />
+                  <TouchableOpacity
+                    style={styles.dateInput}
+                    onPress={() => setShowRecurringEndDatePicker(true)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.dateInput, { color: recurringEndDate ? theme.colors.text : theme.colors.textSecondary }]}>
+                      {recurringEndDate ? formatDateDDMMYYYY(recurringEndDate) : 'End date (DD-MM-YYYY)'}
+                    </Text>
+                  </TouchableOpacity>
                 </View>
+                {showRecurringEndDatePicker ? (
+                  <DateTimePicker
+                    value={recurringEndDate ?? new Date()}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={(_, selectedDate) => {
+                      setShowRecurringEndDatePicker(false);
+                      if (selectedDate) {
+                        setRecurringEndDate(selectedDate);
+                      }
+                    }}
+                  />
+                ) : null}
               </>
             )}
           </View>
         </ScrollView>
+        <AmountCalculatorSheet
+          visible={activeSheet === 'calculator'}
+          value={calculatorDraft || amount}
+          onChange={setCalculatorDraft}
+          onClose={() => closeActiveSheet()}
+          onCurrencyPress={handleCurrencyAction}
+          onConfirm={(nextValue) => {
+            setAmount(nextValue);
+            closeActiveSheet();
+          }}
+        />
+        <CategorySelectorSheet
+          visible={activeSheet === 'category'}
+          categories={filteredCategories}
+          selectedCategoryId={selectedCategory?.id}
+          onSelect={(category) => {
+            handleCategorySelect(category);
+            closeActiveSheet();
+          }}
+          onClose={() => closeActiveSheet()}
+        />
+        <AccountSelectorSheet
+          visible={activeSheet === 'accounts'}
+          title={accountSheetHeader}
+          accounts={accountSheetAccounts}
+          selectedAccountId={
+            accountSheetTarget === 'from'
+              ? fromAccount
+              : accountSheetTarget === 'to'
+                ? toAccount
+                : undefined
+          }
+          onSelect={(account) => {
+            if (accountSheetTarget === 'from') {
+              setFromAccount(account.id);
+            }
+            if (accountSheetTarget === 'to') {
+              setToAccount(account.id);
+            }
+          }}
+          onClose={() => closeActiveSheet()}
+          onExpand={handleAccountsAction}
+          onEdit={handleAccountsAction}
+        />
 
         <View style={[styles.footer, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border }]}>
           <TouchableOpacity style={[styles.submitButton, { backgroundColor: theme.colors.primary }]} onPress={handleSubmit}>
@@ -1678,6 +1463,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
           </TouchableOpacity>
         </View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -1761,6 +1547,51 @@ const styles = StyleSheet.create({
     padding: 16,
     fontSize: 16,
     borderWidth: 1,
+  },
+  amountField: {
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  amountValue: {
+    fontSize: 28,
+    fontWeight: '700',
+  },
+  amountIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectorField: {
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  selectorLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  selectorIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectorValue: {
+    fontSize: 16,
+    fontWeight: '500',
+    flex: 1,
   },
   // Category Dropdown Styles
   categoryDropdownTrigger: {
@@ -1901,6 +1732,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   // Transfer Section Styles
+  transferAccountTouch: {
+    flex: 1,
+  },
   transferInputContainer: {
     borderRadius: 12,
     paddingHorizontal: 12,
@@ -1947,6 +1781,65 @@ const styles = StyleSheet.create({
   transferDropdownBalance: {
     fontSize: 12,
     marginTop: 2,
+  },
+  bottomSheetBackdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
+  bottomSheetOverlay: {
+    flex: 1,
+  },
+  bottomSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    maxHeight: '55%',
+  },
+  bottomSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  bottomSheetTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  bottomSheetClose: {
+    padding: 4,
+  },
+  accountGrid: {
+    paddingBottom: 4,
+  },
+  accountGridRow: {
+    gap: 12,
+    marginBottom: 12,
+  },
+  accountTile: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 10,
+    alignItems: 'center',
+    minWidth: 90,
+  },
+  accountTileIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  accountTileLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  accountTileBalance: {
+    fontSize: 11,
+    marginTop: 4,
   },
   transferEmptyState: {
     padding: 16,
@@ -2194,5 +2087,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
 
 

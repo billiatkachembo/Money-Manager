@@ -27,6 +27,7 @@ import {
 import { Note } from '@/types/transaction';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 
 const NOTE_CATEGORIES = [
   { id: 'financial', name: 'Financial', icon: FileText, color: '#667eea' },
@@ -193,13 +194,7 @@ export default function NotesScreen() {
     resetForm();
   };
 
-  const formatDate = (date: Date) => {
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(date);
-  };
+  const formatDate = (date: Date) => formatDateDDMMYYYY(date);
 
   const renderSwipeActions = (note: Note, closeSwipe: () => void) => (
     <View style={styles.swipeActions}>

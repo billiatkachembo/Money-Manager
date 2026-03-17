@@ -17,17 +17,27 @@ interface InsightItem {
 }
 
 interface AnalyticsSummary {
-  safeToSpend: number;
+  dailyBudgetRemaining: number;
+  remainingBudget: number;
   balance: number;
   daysLeft: number;
+  daysPassed: number;
+  totalDaysInMonth: number;
+  monthProgress: number;
+  monthIncome: number;
+  monthExpenses: number;
   trendPercent: number;
   trendState: 'up' | 'down' | 'flat';
   topCategoryName: string | null;
   spendingRatio: number;
-  healthLevel: 'Excellent' | 'Healthy' | 'Warning';
-  healthColor: string;
+  healthLevel: 'Excellent' | 'Healthy' | 'Risk' | 'Overspending';
   trendText: string;
-  insights: InsightItem[];
+  projectedMonthEndBalance: number;
+  dailyBurnRate: number;
+  daysUntilEmpty: number | null;
+  expectedSpendSoFar: number;
+  spendingPace: number;
+  isEmpty: boolean;
 }
 
 const DAY_MS = 1000 * 60 * 60 * 24;
@@ -65,9 +75,13 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
 
   const analytics = React.useMemo<AnalyticsSummary>(() => {
     const now = new Date();
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const daysLeft = Math.max(1, Math.ceil((endOfMonth.getTime() - now.getTime()) / DAY_MS));
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const totalDaysInMonth = new Date(year, month + 1, 0).getDate();
+    const daysPassed = Math.max(1, now.getDate());
+    const daysLeft = Math.max(1, totalDaysInMonth - daysPassed + 1);
+    const monthProgress = Math.min(1, Math.max(0, daysPassed / totalDaysInMonth));
+    const monthStart = new Date(year, month, 1);
     const sevenDaysAgo = new Date(now.getTime() - DAY_MS * 7);
     const fourteenDaysAgo = new Date(now.getTime() - DAY_MS * 14);
     const thirtyDaysAgo = new Date(now.getTime() - DAY_MS * 30);
@@ -123,7 +137,8 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
       }
     }
 
-    const safeToSpend = Math.max(0, balance / daysLeft);
+    const remainingBudget = Math.max(0, monthIncome - monthExpenses);
+    const dailyBudgetRemaining = remainingBudget / daysLeft;
 
     let trendPercent = 0;
     if (previousWeekExpenses > 0) {
@@ -153,92 +168,79 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
       }
     }
 
+    if (topCategoryAmount === 0) {
+      topCategoryName = null;
+    }
+
     const spendingRatio = monthIncome > 0 ? monthExpenses / monthIncome : monthExpenses > 0 ? Infinity : 0;
 
-    const healthLevel: 'Excellent' | 'Healthy' | 'Warning' =
-      spendingRatio < 0.6 ? 'Excellent' : spendingRatio <= 0.8 ? 'Healthy' : 'Warning';
-    const healthColor =
-      healthLevel === 'Excellent'
-        ? theme.colors.success
-        : healthLevel === 'Healthy'
-          ? theme.colors.warning
-          : theme.colors.error;
+    const healthLevel: 'Excellent' | 'Healthy' | 'Risk' | 'Overspending' =
+      spendingRatio < 0.6
+        ? 'Excellent'
+        : spendingRatio <= 0.8
+          ? 'Healthy'
+          : spendingRatio <= 1
+            ? 'Risk'
+            : 'Overspending';
 
-    const insights: InsightItem[] = [];
-    insights.push({
-      id: 'weekly-trend',
-      message: trendText,
-      tone: trendState === 'up' ? 'warning' : trendState === 'down' ? 'positive' : 'neutral',
-      icon: trendState === 'up' ? 'up' : trendState === 'down' ? 'down' : 'check',
-    });
+    const expectedSpendSoFar = monthIncome * monthProgress;
+    const spendingPace =
+      expectedSpendSoFar > 0 ? monthExpenses / expectedSpendSoFar : monthExpenses > 0 ? Infinity : 0;
 
-    if (topCategoryName && topCategoryAmount > 0) {
-      insights.push({
-        id: 'top-category',
-        message: `${topCategoryName} is your largest expense this month`,
-        tone: 'neutral',
-        icon: 'alert',
-      });
-    } else {
-      const ratioMessage = Number.isFinite(spendingRatio)
-        ? `You are spending ${Math.round(spendingRatio * 100)}% of your income`
-        : 'No income this month while expenses are recorded';
-      insights.push({
-        id: 'ratio',
-        message: ratioMessage,
-        tone: Number.isFinite(spendingRatio) && spendingRatio <= 0.8 ? 'positive' : 'warning',
-        icon: Number.isFinite(spendingRatio) && spendingRatio <= 0.8 ? 'check' : 'alert',
-      });
-    }
+    const dailyBurnRate = daysPassed > 0 ? monthExpenses / daysPassed : 0;
+    const projectedMonthlyExpenses = dailyBurnRate * totalDaysInMonth;
+    const projectedMonthEndBalance = monthIncome - projectedMonthlyExpenses;
+    const daysUntilEmpty = dailyBurnRate > 0 && balance > 0 ? balance / dailyBurnRate : null;
 
-    if (transactions.length === 0) {
-      return {
-        safeToSpend: 0,
-        balance: 0,
-        daysLeft,
-        trendPercent: 0,
-        trendState: 'flat',
-        topCategoryName: null,
-        spendingRatio: 0,
-        healthLevel: 'Healthy',
-        healthColor: theme.colors.warning,
-        trendText: 'Add transactions to generate spending trends',
-        insights: [
-          {
-            id: 'empty-1',
-            message: 'Add transactions to unlock smart financial insights',
-            tone: 'neutral',
-            icon: 'check',
-          },
-          {
-            id: 'empty-2',
-            message: 'Track expenses to calculate category and trend analysis',
-            tone: 'neutral',
-            icon: 'alert',
-          },
-        ],
-      };
-    }
+    const isEmpty = transactions.length === 0;
 
     return {
-      safeToSpend,
+      dailyBudgetRemaining,
+      remainingBudget,
       balance,
       daysLeft,
+      daysPassed,
+      totalDaysInMonth,
+      monthProgress,
+      monthIncome,
+      monthExpenses,
       trendPercent,
       trendState,
       topCategoryName,
       spendingRatio,
       healthLevel,
-      healthColor,
-      trendText,
-      insights: insights.slice(0, 2),
+      trendText: isEmpty ? 'Add transactions to generate spending trends' : trendText,
+      projectedMonthEndBalance,
+      dailyBurnRate,
+      daysUntilEmpty,
+      expectedSpendSoFar,
+      spendingPace,
+      isEmpty,
     };
-  }, [theme.colors.error, theme.colors.success, theme.colors.warning, transactions]);
+  }, [transactions]);
 
-  const safeToSpendLabel = React.useMemo(
-    () => formatCurrency(Math.max(0, analytics.safeToSpend)),
-    [analytics.safeToSpend, formatCurrency]
+  const dailyBudgetLabel = React.useMemo(
+    () => formatCurrency(Math.max(0, analytics.dailyBudgetRemaining)),
+    [analytics.dailyBudgetRemaining, formatCurrency]
   );
+
+  const monthProgressPercent = Math.min(100, Math.max(0, Math.round(analytics.monthProgress * 100)));
+
+  const healthColor = React.useMemo(() => {
+    if (analytics.healthLevel === 'Excellent') {
+      return theme.colors.success;
+    }
+
+    if (analytics.healthLevel === 'Healthy') {
+      return theme.colors.warning;
+    }
+
+    if (analytics.healthLevel === 'Risk') {
+      return '#FB923C';
+    }
+
+    return theme.colors.error;
+  }, [analytics.healthLevel, theme.colors.error, theme.colors.success, theme.colors.warning]);
 
   const trendColor =
     analytics.trendState === 'up'
@@ -256,6 +258,190 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
       <CheckCircle size={14} color={trendColor} />
     );
 
+  const spendingPaceSummary = React.useMemo(() => {
+    if (analytics.isEmpty) {
+      return {
+        message: 'Add income and expenses to track your spending pace',
+        tone: 'neutral' as InsightTone,
+        icon: 'check' as InsightIcon,
+      };
+    }
+
+    if (analytics.expectedSpendSoFar <= 0) {
+      if (analytics.monthExpenses > 0) {
+        return {
+          message: 'No income recorded yet, but expenses are rising this month',
+          tone: 'warning' as InsightTone,
+          icon: 'alert' as InsightIcon,
+        };
+      }
+
+      return {
+        message: 'Log income to compare your spending pace',
+        tone: 'neutral' as InsightTone,
+        icon: 'check' as InsightIcon,
+      };
+    }
+
+    const deviation = Math.round(Math.abs(analytics.spendingPace - 1) * 100);
+
+    if (analytics.spendingPace > 1.05) {
+      return {
+        message: `You are spending ${deviation}% faster than your income pace`,
+        tone: 'warning' as InsightTone,
+        icon: 'up' as InsightIcon,
+      };
+    }
+
+    if (analytics.spendingPace < 0.95) {
+      return {
+        message: `You are spending ${deviation}% slower than your income pace`,
+        tone: 'positive' as InsightTone,
+        icon: 'down' as InsightIcon,
+      };
+    }
+
+    return {
+      message: 'Spending pace is on track with your income',
+      tone: 'neutral' as InsightTone,
+      icon: 'check' as InsightIcon,
+    };
+  }, [analytics.expectedSpendSoFar, analytics.isEmpty, analytics.monthExpenses, analytics.spendingPace]);
+
+  const paceColor =
+    spendingPaceSummary.tone === 'positive'
+      ? '#86EFAC'
+      : spendingPaceSummary.tone === 'warning'
+        ? '#FCA5A5'
+        : 'rgba(255,255,255,0.82)';
+
+  const paceIcon =
+    spendingPaceSummary.icon === 'check' ? (
+      <CheckCircle size={14} color={paceColor} />
+    ) : spendingPaceSummary.icon === 'alert' ? (
+      <AlertTriangle size={14} color={paceColor} />
+    ) : spendingPaceSummary.icon === 'up' ? (
+      <TrendingUp size={14} color={paceColor} />
+    ) : (
+      <TrendingDown size={14} color={paceColor} />
+    );
+
+  const daysUntilEmptySummary = React.useMemo(() => {
+    if (analytics.isEmpty || analytics.daysUntilEmpty === null || !Number.isFinite(analytics.daysUntilEmpty)) {
+      return null;
+    }
+
+    const rounded = Math.max(0, Math.floor(analytics.daysUntilEmpty));
+
+    if (rounded <= 0) {
+      return {
+        message: 'Your balance may run out before the end of the month.',
+        tone: 'warning' as InsightTone,
+      };
+    }
+
+    if (rounded < analytics.daysLeft) {
+      return {
+        message: `Your balance may run out before the end of the month. At this pace it may last ${rounded} days.`,
+        tone: 'warning' as InsightTone,
+      };
+    }
+
+    return {
+      message: `At this pace your balance may last ${rounded} days`,
+      tone: 'neutral' as InsightTone,
+    };
+  }, [analytics.daysLeft, analytics.daysUntilEmpty, analytics.isEmpty]);
+
+  const insights = React.useMemo<InsightItem[]>(() => {
+    if (analytics.isEmpty) {
+      return [
+        {
+          id: 'empty-1',
+          message: 'Add transactions to unlock smart financial insights',
+          tone: 'neutral',
+          icon: 'check',
+        },
+        {
+          id: 'empty-2',
+          message: 'Track expenses to calculate category and trend analysis',
+          tone: 'neutral',
+          icon: 'alert',
+        },
+        {
+          id: 'empty-3',
+          message: 'Monthly projections appear once income and expenses are recorded',
+          tone: 'neutral',
+          icon: 'alert',
+        },
+      ];
+    }
+
+    const items: InsightItem[] = [];
+
+    items.push({
+      id: 'weekly-trend',
+      message: analytics.trendText,
+      tone: analytics.trendState === 'up' ? 'warning' : analytics.trendState === 'down' ? 'positive' : 'neutral',
+      icon: analytics.trendState === 'up' ? 'up' : analytics.trendState === 'down' ? 'down' : 'check',
+    });
+
+    if (analytics.topCategoryName) {
+      items.push({
+        id: 'top-category',
+        message: `${analytics.topCategoryName} is your largest expense this month`,
+        tone: 'neutral',
+        icon: 'alert',
+      });
+    } else {
+      let ratioMessage = 'You are spending 0% of your income';
+      let ratioTone: InsightTone = 'neutral';
+      let ratioIcon: InsightIcon = 'check';
+
+      if (analytics.monthIncome <= 0 && analytics.monthExpenses > 0) {
+        ratioMessage = 'No income this month while expenses are recorded';
+        ratioTone = 'warning';
+        ratioIcon = 'alert';
+      } else if (Number.isFinite(analytics.spendingRatio)) {
+        if (analytics.spendingRatio > 1) {
+          ratioMessage = `Your expenses exceed income by ${Math.round((analytics.spendingRatio - 1) * 100)}%`;
+          ratioTone = 'warning';
+          ratioIcon = 'alert';
+        } else {
+          ratioMessage = `You are spending ${Math.round(analytics.spendingRatio * 100)}% of your income`;
+          ratioTone = analytics.spendingRatio <= 0.8 ? 'positive' : analytics.spendingRatio <= 1 ? 'neutral' : 'warning';
+          ratioIcon = analytics.spendingRatio <= 0.8 ? 'check' : analytics.spendingRatio <= 1 ? 'check' : 'alert';
+        }
+      } else {
+        ratioMessage = 'No income this month while expenses are recorded';
+        ratioTone = 'warning';
+        ratioIcon = 'alert';
+      }
+
+      items.push({
+        id: 'ratio',
+        message: ratioMessage,
+        tone: ratioTone,
+        icon: ratioIcon,
+      });
+    }
+
+    const projectedAbs = Math.abs(analytics.projectedMonthEndBalance);
+    const projectionMessage =
+      analytics.projectedMonthEndBalance >= 0
+        ? `Projected month-end balance: +${formatCurrency(projectedAbs)}`
+        : `You may overspend by ${formatCurrency(projectedAbs)} this month`;
+
+    items.push({
+      id: 'projected-balance',
+      message: projectionMessage,
+      tone: analytics.projectedMonthEndBalance >= 0 ? 'positive' : 'warning',
+      icon: analytics.projectedMonthEndBalance >= 0 ? 'up' : 'down',
+    });
+
+    return items.slice(0, 3);
+  }, [analytics, formatCurrency]);
+
   const ratioPercent = Number.isFinite(analytics.spendingRatio)
     ? Math.min(100, Math.max(0, Math.round(analytics.spendingRatio * 100)))
     : 100;
@@ -268,8 +454,11 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
       style={styles.container}
     >
       <Text style={styles.title}>Smart Insights</Text>
-      <Text style={styles.subtitle}>Safe to Spend Today</Text>
-      <Text style={styles.safeAmount}>{safeToSpendLabel}</Text>
+      <Text style={styles.subtitle}>Daily Budget Remaining</Text>
+      <Text style={styles.safeAmount}>
+        {dailyBudgetLabel}
+        <Text style={styles.perDay}> /day</Text>
+      </Text>
 
       <View style={styles.metaRow}>
         <Text style={styles.metaText}>
@@ -281,6 +470,26 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
         </Text>
       </View>
 
+      <View style={styles.progressSection}>
+        <View style={styles.progressHeader}>
+          <Text style={styles.progressLabel}>Month Progress</Text>
+          <Text style={styles.progressValue}>{monthProgressPercent}%</Text>
+        </View>
+        <View style={styles.progressTrack}>
+          <View style={[styles.progressFill, { width: `${monthProgressPercent}%` }]} />
+        </View>
+        {daysUntilEmptySummary ? (
+          <Text
+            style={[
+              styles.progressHint,
+              daysUntilEmptySummary.tone === 'warning' ? styles.warningText : null,
+            ]}
+          >
+            {daysUntilEmptySummary.message}
+          </Text>
+        ) : null}
+      </View>
+
       <View style={styles.divider} />
 
       <View style={styles.trendRow}>
@@ -288,20 +497,25 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
         <Text style={[styles.trendText, { color: trendColor }]}>{analytics.trendText}</Text>
       </View>
 
+      <View style={styles.paceRow}>
+        {paceIcon}
+        <Text style={[styles.paceText, { color: paceColor }]}>{spendingPaceSummary.message}</Text>
+      </View>
+
       <View style={styles.healthSection}>
         <View style={styles.healthHeader}>
           <Text style={styles.healthLabel}>Financial Health</Text>
-          <View style={[styles.healthPill, { backgroundColor: `${analytics.healthColor}26` }]}>
-            <Text style={[styles.healthPillText, { color: analytics.healthColor }]}>{analytics.healthLevel}</Text>
+          <View style={[styles.healthPill, { backgroundColor: `${healthColor}26` }]}>
+            <Text style={[styles.healthPillText, { color: healthColor }]}>{analytics.healthLevel}</Text>
           </View>
         </View>
         <View style={styles.healthTrack}>
-          <View style={[styles.healthFill, { width: `${ratioPercent}%`, backgroundColor: analytics.healthColor }]} />
+          <View style={[styles.healthFill, { width: `${ratioPercent}%`, backgroundColor: healthColor }]} />
         </View>
       </View>
 
       <View style={styles.insightsWrap}>
-        {analytics.insights.map((insight) => {
+        {insights.map((insight) => {
           const insightColor =
             insight.tone === 'positive'
               ? '#86EFAC'
@@ -362,6 +576,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 6,
   },
+  perDay: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+    fontWeight: '600',
+  },
   metaRow: {
     marginTop: 6,
     flexDirection: 'row',
@@ -372,6 +591,48 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.72)',
     fontSize: 11,
     fontWeight: '500',
+  },
+  progressSection: {
+    marginTop: 10,
+  },
+  progressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  progressLabel: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  progressValue: {
+    color: 'rgba(255,255,255,0.86)',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.8)',
+  },
+  progressHint: {
+    marginTop: 6,
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 15,
+  },
+  warningText: {
+    color: '#FCA5A5',
   },
   divider: {
     marginTop: 14,
@@ -385,6 +646,18 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   trendText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
+  },
+  paceRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  paceText: {
     flex: 1,
     fontSize: 12,
     fontWeight: '600',

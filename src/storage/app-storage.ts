@@ -16,6 +16,9 @@ export interface AppSettings {
   language: string;
   darkMode: boolean;
   notifications: boolean;
+  quickAddNotificationEnabled?: boolean;
+  dailyReminderEnabled?: boolean;
+  dailyReminderTime?: string;
   biometricAuth: boolean;
   autoBackup: boolean;
   averageDebtInterestRate?: number;
@@ -525,3 +528,6 @@ export async function clearPersistedState(adapter: StorageAdapter = asyncStorage
 
 // Prepared adapter contract for future SQLite-backed repository.
 export const storageAdapter = asyncStorageAdapter;
+
+
+

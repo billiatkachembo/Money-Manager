@@ -4,6 +4,7 @@ import { Pencil, Trash2 } from 'lucide-react-native';
 import { Transaction } from '@/types/transaction';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { formatDateDDMMYYYY } from '@/utils/date';
 import * as Icons from 'lucide-react-native';
 
 interface TransactionItemProps {
@@ -24,17 +25,7 @@ export function TransactionItem({
   const { theme } = useTheme();
   const { formatCurrency } = useTransactionStore();
 
-  const formatDate = (date: Date) => {
-    const safeDate = date instanceof Date ? date : new Date(date);
-    if (Number.isNaN(safeDate.getTime())) {
-      return '';
-    }
-
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }).format(safeDate);
-  };
+  const formatDate = (date: Date) => formatDateDDMMYYYY(date);
 
   const IconMap = Icons as unknown as Record<string, React.ComponentType<any>>;
   const IconComponent = IconMap[transaction.category.icon] || Icons.Circle;

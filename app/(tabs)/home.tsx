@@ -31,6 +31,7 @@ import { AddTransactionModal } from '@/components/AddTransactionModal';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
 import { SmartInsightsCard } from '@/components/dashboard/SmartInsightsCard';
 import { useTransactionStore } from '@/store/transaction-store';
+import { useQuickActionsStore } from '@/store/quick-actions-store';
 import { useTheme } from '@/store/theme-store';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
@@ -231,6 +232,7 @@ export default function HomeScreen() {
     triggerReconciliation,
     deleteTransaction,
   } = useTransactionStore();
+  const { openAddTransactionAt, consumeQuickAdd } = useQuickActionsStore();
 
   const currentMonth = useMemo(() => new Date().toISOString().slice(0, 7), []);
   const monthlyIncome = getTotalIncome(currentMonth);
@@ -418,6 +420,16 @@ export default function HomeScreen() {
     const timer = setTimeout(() => setShowSkeleton(true), 300);
     return () => clearTimeout(timer);
   }, [isLoaded]);
+
+  useEffect(() => {
+    if (!openAddTransactionAt) {
+      return;
+    }
+
+    setPreferredType(null);
+    setShowAddModal(true);
+    consumeQuickAdd();
+  }, [consumeQuickAdd, openAddTransactionAt]);
 
   if (!isLoaded && !showSkeleton) {
     return (
@@ -1225,6 +1237,10 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 });
+
+
+
+
 
 
 

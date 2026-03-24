@@ -18,8 +18,10 @@ import {
   TransactionCategory,
   UserProfile,
 } from '@/types/transaction';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, resolveCanonicalCategory } from '@/constants/categories';
+import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, findMatchingCategory, mergeCategories, resolveCanonicalCategory } from '@/constants/categories';
 import { findCurrencyOption } from '@/constants/currencies';
+import { resolveLanguageLocale } from '@/constants/languages';
+import { parseDateValue } from '@/utils/date';
 import {
   AppSettings,
   PersistedState,
@@ -86,6 +88,10 @@ interface HomeSnapshot {
   recentTransactions: Transaction[];
 }
 
+type NewAccountInput = Omit<Account, 'id' | 'createdAt'> & {
+  initialBalanceDate?: Date;
+};
+
 const TRANSFER_CATEGORY: TransactionCategory = {
   id: 'transfer',
   name: 'Transfer',
@@ -109,14 +115,22 @@ const FALLBACK_DEBT_CATEGORY =
 
 function resolveTransactionCategory(
   transactionData: Omit<Transaction, 'id' | 'createdAt'>,
-  merchantProfiles: MerchantProfile[]
+  merchantProfiles: MerchantProfile[],
+  availableCategories: ReadonlyArray<TransactionCategory> = []
 ): TransactionCategory | null {
   if (transactionData.type === 'transfer') {
     return TRANSFER_CATEGORY;
   }
 
+  const matchingCategory = findMatchingCategory(availableCategories, transactionData.category);
+
   if (transactionData.type === 'debt') {
-    return resolveCanonicalCategory(transactionData.category) ?? transactionData.category ?? FALLBACK_DEBT_CATEGORY;
+    return (
+      resolveCanonicalCategory(transactionData.category) ??
+      matchingCategory ??
+      transactionData.category ??
+      FALLBACK_DEBT_CATEGORY
+    );
   }
 
   const canonical = resolveCanonicalCategory(transactionData.category);
@@ -124,11 +138,20 @@ function resolveTransactionCategory(
     return canonical;
   }
 
+  if (matchingCategory) {
+    return matchingCategory;
+  }
+
+  if (transactionData.category?.id && transactionData.category.name) {
+    return transactionData.category;
+  }
+
   const autoCategory = autoCategorizeTransaction({
     description: transactionData.description,
     merchant: transactionData.merchant,
     type: transactionData.type,
     merchantProfiles,
+    availableCategories,
   });
   if (autoCategory) {
     return autoCategory;
@@ -175,10 +198,10 @@ const AUTO_BACKUP_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const AUTO_BACKUP_DEBOUNCE_MS = 45 * 1000;
 
 const GOOGLE_CLIENT_IDS = {
-  expo: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-  ios: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-  android: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-  web: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
+  expo: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID?.trim() || null,
+  ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID?.trim() || null,
+  android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim() || null,
+  web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() || null,
 };
 
 function resolveGoogleClientId(): string | null {
@@ -216,16 +239,7 @@ function monthKey(date: Date): string {
 }
 
 function parseDate(value: Date | string | undefined): Date {
-  if (!value) {
-    return new Date();
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return new Date();
-  }
-
-  return parsed;
+  return parseDateValue(value) ?? new Date();
 }
 
 function generateId(): string {
@@ -282,16 +296,7 @@ function computeActiveAccountNetBalance(accounts: Account[]): number {
 }
 
 function parseOptionalDate(value: Date | string | undefined): Date | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return undefined;
-  }
-
-  return parsed;
+  return parseDateValue(value);
 }
 
 function sortNotesByUpdatedAtDesc(noteList: Note[]): Note[] {
@@ -464,6 +469,8 @@ function buildDefaults(): PersistedState {
     userProfile: DEFAULT_USER_PROFILE,
     recurringRules: [],
     merchantProfiles: [],
+    customExpenseCategories: [],
+    customIncomeCategories: [],
   };
 }
 
@@ -478,6 +485,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [recurringRules, setRecurringRules] = useState<RecurringRule[]>([]);
   const [merchantProfiles, setMerchantProfiles] = useState<MerchantProfile[]>([]);
+  const [customExpenseCategories, setCustomExpenseCategories] = useState<TransactionCategory[]>([]);
+  const [customIncomeCategories, setCustomIncomeCategories] = useState<TransactionCategory[]>([]);
   const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
   const autoBackupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -489,28 +498,30 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [ledgerTransactions]
   );
 
-  const budgetCategories = useMemo(() => {
+  const expenseCategories = useMemo(() => {
     const categoriesFromTransactions = visibleTransactions
-      .filter((transaction) => transaction.type === 'expense')
-      .map((transaction) => transaction.category)
-      .filter((category): category is TransactionCategory => !!category?.id);
+      .filter((transaction) => transaction.type === 'expense' || transaction.type === 'debt')
+      .map((transaction) => transaction.category);
 
-    const categoriesFromBudgets = budgets
-      .map((budget) => budget.category)
-      .filter((category): category is TransactionCategory => !!category?.id);
+    const categoriesFromBudgets = budgets.map((budget) => budget.category);
 
-    const map = new Map<string, TransactionCategory>();
-
-    [...EXPENSE_CATEGORIES, ...categoriesFromTransactions, ...categoriesFromBudgets].forEach(
-      (category) => {
-        if (!map.has(category.id)) {
-          map.set(category.id, category);
-        }
-      }
+    return mergeCategories(
+      EXPENSE_CATEGORIES,
+      customExpenseCategories,
+      categoriesFromTransactions,
+      categoriesFromBudgets
     );
+  }, [budgets, customExpenseCategories, visibleTransactions]);
 
-    return Array.from(map.values());
-  }, [budgets, visibleTransactions]);
+  const incomeCategories = useMemo(() => {
+    const categoriesFromTransactions = visibleTransactions
+      .filter((transaction) => transaction.type === 'income')
+      .map((transaction) => transaction.category);
+
+    return mergeCategories(INCOME_CATEGORIES, customIncomeCategories, categoriesFromTransactions);
+  }, [customIncomeCategories, visibleTransactions]);
+
+  const budgetCategories = useMemo(() => expenseCategories, [expenseCategories]);
 
   const lifetimeNetCashFlow = useMemo(
     () => computeNetBalance(ledgerTransactions),
@@ -628,7 +639,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       const currencyOption = findCurrencyOption(currencyCode ?? settings.currency);
       const symbol = currencyOption.symbol;
-      const locale = settings.language === 'en' ? 'en-US' : settings.language;
+      const locale = resolveLanguageLocale(settings.language);
 
       try {
         const numberPart = new Intl.NumberFormat(locale, {
@@ -879,6 +890,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         setUserProfile(nextUserProfile);
         setSettings(nextSettings);
         setRecurringRules(updatedRules);
+        setMerchantProfiles(loaded.merchantProfiles);
+        setCustomExpenseCategories(loaded.customExpenseCategories);
+        setCustomIncomeCategories(loaded.customIncomeCategories);
         setLedgerIssues(integrity.issues);
         setIsHydrated(true);
 
@@ -921,7 +935,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       const fromAccountId = transactionData.fromAccountId ?? transactionData.fromAccount;
       const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
       const date = parseDate(transactionData.date);
-      const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles);
+      const availableCategories = transactionData.type === 'income' ? incomeCategories : expenseCategories;
+      const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles, availableCategories);
 
       let nextTransactions = [...ledgerTransactions];
       let primary: Transaction | null = null;
@@ -998,7 +1013,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         pushBudgetAlerts(primary, nextTransactions);
       }
     },
-    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const updateTransaction = useCallback(
@@ -1092,7 +1107,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       applyLedgerState(nextTransactions, accounts, recurringRules);
       pushBudgetAlerts(normalizedUpdated, nextTransactions);
     },
-    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const deleteTransaction = useCallback(
@@ -1304,10 +1319,40 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [merchantProfiles, persistPatch]
   );
 
+  const saveCustomCategory = useCallback(
+    (category: TransactionCategory, type: 'income' | 'expense' | 'debt') => {
+      const isIncomeCategory = type === 'income';
+      const availableCategories = isIncomeCategory ? incomeCategories : expenseCategories;
+      const existingCategory = findMatchingCategory(availableCategories, category);
+      if (existingCategory) {
+        return existingCategory;
+      }
+
+      const currentCustomCategories = isIncomeCategory ? customIncomeCategories : customExpenseCategories;
+      const nextCustomCategories = mergeCategories(currentCustomCategories, [category]);
+      const savedCategory = findMatchingCategory(nextCustomCategories, category) ?? category;
+
+      if (nextCustomCategories.length === currentCustomCategories.length) {
+        return savedCategory;
+      }
+
+      if (isIncomeCategory) {
+        setCustomIncomeCategories(nextCustomCategories);
+        void persistPatch({ customIncomeCategories: nextCustomCategories });
+      } else {
+        setCustomExpenseCategories(nextCustomCategories);
+        void persistPatch({ customExpenseCategories: nextCustomCategories });
+      }
+
+      return savedCategory;
+    },
+    [customExpenseCategories, customIncomeCategories, expenseCategories, incomeCategories, persistPatch]
+  );
+
   const addAccountsBatch = useCallback(
-    (accountDataList: Array<Omit<Account, 'id' | 'createdAt'>>) => {
+    (accountDataList: NewAccountInput[]) => {
       if (accountDataList.length === 0) {
-        return;
+        return [] as Account[];
       }
 
       const nextAccounts: Account[] = [];
@@ -1315,16 +1360,20 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       for (const accountData of accountDataList) {
         const id = generateId();
-        const createdAt = new Date();
-        const openingBalanceRaw = Number(accountData.balance ?? 0);
+        const { initialBalanceDate, ...nextAccountData } = accountData;
+        const openingDate = parseDateValue(initialBalanceDate) ?? new Date();
+        const createdAt = openingDate;
+        const openingBalanceRaw = Number(nextAccountData.balance ?? 0);
         const openingBalance = Number.isFinite(openingBalanceRaw) ? openingBalanceRaw : 0;
 
-        nextAccounts.push({
-          ...accountData,
+        const createdAccount: Account = {
+          ...nextAccountData,
           id,
           balance: 0,
           createdAt,
-        });
+        };
+
+        nextAccounts.push(createdAccount);
 
         if (openingBalance === 0) {
           continue;
@@ -1336,8 +1385,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           description: 'Opening balance',
           category: OPENING_BALANCE_CATEGORY,
           type: openingBalance >= 0 ? 'income' : 'expense',
-          date: createdAt,
-          createdAt,
+          date: openingDate,
+          createdAt: openingDate,
           fromAccount: openingBalance < 0 ? id : undefined,
           toAccount: openingBalance >= 0 ? id : undefined,
           fromAccountId: openingBalance < 0 ? id : undefined,
@@ -1351,13 +1400,15 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         [...nextAccounts, ...accounts],
         recurringRules
       );
+
+      return nextAccounts;
     },
     [accounts, applyLedgerState, ledgerTransactions, recurringRules]
   );
 
   const addAccount = useCallback(
-    (accountData: Omit<Account, 'id' | 'createdAt'>) => {
-      addAccountsBatch([accountData]);
+    (accountData: NewAccountInput) => {
+      return addAccountsBatch([accountData])[0] ?? null;
     },
     [addAccountsBatch]
   );
@@ -1463,7 +1514,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
         const recurringEndDate = parseOptionalDate(transactionData.recurringEndDate);
         const updatedAt = parseOptionalDate(transactionData.updatedAt) ?? date;
-        const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles);
+        const availableCategories = transactionData.type === 'income' ? incomeCategories : expenseCategories;
+        const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles, availableCategories);
 
         if (!Number.isFinite(amount) || amount <= 0) {
           skippedCount += 1;
@@ -1558,7 +1610,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       return { importedCount, skippedCount };
     },
-    [accounts, applyLedgerState, ledgerTransactions, merchantProfiles, recurringRules, visibleTransactions]
+    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, recurringRules, visibleTransactions]
   );
 
   const restoreBackupSnapshot = useCallback(
@@ -1587,6 +1639,16 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       const nextMerchantProfiles = (
         Array.isArray(snapshot.merchantProfiles) ? snapshot.merchantProfiles : defaults.merchantProfiles
       ).map(normalizeMerchantProfile);
+      const nextCustomExpenseCategories = mergeCategories(
+        Array.isArray(snapshot.customExpenseCategories)
+          ? snapshot.customExpenseCategories
+          : defaults.customExpenseCategories
+      );
+      const nextCustomIncomeCategories = mergeCategories(
+        Array.isArray(snapshot.customIncomeCategories)
+          ? snapshot.customIncomeCategories
+          : defaults.customIncomeCategories
+      );
       const integrity = validateLedgerIntegrity(nextTransactions);
 
       setLedgerTransactions(nextTransactions);
@@ -1598,6 +1660,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setUserProfile(nextUserProfile);
       setSettings(nextSettings);
       setMerchantProfiles(nextMerchantProfiles);
+      setCustomExpenseCategories(nextCustomExpenseCategories);
+      setCustomIncomeCategories(nextCustomIncomeCategories);
       setRecurringRules(nextRecurringRules);
       setLedgerIssues(integrity.issues);
       setIsHydrated(true);
@@ -1613,6 +1677,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         userProfile: nextUserProfile,
         recurringRules: nextRecurringRules,
         merchantProfiles: nextMerchantProfiles,
+        customExpenseCategories: nextCustomExpenseCategories,
+        customIncomeCategories: nextCustomIncomeCategories,
       });
     },
     []
@@ -1640,6 +1706,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       userProfile,
       recurringRules,
       merchantProfiles,
+      customExpenseCategories,
+      customIncomeCategories,
       exportDate: exportedAt.toISOString(),
       totalTransactions: ledgerTransactions.length,
       appVersion: '2.0.0',
@@ -1651,6 +1719,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       budgets,
       financialGoals,
       ledgerTransactions,
+      customExpenseCategories,
+      customIncomeCategories,
       merchantProfiles,
       notes,
       recurringRules,
@@ -1720,11 +1790,15 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       budgets.length === 0 &&
       budgetAlerts.length === 0 &&
       financialGoals.length === 0 &&
-      recurringRules.length === 0,
+      recurringRules.length === 0 &&
+      customExpenseCategories.length === 0 &&
+      customIncomeCategories.length === 0,
     [
       accounts.length,
       budgetAlerts.length,
       budgets.length,
+      customExpenseCategories.length,
+      customIncomeCategories.length,
       financialGoals.length,
       ledgerTransactions.length,
       notes.length,
@@ -1861,6 +1935,8 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setSettings(defaults.settings);
       setRecurringRules(defaults.recurringRules);
       setMerchantProfiles(defaults.merchantProfiles);
+      setCustomExpenseCategories(defaults.customExpenseCategories);
+      setCustomIncomeCategories(defaults.customIncomeCategories);
       setLedgerIssues([]);
       setIsHydrated(true);
     } catch (error) {
@@ -2010,6 +2086,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     settings,
     merchantProfiles,
     budgets,
+    expenseCategories,
+    incomeCategories,
+    saveCustomCategory,
     budgetAlerts,
     financialGoals,
     userProfile,

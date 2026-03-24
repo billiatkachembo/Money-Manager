@@ -40,12 +40,18 @@ export async function loadDriveAuth(): Promise<DriveAuthState | null> {
 
 export async function saveDriveAuth(state: DriveAuthState, expiresIn?: number): Promise<void> {
   await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, state.accessToken);
+
   if (state.refreshToken) {
     await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, state.refreshToken);
+  } else {
+    await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
   }
-  if (expiresIn) {
+
+  if (typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0) {
     const expiresAt = Date.now() + expiresIn * 1000;
     await SecureStore.setItemAsync(EXPIRES_AT_KEY, String(expiresAt));
+  } else {
+    await SecureStore.deleteItemAsync(EXPIRES_AT_KEY);
   }
 }
 
@@ -81,9 +87,9 @@ export async function refreshAccessToken(refreshToken: string, clientId: string)
     body: body.toString(),
   });
 
-  const payload = await response.json();
+  const payload = (await response.json()) as Record<string, unknown>;
   if (!response.ok) {
-    const message = payload?.error_description ?? payload?.error ?? 'Unable to refresh Google session.';
+    const message = (payload?.error_description as string | undefined) ?? (payload?.error as string | undefined) ?? 'Unable to refresh Google session.';
     throw new Error(message);
   }
 
@@ -107,10 +113,11 @@ async function driveFetch<T>(url: string, accessToken: string, init?: RequestIni
   const data = isJson ? await response.json() : await response.text();
 
   if (!response.ok) {
+    const errorData = data as Record<string, unknown>;
     const message = typeof data === 'string'
       ? data
-      : data?.error?.message ?? 'Google Drive request failed.';
-    throw new Error(message);
+      : (errorData?.error as Record<string, unknown>)?.message ?? 'Google Drive request failed.';
+    throw new Error(String(message));
   }
 
   return data as T;

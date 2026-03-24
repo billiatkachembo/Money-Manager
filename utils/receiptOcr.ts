@@ -1,8 +1,28 @@
-import TextRecognition from '@react-native-ml-kit/text-recognition';
 import { MerchantProfile, Transaction, TransactionCategory } from '@/types/transaction';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { aiAnalyzeReceipt, resolveAiCategory } from '@/utils/ai/receipt-ai';
+type TextRecognitionModule = {
+  recognize: (imageUri: string) => Promise<{ text?: string | null }>;
+};
+
+async function recognizeReceiptText(imageUri: string): Promise<string> {
+  try {
+    const module = await import('@react-native-ml-kit/text-recognition');
+    const textRecognition = (module as unknown as { default?: TextRecognitionModule }).default;
+
+    if (!textRecognition?.recognize) {
+      throw new Error('Text recognition module unavailable');
+    }
+
+    const result = await textRecognition.recognize(imageUri);
+    return result?.text?.trim() ?? '';
+  } catch {
+    throw new Error(
+      'Receipt OCR requires a development build. Expo Go can open the app, but receipt scanning is unavailable there.'
+    );
+  }
+}
 
 export interface ReceiptData {
   amount?: number;
@@ -99,8 +119,7 @@ export async function runReceiptOcr(
   imageUri: string,
   options?: { merchants?: MerchantProfile[] }
 ): Promise<{ rawText: string; data: ReceiptData; draft: Partial<Transaction>; ai: ReceiptAiDraft }> {
-  const result = await TextRecognition.recognize(imageUri);
-  const rawText = result?.text?.trim() ?? '';
+  const rawText = await recognizeReceiptText(imageUri);
 
   const amount = extractAmount(rawText);
   const date = normalizeReceiptDate(extractDate(rawText));

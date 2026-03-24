@@ -29,7 +29,7 @@ import {
   ChevronRight,
 } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
-import { formatDateDDMMYYYY } from '@/utils/date';
+import { formatDateDDMMYYYY, formatDateWithWeekday, parseDateInput } from '@/utils/date';
 import { useTransactionStore } from '@/store/transaction-store';
 import { EXPENSE_CATEGORIES } from '@/constants/categories';
 import { TransactionCategory } from '@/types/transaction';
@@ -84,22 +84,8 @@ function parsePositiveNumber(value: string): number | null {
 }
 
 function parseIsoDateInput(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const year = Number(match[1]);
-  const monthIndex = Number(match[2]) - 1;
-  const day = Number(match[3]);
-  const parsed = new Date(year, monthIndex, day);
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== monthIndex ||
-    parsed.getDate() !== day
-  ) {
+  const parsed = parseDateInput(value);
+  if (!parsed) {
     return null;
   }
 
@@ -172,7 +158,7 @@ export default function PlanningScreen() {
     categoryId: '',
     amount: '',
     period: 'monthly' as const,
-    startDate: new Date().toISOString().slice(0, 10),
+    startDate: formatDateDDMMYYYY(new Date()),
   });
 
   const budgetCategories = useMemo(() => {
@@ -204,7 +190,7 @@ export default function PlanningScreen() {
         setNewBudget((current) => ({
           ...current,
           categoryId: current.categoryId || budgetCategories[0]?.id || '',
-          startDate: current.startDate || new Date().toISOString().slice(0, 10),
+          startDate: current.startDate || formatDateDDMMYYYY(new Date()),
         }));
       }
 
@@ -226,7 +212,7 @@ export default function PlanningScreen() {
 
     const startDate = parseIsoDateInput(newBudget.startDate.trim());
     if (!startDate) {
-      Alert.alert('Error', 'Please enter a valid date in DD-MM-YYYY format');
+      Alert.alert('Error', 'Please enter a valid date in DD/MM/YYYY format');
       return;
     }
 
@@ -251,7 +237,7 @@ export default function PlanningScreen() {
         categoryId: budgetCategories[0]?.id || '',
         amount: '',
         period: 'monthly',
-        startDate: new Date().toISOString().slice(0, 10),
+        startDate: formatDateDDMMYYYY(new Date()),
       });
       setShowAddBudget(false);
       Alert.alert('Success', 'Budget created successfully');
@@ -290,8 +276,8 @@ export default function PlanningScreen() {
       return;
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
-      Alert.alert('Error', 'Enter the target date as DD-MM-YYYY');
+    if (!/^(?:\d{2}[/-]\d{2}[/-]\d{4}|\d{4}[/-]\d{2}[/-]\d{2})$/.test(trimmedDate)) {
+      Alert.alert('Error', 'Enter the target date as DD/MM/YYYY');
       return;
     }
 
@@ -453,7 +439,7 @@ export default function PlanningScreen() {
       totalYears: (scenarioWithExtra.totalMonths / 12).toFixed(1),
       totalInterest: formatCurrency(scenarioWithExtra.totalInterest),
       totalPaid: formatCurrency(principal + scenarioWithExtra.totalInterest),
-      payoffDate: formatDateDDMMYYYY(
+      payoffDate: formatDateWithWeekday(
         new Date(new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths))
       ),
     };
@@ -661,7 +647,7 @@ export default function PlanningScreen() {
           />
           <TextInput
             style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
-            placeholder="Target date (DD-MM-YYYY)"
+            placeholder="Target date (DD/MM/YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newGoal.targetDate}
             onChangeText={(text) => setNewGoal({ ...newGoal, targetDate: text })}
@@ -752,7 +738,7 @@ export default function PlanningScreen() {
                   </Text>
                 </View>
                 <Text style={[styles.targetDate, { color: theme.colors.textSecondary }]}>
-                  Target: {formatDateDDMMYYYY(goal.targetDate)}
+                  Target: {formatDateWithWeekday(goal.targetDate)}
                 </Text>
               </View>
             </View>
@@ -840,7 +826,7 @@ export default function PlanningScreen() {
 
           <TextInput
             style={[styles.input, { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text }]}
-            placeholder="Start date (DD-MM-YYYY)"
+            placeholder="Start date (DD/MM/YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newBudget.startDate}
             onChangeText={(text) => setNewBudget((current) => ({ ...current, startDate: text }))}
@@ -1192,13 +1178,13 @@ const styles = StyleSheet.create({
   periodButton: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: 8,
+    paddingVertical: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   periodButtonText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
   },
   input: {
@@ -1211,28 +1197,28 @@ const styles = StyleSheet.create({
   },
   buttonRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
   },
   saveButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
     alignItems: 'center',
   },
   saveButtonText: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   cancelButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
     alignItems: 'center',
     borderWidth: 1,
   },
   cancelButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '500',
   },
   emptyState: {
@@ -1292,9 +1278,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   actionButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1485,15 +1471,15 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   calculateButton: {
-    paddingVertical: 16,
-    borderRadius: 12,
+    paddingVertical: 13,
+    borderRadius: 10,
     alignItems: 'center',
     marginTop: 24,
     marginBottom: 32,
   },
   calculateButtonText: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   resultContainer: {

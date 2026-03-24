@@ -407,11 +407,7 @@ export default function TransactionsScreen() {
           />
         </View>
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterContainer}
-        >
+        <View style={styles.filterContainer}>
           {FILTER_OPTIONS.map((option) => {
             const isActive = filter === option.key;
             return (
@@ -423,19 +419,22 @@ export default function TransactionsScreen() {
                   {
                     backgroundColor: isActive ? theme.colors.primary : theme.colors.background,
                     borderColor: isActive ? theme.colors.primary : theme.colors.border,
-                    paddingHorizontal: 20,
-                    paddingVertical: 10,
                   },
                 ]}
                 onPress={() => setFilter(option.key)}
               >
-                <Text style={[styles.filterText, { color: isActive ? 'white' : theme.colors.textSecondary }]}>
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.8}
+                  style={[styles.filterText, { color: isActive ? 'white' : theme.colors.textSecondary }]}
+                >
                   {option.label}
                 </Text>
               </TouchableOpacity>
             );
           })}
-        </ScrollView>
+        </View>
 
         <View style={styles.summaryContainer}>
           <View
@@ -558,20 +557,25 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   filterContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 16,
     marginBottom: 16,
-    gap: 8,
-    alignItems: 'center',
+    gap: 6,
   },
   filterButton: {
+    flex: 1,
+    minWidth: 0,
     borderRadius: 999,
     borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingVertical: 8,
   },
   filterText: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '700',
   },
   summaryContainer: {
     flexDirection: 'row',

@@ -100,8 +100,8 @@ export function ImportModal({ visible, onClose }: ImportModalProps) {
 
             <Text style={[styles.importHelpText, { color: theme.colors.textSecondary }]}>
               {importFormat === 'json'
-                ? 'Paste backup JSON payload to replace app data.'
-                : 'Paste CSV with headers: date, type, amount, description, category...'}
+                ? 'Paste backup JSON payload to replace app data. Backup dates can be ISO or DD/MM/YYYY.'
+                : 'Paste CSV with headers. Date fields accept DD/MM/YYYY, DD/MM/YYYY HH:mm, or ISO timestamps.'}
             </Text>
 
             <TextInput
@@ -139,10 +139,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cancelButton: {
-    fontSize: 16,
+    fontSize: 14,
   },
   saveButton: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   modalContent: {
@@ -164,13 +164,13 @@ const styles = StyleSheet.create({
   },
   importFormatButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: 'center',
   },
   importFormatButtonText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   importHelpText: {

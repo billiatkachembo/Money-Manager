@@ -11,6 +11,7 @@ import {
 import { Plus } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { formatDateDDMMYYYY, parseDateInput } from '@/utils/date';
 
 interface BudgetFormState {
   categoryId: string;
@@ -28,22 +29,8 @@ function parsePositiveNumber(value: string): number | null {
 }
 
 function parseIsoDateInput(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const year = Number(match[1]);
-  const monthIndex = Number(match[2]) - 1;
-  const day = Number(match[3]);
-  const parsed = new Date(year, monthIndex, day);
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== monthIndex ||
-    parsed.getDate() !== day
-  ) {
+  const parsed = parseDateInput(value);
+  if (!parsed) {
     return null;
   }
 
@@ -68,14 +55,14 @@ export function BudgetsSection() {
     categoryId: '',
     amount: '',
     period: 'monthly',
-    startDate: new Date().toISOString().slice(0, 10),
+    startDate: formatDateDDMMYYYY(new Date()),
   });
 
   const ensureDefaults = () => {
     setNewBudget((current) => ({
       ...current,
       categoryId: current.categoryId || budgetCategories[0]?.id || '',
-      startDate: current.startDate || new Date().toISOString().slice(0, 10),
+      startDate: current.startDate || formatDateDDMMYYYY(new Date()),
     }));
   };
 
@@ -103,7 +90,7 @@ export function BudgetsSection() {
 
     const startDate = parseIsoDateInput(newBudget.startDate.trim());
     if (!startDate) {
-      Alert.alert('Error', 'Please enter a valid date in DD-MM-YYYY format');
+      Alert.alert('Error', 'Please enter a valid date in DD/MM/YYYY format');
       return;
     }
 
@@ -128,7 +115,7 @@ export function BudgetsSection() {
         categoryId: budgetCategories[0]?.id || '',
         amount: '',
         period: 'monthly',
-        startDate: new Date().toISOString().slice(0, 10),
+        startDate: formatDateDDMMYYYY(new Date()),
       });
       setShowAddBudget(false);
       Alert.alert('Success', 'Budget created successfully');
@@ -233,7 +220,7 @@ export function BudgetsSection() {
               styles.input,
               { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text },
             ]}
-            placeholder="Start date (DD-MM-YYYY)"
+            placeholder="Start date (DD/MM/YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={newBudget.startDate}
             onChangeText={(text) => setNewBudget((current) => ({ ...current, startDate: text }))}

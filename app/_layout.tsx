@@ -1,14 +1,17 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack, useRouter, useSegments } from "expo-router";
-import * as SplashScreen from "expo-splash-screen";
-import * as Notifications from "expo-notifications";
-import React, { useCallback, useEffect, useRef } from "react";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { StyleSheet } from "react-native";
-import { StatusBar } from "expo-status-bar";
-import { TransactionProvider, useTransactionStore } from "@/store/transaction-store";
-import { ThemeProvider, useTheme } from "@/store/theme-store";
-import { useQuickActionsStore } from "@/store/quick-actions-store";
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import * as Notifications from 'expo-notifications';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import { FileText, Plus } from 'lucide-react-native';
+import { TransactionProvider, useTransactionStore } from '@/store/transaction-store';
+import { ThemeProvider, useTheme } from '@/store/theme-store';
+import { useQuickActionsStore } from '@/store/quick-actions-store';
+import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import {
   disableDailyReminderAsync,
   disableQuickAddNotificationAsync,
@@ -17,19 +20,44 @@ import {
   QUICK_ADD_ACTION_ID,
   QUICK_ADD_NOTIFICATION_SOURCE,
   QUICK_SEARCH_ACTION_ID,
-} from "@/src/notifications/quick-add-notification";
-import { trpc, trpcClient } from "@/lib/trpc";
+} from '@/src/notifications/quick-add-notification';
+import { trpc, trpcClient } from '@/lib/trpc';
+import { AppTooltipHost } from '@/components/ui/AppTooltipHost';
+import { installAlertTooltipBridge } from '@/src/ui/alert-tooltip-bridge';
 
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
 
 function QuickAddNotificationManager() {
-  const router = useRouter();
-  const segments = useSegments();
   const lastHandledId = useRef<string | null>(null);
+  const [showQuickCreate, setShowQuickCreate] = useState(false);
+  const { theme } = useTheme();
   const { settings, isHydrated } = useTransactionStore();
   const { triggerQuickAdd, triggerSearch } = useQuickActionsStore();
+  const setActiveTab = useTabNavigationStore((state) => state.setActiveTab);
+  const openNotesComposer = useTabNavigationStore((state) => state.openNotesComposer);
+
+  const clearLastResponse = useCallback(() => {
+    Notifications.clearLastNotificationResponseAsync().catch(() => {});
+  }, []);
+
+  const closeQuickCreate = useCallback(() => {
+    setShowQuickCreate(false);
+  }, []);
+
+  const handleOpenTransaction = useCallback(() => {
+    setShowQuickCreate(false);
+    setActiveTab('home');
+    triggerQuickAdd();
+    clearLastResponse();
+  }, [clearLastResponse, setActiveTab, triggerQuickAdd]);
+
+  const handleOpenNote = useCallback(() => {
+    setShowQuickCreate(false);
+    openNotesComposer();
+    clearLastResponse();
+  }, [clearLastResponse, openNotesComposer]);
 
   const handleResponse = useCallback((response: Notifications.NotificationResponse) => {
     const data = response.notification.request.content.data as { source?: string } | undefined;
@@ -38,34 +66,33 @@ function QuickAddNotificationManager() {
     }
 
     const actionId = response.actionIdentifier;
-    const shouldSearch = actionId === QUICK_SEARCH_ACTION_ID;
-    const shouldQuickAdd =
-      actionId === QUICK_ADD_ACTION_ID || actionId === Notifications.DEFAULT_ACTION_IDENTIFIER;
-
-    if (!shouldSearch && !shouldQuickAdd) {
-      return;
-    }
-
     const requestId = response.notification.request.identifier;
-    if (lastHandledId.current === requestId && actionId === Notifications.DEFAULT_ACTION_IDENTIFIER) {
+    const responseKey = `${requestId}:${actionId}`;
+    if (lastHandledId.current === responseKey) {
       return;
     }
-    lastHandledId.current = requestId;
+    lastHandledId.current = responseKey;
 
-    if (shouldSearch) {
+    if (actionId === QUICK_SEARCH_ACTION_ID) {
+      setShowQuickCreate(false);
+      setActiveTab('transactions');
       triggerSearch();
-      if (segments[0] !== '(tabs)' || segments[1] !== 'transactions') {
-        router.replace('/(tabs)/transactions');
-      }
-    } else {
-      triggerQuickAdd();
-      if (segments[0] !== '(tabs)' || segments[1] !== 'home') {
-        router.replace('/(tabs)/home');
-      }
+      clearLastResponse();
+      return;
     }
 
-    Notifications.clearLastNotificationResponseAsync().catch(() => {});
-  }, [router, segments, triggerQuickAdd, triggerSearch]);
+    if (actionId === QUICK_ADD_ACTION_ID) {
+      setShowQuickCreate(true);
+      clearLastResponse();
+      return;
+    }
+
+    if (actionId === Notifications.DEFAULT_ACTION_IDENTIFIER) {
+      setShowQuickCreate(false);
+      setActiveTab('home');
+      clearLastResponse();
+    }
+  }, [clearLastResponse, setActiveTab, triggerSearch]);
 
   useEffect(() => {
     if (!isHydrated) {
@@ -77,8 +104,10 @@ function QuickAddNotificationManager() {
       return;
     }
 
+    setShowQuickCreate(false);
     void disableQuickAddNotificationAsync();
   }, [isHydrated, settings.quickAddNotificationEnabled]);
+
   useEffect(() => {
     if (!isHydrated) {
       return;
@@ -105,19 +134,72 @@ function QuickAddNotificationManager() {
     }
   }, [handleResponse, lastResponse]);
 
-  return null;
+  return (
+    <>
+      <Modal transparent visible={showQuickCreate} animationType="fade" onRequestClose={closeQuickCreate}>
+        <Pressable style={styles.quickCreateBackdrop} onPress={closeQuickCreate}>
+          <Pressable
+            onPress={() => {}}
+            style={[
+              styles.quickCreateSheet,
+              {
+                backgroundColor: theme.colors.surface,
+                borderColor: theme.colors.border,
+                shadowColor: theme.isDark ? '#000000' : '#0f172a',
+              },
+            ]}
+          >
+            <Text style={[styles.quickCreateEyebrow, { color: theme.colors.primary }]}>Quick Add</Text>
+            <Text style={[styles.quickCreateTitle, { color: theme.colors.text }]}>Choose what you want to create</Text>
+            <Text style={[styles.quickCreateSubtitle, { color: theme.colors.textSecondary }]}>Use the notification shortcuts like a tiny launcher for the app.</Text>
+
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={handleOpenTransaction}
+              style={[styles.quickCreateAction, { borderColor: theme.colors.border, backgroundColor: theme.colors.background }]}
+            >
+              <View style={[styles.quickCreateIconWrap, { backgroundColor: theme.colors.primary + '14' }]}>
+                <Plus size={18} color={theme.colors.primary} />
+              </View>
+              <View style={styles.quickCreateActionText}>
+                <Text style={[styles.quickCreateActionTitle, { color: theme.colors.text }]}>Add transaction</Text>
+                <Text style={[styles.quickCreateActionSubtitle, { color: theme.colors.textSecondary }]}>Open the transaction form right away.</Text>
+              </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              activeOpacity={0.88}
+              onPress={handleOpenNote}
+              style={[styles.quickCreateAction, { borderColor: theme.colors.border, backgroundColor: theme.colors.background }]}
+            >
+              <View style={[styles.quickCreateIconWrap, { backgroundColor: theme.colors.primary + '14' }]}>
+                <FileText size={18} color={theme.colors.primary} />
+              </View>
+              <View style={styles.quickCreateActionText}>
+                <Text style={[styles.quickCreateActionTitle, { color: theme.colors.text }]}>Add note</Text>
+                <Text style={[styles.quickCreateActionSubtitle, { color: theme.colors.textSecondary }]}>Jump straight into a new note.</Text>
+              </View>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
 }
 
 function RootLayoutNav() {
   const { theme } = useTheme();
 
+  useEffect(() => installAlertTooltipBridge(), []);
+
   return (
     <>
-      <StatusBar style={theme.isDark ? "light" : "dark"} />
+      <StatusBar style={theme.isDark ? 'light' : 'dark'} />
       <QuickAddNotificationManager />
-      <Stack screenOptions={{ headerBackTitle: "Back" }}>
+      <Stack screenOptions={{ headerBackTitle: 'Back' }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       </Stack>
+      <AppTooltipHost />
     </>
   );
 }
@@ -125,6 +207,67 @@ function RootLayoutNav() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  quickCreateBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.18)',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  quickCreateSheet: {
+    borderRadius: 24,
+    borderWidth: 1,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    elevation: 12,
+  },
+  quickCreateEyebrow: {
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  quickCreateTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  quickCreateSubtitle: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
+    marginBottom: 18,
+  },
+  quickCreateAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  quickCreateIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  quickCreateActionText: {
+    flex: 1,
+  },
+  quickCreateActionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  quickCreateActionSubtitle: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
   },
 });
 
@@ -139,7 +282,9 @@ export default function RootLayout() {
         <ThemeProvider>
           <TransactionProvider>
             <GestureHandlerRootView style={styles.container}>
-              <RootLayoutNav />
+              <BottomSheetModalProvider>
+                <RootLayoutNav />
+              </BottomSheetModalProvider>
             </GestureHandlerRootView>
           </TransactionProvider>
         </ThemeProvider>
@@ -147,13 +292,3 @@ export default function RootLayout() {
     </trpc.Provider>
   );
 }
-
-
-
-
-
-
-
-
-
-

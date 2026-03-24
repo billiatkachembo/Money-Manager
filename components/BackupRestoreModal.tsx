@@ -19,6 +19,7 @@ import {
   UploadCloud,
   DownloadCloud,
 } from 'lucide-react-native';
+import { formatDateTimeWithWeekday } from '@/utils/date';
 
 type BackupState = 'idle' | 'backingup' | 'restoring' | 'success' | 'error';
 
@@ -46,6 +47,8 @@ interface BackupRestoreModalProps {
   backupMessage: string;
   driveConnected?: boolean;
   driveAccountLabel?: string;
+  googleDriveAvailable?: boolean;
+  googleDriveUnavailableReason?: string;
   onConnectDrive?: () => void;
   onDisconnectDrive?: () => void;
   onExportData: () => void;
@@ -96,6 +99,8 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
   backupMessage,
   driveConnected,
   driveAccountLabel,
+  googleDriveAvailable = true,
+  googleDriveUnavailableReason,
   onConnectDrive,
   onDisconnectDrive,
   onExportData,
@@ -109,7 +114,10 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
 }: BackupRestoreModalProps) {
   const isProcessing = backupStatus === 'backingup' || backupStatus === 'restoring';
   const isDriveConnected = Boolean(driveConnected);
-  const driveStatusLabel = driveAccountLabel ?? (isDriveConnected ? 'Connected' : 'No account connected');
+  const isGoogleDriveAvailable = googleDriveAvailable;
+  const driveStatusLabel = driveAccountLabel ?? (isDriveConnected ? 'Connected' : isGoogleDriveAvailable ? 'No account connected' : 'Unavailable in this build');
+  const disableDriveConnect = isProcessing || (!isDriveConnected && !isGoogleDriveAvailable) || (!onConnectDrive && !onDisconnectDrive);
+  const disableDriveTransfer = isProcessing || !isGoogleDriveAvailable;
 
   return (
     <Modal
@@ -151,7 +159,7 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
 
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Backup Accounts</Text>
           <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
-            Connect a Google Drive account to enable automatic backups.
+            {googleDriveUnavailableReason ?? 'Connect a Google Drive account to enable automatic backups.'}
           </Text>
           <View style={[styles.accountRow, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
             <View style={styles.accountInfo}>
@@ -174,32 +182,34 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
                 },
               ]}
               onPress={isDriveConnected ? onDisconnectDrive : onConnectDrive}
-              disabled={isProcessing || (!onConnectDrive && !onDisconnectDrive)}
+              disabled={disableDriveConnect}
             >
               <Text style={[
                 styles.accountActionText,
                 { color: isDriveConnected ? theme.colors.primary : '#FFFFFF' },
               ]}>
-                {isDriveConnected ? 'Disconnect' : 'Add account'}
+                {isDriveConnected ? 'Disconnect' : isGoogleDriveAvailable ? 'Add account' : 'Unavailable'}
               </Text>
             </TouchableOpacity>
           </View>
           <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Cloud Backup</Text>
           <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
-            Creates a full JSON snapshot and uploads it directly to Google Drive.
+            {isGoogleDriveAvailable
+              ? 'Creates a full JSON snapshot and uploads it directly to Google Drive.'
+              : 'Cloud backup is unavailable until Google Drive authentication is available in this build.'}
           </Text>
           <BackupActionButton
             icon={<UploadCloud size={20} color="#FFFFFF" />}
             label="Backup to Google Drive"
             onPress={onBackupToGoogleDrive}
-            disabled={isProcessing}
+            disabled={disableDriveTransfer}
             containerStyle={{ backgroundColor: theme.colors.primary }}
           />
           <BackupActionButton
             icon={<DownloadCloud size={20} color={theme.colors.primary} />}
             label="Restore from Google Drive"
             onPress={onRestoreFromGoogleDrive}
-            disabled={isProcessing}
+            disabled={disableDriveTransfer}
             containerStyle={{ backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border }}
             textColor={theme.colors.primary}
           />
@@ -255,7 +265,7 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
             backupHistory.map((item) => (
               <View key={item.timestamp} style={styles.historyRow}>
                 <Text style={[styles.historyDate, { color: theme.colors.textSecondary }]}>
-                  {new Date(item.timestamp).toLocaleString()}
+                  {formatDateTimeWithWeekday(new Date(item.timestamp))}
                 </Text>
                 <TouchableOpacity
                   onPress={() => onRestoreHistoryItem?.(item)}
@@ -340,16 +350,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 12,
-    borderRadius: 8,
+    padding: 10,
+    borderRadius: 7,
     marginVertical: 4,
-    gap: 8,
+    gap: 6,
   },
   actionButtonDisabled: {
     opacity: 0.6,
   },
   actionButtonText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   accountRow: {
@@ -415,6 +425,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
+
+
+
 
 
 

@@ -106,6 +106,104 @@ function resolveBudgetForCategory(budgets: Budget[], categoryId: string): Budget
   return matches.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0];
 }
 
+function roundToNiceTarget(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  const exponent = Math.floor(Math.log10(value));
+  const magnitude = 10 ** exponent;
+  const normalized = value / magnitude;
+  const steps = [1, 1.5, 2, 2.5, 3, 5, 7.5, 10];
+  const step = steps.find((candidate) => normalized <= candidate) ?? 10;
+  return roundCurrency(step * magnitude);
+}
+
+function computePlanningAnchor(currentNetWorth: number, monthlyIncome: number, monthlyExpenses: number): number {
+  const netWorthAnchor = currentNetWorth > 0 ? currentNetWorth / 4 : 0;
+  return Math.max(monthlyIncome, monthlyExpenses, netWorthAnchor, 100);
+}
+
+export function computeStarterInvestmentTarget(
+  currentNetWorth: number,
+  monthlyIncome: number,
+  monthlyExpenses: number
+): number {
+  const anchor = computePlanningAnchor(currentNetWorth, monthlyIncome, monthlyExpenses);
+  return roundToNiceTarget(Math.max(anchor * 0.25, 100));
+}
+
+export function buildWealthMilestoneLadder(
+  currentNetWorth: number,
+  monthlyIncome: number,
+  monthlyExpenses: number
+): number[] {
+  const anchor = roundToNiceTarget(Math.max(computePlanningAnchor(currentNetWorth, monthlyIncome, monthlyExpenses), 250));
+  const ratios = [1, 2, 3, 6, 12, 24, 60];
+  const milestones: number[] = [];
+
+  for (const ratio of ratios) {
+    const candidate = roundToNiceTarget(anchor * ratio);
+    if (candidate > 0 && (milestones.length === 0 || candidate > milestones[milestones.length - 1])) {
+      milestones.push(candidate);
+    }
+  }
+
+  while (milestones.length < ratios.length) {
+    const last = milestones[milestones.length - 1] ?? anchor;
+    const candidate = roundToNiceTarget(last * 2);
+    if (candidate > last) {
+      milestones.push(candidate);
+      continue;
+    }
+    milestones.push(roundCurrency(last * 2));
+  }
+
+  return milestones;
+}
+
+function computeRecentMonthlySnapshot(
+  transactions: Transaction[],
+  referenceDate: Date,
+  months = 3
+): { averageIncome: number; averageExpenses: number; averageNet: number } | null {
+  const monthWindow = buildMonthWindow(months, referenceDate);
+  const monthIndex = new Map(monthWindow.map((key, index) => [key, index]));
+  const totals = monthWindow.map(() => ({ income: 0, expenses: 0 }));
+
+  for (const transaction of transactions) {
+    if (transaction.type !== 'income' && transaction.type !== 'expense') {
+      continue;
+    }
+
+    const index = monthIndex.get(monthKey(transaction.date));
+    if (index === undefined) {
+      continue;
+    }
+
+    if (transaction.type === 'income') {
+      totals[index].income += transaction.amount;
+    } else {
+      totals[index].expenses += transaction.amount;
+    }
+  }
+
+  const hasData = totals.some((entry) => entry.income > 0 || entry.expenses > 0);
+  if (!hasData) {
+    return null;
+  }
+
+  const divisor = monthWindow.length;
+  const income = totals.reduce((sum, entry) => sum + entry.income, 0) / divisor;
+  const expenses = totals.reduce((sum, entry) => sum + entry.expenses, 0) / divisor;
+
+  return {
+    averageIncome: roundCurrency(income),
+    averageExpenses: roundCurrency(expenses),
+    averageNet: roundCurrency(income - expenses),
+  };
+}
+
 export function computeBudgetSuggestions(
   transactions: Transaction[],
   budgets: Budget[],
@@ -509,7 +607,7 @@ export function buildFinancialIntelligenceInsights(params: {
     insights.push({
       id: 'milestone-progress',
       title: 'Wealth milestone',
-      message: `You could reach ${params.formatCurrency(params.milestones.nextMilestone)} in about ${timeText}.`,
+      message: `At your recent saving pace, you could reach ${params.formatCurrency(params.milestones.nextMilestone)} in about ${timeText}.`,
       severity: 'info',
       confidence: 0.6,
     });
@@ -541,7 +639,10 @@ export function computeFinancialIntelligence(params: {
   referenceDate?: Date;
 }): FinancialIntelligence {
   const referenceDate = params.referenceDate ?? new Date();
-  const monthlySavings = Math.max(0, params.monthlyNet);
+  const recentMonthlySnapshot = computeRecentMonthlySnapshot(params.transactions, referenceDate, 3);
+  const baselineMonthlyIncome = recentMonthlySnapshot?.averageIncome ?? params.monthlyIncome;
+  const baselineMonthlyExpenses = recentMonthlySnapshot?.averageExpenses ?? params.monthlyExpenses;
+  const monthlySavings = Math.max(0, recentMonthlySnapshot?.averageNet ?? params.monthlyNet);
   const annualReturn = 0.05;
 
   const budgetSuggestions = computeBudgetSuggestions(params.transactions, params.budgets, 6, referenceDate);
@@ -556,7 +657,12 @@ export function computeFinancialIntelligence(params: {
     defaultAnnualRate: params.averageDebtInterestRate ?? 0.18,
     extraPayment: Math.max(0, monthlySavings),
   });
-  const milestones = computeWealthMilestones(params.netBalance, monthlySavings, annualReturn);
+  const milestones = computeWealthMilestones(
+    params.netBalance,
+    monthlySavings,
+    annualReturn,
+    buildWealthMilestoneLadder(params.netBalance, baselineMonthlyIncome, baselineMonthlyExpenses)
+  );
 
   const hasTransactions = params.transactions.length > 0;
   const insights = hasTransactions
@@ -579,6 +685,8 @@ export function computeFinancialIntelligence(params: {
     insights,
   };
 }
+
+
 
 
 

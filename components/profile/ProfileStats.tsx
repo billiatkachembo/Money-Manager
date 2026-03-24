@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTheme } from '@/store/theme-store';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
 interface ProfileStatsProps {
   transactionCount: number;
@@ -31,11 +32,11 @@ export function ProfileStats({
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Transactions</Text>
         </View>
         <View style={styles.item}>
-          <Text style={[styles.value, { color: theme.colors.success }]}>{incomeText}</Text>
+          <AdaptiveAmountText style={[styles.value, { color: theme.colors.success }]} value={incomeText} />
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Total Income</Text>
         </View>
         <View style={styles.item}>
-          <Text style={[styles.value, { color: theme.colors.error }]}>{expenseText}</Text>
+          <AdaptiveAmountText style={[styles.value, { color: theme.colors.error }]} value={expenseText} />
           <Text style={[styles.label, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
         </View>
       </View>

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { DollarSign, Edit3, PiggyBank, Plus, Target, Trash2, TrendingUp } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
-import { formatDateDDMMYYYY } from '@/utils/date';
+import { formatDateDDMMYYYY, formatDateWithWeekday, parseDateInput } from '@/utils/date';
 import { useTransactionStore } from '@/store/transaction-store';
 import type { FinancialGoal } from '@/types/transaction';
 
@@ -35,22 +35,8 @@ function parsePositiveNumber(value: string): number | null {
 }
 
 function parseIsoDateInput(value: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) {
-    return null;
-  }
-
-  const year = Number(match[1]);
-  const monthIndex = Number(match[2]) - 1;
-  const day = Number(match[3]);
-  const parsed = new Date(year, monthIndex, day);
-
-  if (
-    Number.isNaN(parsed.getTime()) ||
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== monthIndex ||
-    parsed.getDate() !== day
-  ) {
+  const parsed = parseDateInput(value);
+  if (!parsed) {
     return null;
   }
 
@@ -120,7 +106,7 @@ export function GoalsSection() {
     setGoalForm({
       title: goal.title,
       targetAmount: goal.targetAmount.toString(),
-      targetDate: goal.targetDate.toISOString().slice(0, 10),
+      targetDate: formatDateDDMMYYYY(goal.targetDate),
       category: goal.category,
     });
     setEditingGoal(goal);
@@ -147,8 +133,8 @@ export function GoalsSection() {
       return;
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
-      Alert.alert('Error', 'Enter the target date as DD-MM-YYYY');
+    if (!/^(?:\d{2}[/-]\d{2}[/-]\d{4}|\d{4}[/-]\d{2}[/-]\d{2})$/.test(trimmedDate)) {
+      Alert.alert('Error', 'Enter the target date as DD/MM/YYYY');
       return;
     }
 
@@ -240,7 +226,7 @@ export function GoalsSection() {
               styles.input,
               { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text },
             ]}
-            placeholder="Target date (DD-MM-YYYY)"
+            placeholder="Target date (DD/MM/YYYY)"
             placeholderTextColor={theme.colors.textSecondary}
             value={goalForm.targetDate}
             onChangeText={(text) => setGoalForm((current) => ({ ...current, targetDate: text }))}
@@ -355,7 +341,7 @@ export function GoalsSection() {
                 </View>
                 <Text style={[styles.targetDate, { color: theme.colors.textSecondary }]}
                 >
-                  Target: {formatDateDDMMYYYY(goal.targetDate)}
+                  Target: {formatDateWithWeekday(goal.targetDate)}
                 </Text>
               </View>
 

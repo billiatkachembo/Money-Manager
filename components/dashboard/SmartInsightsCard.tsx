@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Wallet, TrendingUp, BarChart3 } from 'lucide-react-native';
@@ -156,58 +156,58 @@ SmartInsightsCard.displayName = 'SmartInsightsCard';
 
 const styles = StyleSheet.create({
   container: {
-    borderRadius: 16,
+    borderRadius: 14,
     marginHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 10,
     overflow: 'hidden',
   },
   content: {
-    padding: 16,
-    gap: 14,
+    padding: 14,
+    gap: 12,
   },
   header: {
     color: 'white',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.3,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   icon: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     backgroundColor: 'rgba(255,255,255,0.15)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   textBlock: {
     flex: 1,
   },
   label: {
     color: 'rgba(255,255,255,0.7)',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '500',
     letterSpacing: 0.2,
   },
   value: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
   },
   unit: {
-    fontSize: 12,
+    fontSize: 11,
     color: 'rgba(255,255,255,0.7)',
   },
   warning: {
-    marginTop: 10,
-    fontSize: 12,
+    marginTop: 8,
+    fontSize: 11,
     fontWeight: '600',
-    lineHeight: 16,
+    lineHeight: 15,
   },
 });
 

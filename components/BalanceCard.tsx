@@ -1,9 +1,10 @@
-﻿import React from 'react';
+import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TrendingUp, TrendingDown } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
 interface BalanceCardProps {
   balance: number;
@@ -116,34 +117,32 @@ export const BalanceCard = React.memo(function BalanceCard({ balance, income, ex
     >
       <View style={styles.content}>
         <Text style={styles.label}>Total Balance</Text>
-        <Text
+        <AdaptiveAmountText
           style={[styles.balance, financialState.isNegative && styles.negativeBalance]}
           accessibilityRole="text"
           accessibilityLabel={`Total balance ${financialState.isNegative ? 'negative ' : ''}${formattedBalance}`}
           accessibilityHint="Your current total balance across all accounts"
-        >
-          {financialState.isNegative ? '-' : ''}
-          {formattedBalance}
-        </Text>
-        
+          value={`${financialState.isNegative ? '-' : ''}${formattedBalance}`}
+        />
+
         <View style={styles.statsContainer}>
           <View style={styles.statItem}>
             <View style={[styles.statIcon, { backgroundColor: incomeIconBackground }]}>
               <TrendingUp size={14} color={incomeColor} />
             </View>
-            <View>
+            <View style={styles.statCopy}>
               <Text style={styles.statLabel}>Income</Text>
-              <Text style={styles.statValue}>{formattedIncome}</Text>
+              <AdaptiveAmountText style={styles.statValue} value={formattedIncome} />
             </View>
           </View>
-          
+
           <View style={styles.statItem}>
             <View style={[styles.statIcon, { backgroundColor: expenseIconBackground }]}>
               <TrendingDown size={14} color={expenseColor} />
             </View>
-            <View>
+            <View style={styles.statCopy}>
               <Text style={styles.statLabel}>Expenses</Text>
-              <Text style={styles.statValue}>{formattedExpenses}</Text>
+              <AdaptiveAmountText style={styles.statValue} value={formattedExpenses} />
             </View>
           </View>
         </View>
@@ -151,14 +150,15 @@ export const BalanceCard = React.memo(function BalanceCard({ balance, income, ex
         <View style={styles.dailyContainer}>
           <Text style={styles.dailyLabel}>Daily Safe Spend</Text>
 
-          <Text
-            style={styles.dailyValue}
-            accessibilityRole="text"
-            accessibilityLabel={`Safe daily spending amount ${formattedDailySpend}`}
-          >
-            {formattedDailySpend}
-            <Text style={styles.dailyUnit}> /day</Text>
-          </Text>
+          <View style={styles.dailyValueRow}>
+            <AdaptiveAmountText
+              style={styles.dailyValue}
+              accessibilityRole="text"
+              accessibilityLabel={`Safe daily spending amount ${formattedDailySpend}`}
+              value={formattedDailySpend}
+            />
+            <Text style={styles.dailyUnit}>/day</Text>
+          </View>
 
           <Text style={styles.dailySubtext}>
             Based on {spendingInsight.remainingDays} days remaining this month
@@ -243,6 +243,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 10,
   },
+  statCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
   statLabel: {
     color: 'rgba(255, 255, 255, 0.7)',
     fontSize: 11,
@@ -271,11 +275,17 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     letterSpacing: 0.2,
   },
+  dailyValueRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 6,
+  },
   dailyValue: {
     color: 'white',
     fontSize: 18,
     fontWeight: '700',
     marginTop: 2,
+    flexShrink: 1,
   },
   dailyUnit: {
     fontSize: 12,
@@ -299,6 +309,3 @@ const styles = StyleSheet.create({
     color: '#A5D6A7',
   },
 });
-
-
-

@@ -63,12 +63,21 @@ function normalizeRoundedPercent(value: number): number {
   return Object.is(rounded, -0) ? 0 : rounded;
 }
 
+function clampPercentValue(value: number, allowNegative = false): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const min = allowNegative ? -100 : 0;
+  return Math.min(100, Math.max(min, value));
+}
+
 function formatPercent(
   value: number,
   options: { allowNegative?: boolean; signed?: boolean } = {}
 ): string {
   const rawPercent = value * 100;
-  const safePercent = options.allowNegative ? rawPercent : Math.max(0, rawPercent);
+  const safePercent = clampPercentValue(rawPercent, options.allowNegative);
   const rounded = normalizeRoundedPercent(safePercent);
   const prefix = options.signed && rounded > 0 ? '+' : '';
 

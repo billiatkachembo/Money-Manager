@@ -1,8 +1,9 @@
-﻿import { TransactionCategory, TransactionType, MerchantProfile } from '@/types/transaction';
+import { TransactionCategory, TransactionType, MerchantProfile } from '@/types/transaction';
 import {
   ALL_CATEGORIES,
   MODAL_EXPENSE_CATEGORIES,
   MODAL_INCOME_CATEGORIES,
+  mergeCategories,
   resolveCanonicalCategory,
 } from '@/constants/categories';
 import { findMerchantCategory, normalizeMerchantName } from '@/utils/ai/merchant-intelligence';
@@ -51,11 +52,16 @@ function normalizeText(value: string): string {
     .trim();
 }
 
-function findCategoryById(id: string | null | undefined): TransactionCategory | null {
+function findCategoryById(
+  id: string | null | undefined,
+  availableCategories: ReadonlyArray<TransactionCategory> = []
+): TransactionCategory | null {
   if (!id) {
     return null;
   }
-  return ALL_CATEGORIES.find((category) => category.id === id) ?? null;
+
+  const mergedCategories = mergeCategories(availableCategories, ALL_CATEGORIES);
+  return mergedCategories.find((category) => category.id === id) ?? null;
 }
 
 function matchRule(text: string, rules: Record<string, string[]>): string | null {
@@ -72,6 +78,7 @@ export function autoCategorizeTransaction(input: {
   merchant?: string;
   type: TransactionType;
   merchantProfiles: MerchantProfile[];
+  availableCategories?: ReadonlyArray<TransactionCategory>;
 }): TransactionCategory | null {
   if (input.type === 'transfer' || input.type === 'debt') {
     return null;
@@ -88,7 +95,7 @@ export function autoCategorizeTransaction(input: {
   const learnedCategoryId = merchantHint
     ? findMerchantCategory(merchantHint, input.merchantProfiles)
     : undefined;
-  const learnedCategory = findCategoryById(learnedCategoryId);
+  const learnedCategory = findCategoryById(learnedCategoryId, input.availableCategories);
   if (learnedCategory) {
     return learnedCategory;
   }
@@ -96,7 +103,7 @@ export function autoCategorizeTransaction(input: {
   if (input.type === 'income') {
     const ruleKey = matchRule(normalized, INCOME_RULES);
     if (ruleKey) {
-      const mapped = findCategoryById(INCOME_RULE_CATEGORY_MAP[ruleKey]);
+      const mapped = findCategoryById(INCOME_RULE_CATEGORY_MAP[ruleKey], input.availableCategories);
       if (mapped) {
         return mapped;
       }
@@ -106,7 +113,7 @@ export function autoCategorizeTransaction(input: {
 
   const expenseRuleKey = matchRule(normalized, CATEGORY_RULES);
   if (expenseRuleKey) {
-    const mapped = findCategoryById(RULE_CATEGORY_MAP[expenseRuleKey]);
+    const mapped = findCategoryById(RULE_CATEGORY_MAP[expenseRuleKey], input.availableCategories);
     if (mapped) {
       return mapped;
     }

@@ -6,6 +6,7 @@ import {
   resolveCanonicalCategoryId,
 } from '@/constants/categories';
 import { Transaction, TransactionCategory } from '@/types/transaction';
+import { parseDateValue } from '@/utils/date';
 
 export interface ImportedTransactionDraft extends Omit<Transaction, 'id' | 'createdAt'> {}
 
@@ -77,22 +78,8 @@ const normalizeType = (value: string): Transaction['type'] | null => {
 
 const normalizeDate = (value: string): Date | null => {
   if (!value.trim()) return null;
-  
-  const parsed = new Date(value);
-  if (!Number.isNaN(parsed.getTime())) return parsed;
-  
-  const formats = [
-    { regex: /^(\d{4})-(\d{2})-(\d{2})$/, handler: (m: RegExpMatchArray) => new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3])) },
-    { regex: /^(\d{2})\/(\d{2})\/(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(parseInt(m[3]), parseInt(m[1]) - 1, parseInt(m[2])) },
-    { regex: /^(\d{2})\.(\d{2})\.(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1])) },
-  ];
-  
-  for (const { regex, handler } of formats) {
-    const match = value.match(regex);
-    if (match) return handler(match);
-  }
-  
-  return null;
+
+  return parseDateValue(value) ?? null;
 };
 
 const normalizeAmount = (value: string): number | null => {

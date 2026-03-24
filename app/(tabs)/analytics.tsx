@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,10 @@ import {
   ScrollView,
   Modal,
   TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  InteractionManager,
+  Platform,
   useWindowDimensions,
 } from 'react-native';
 import {
@@ -20,18 +24,23 @@ import {
   createContainer,
 } from 'victory-native';
 import { Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
-import { ArrowDownRight, ArrowUpRight, DollarSign, X } from 'lucide-react-native';
+import { ArrowDownRight, ArrowUpRight, DollarSign, Download, X } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
-import { formatDateDDMMYYYY } from '@/utils/date';
+import { formatDateDDMMYYYY, formatDateWithWeekday } from '@/utils/date';
 import {
   computeNetWorthProgress,
   computeExpenseCategoryBreakdown,
   computeExpenseDistribution,
   computeQuickStats,
 } from '@/src/domain/analytics';
+import { computeStarterInvestmentTarget } from '@/src/domain/financial-intelligence';
 import { deriveAccountBalance } from '@/src/domain/ledger';
 import type { Transaction } from '@/types/transaction';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
+import ViewShot from 'react-native-view-shot';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
 const chartPalette = {
   income: '#22C55E',
@@ -56,6 +65,14 @@ const categoryPalette = [
 ];
 
 const VoronoiCursorContainer = createContainer('voronoi', 'cursor') as React.ComponentType<any>;
+
+type ExportableChartId =
+  | 'net-worth-progress'
+  | 'expense-distribution'
+  | 'trend-14-day'
+  | 'comparison-6-month'
+  | 'spending-by-category'
+  | 'net-worth-forecast';
 
 function toMonthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -126,6 +143,15 @@ function truncateLabel(label: string, maxLength = 10): string {
     return label;
   }
   return `${label.slice(0, maxLength - 1)}...`;
+}
+
+function sanitizeFileSegment(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return normalized || 'chart';
 }
 
 function clamp(value: number, min = 0, max = 1): number {
@@ -237,9 +263,90 @@ interface MilestoneCard {
   insights?: string[];
   achieved?: boolean;
   tone?: 'positive' | 'warning';
+  etaPrefix?: string;
 }
 
-const AnalyticsScreen = React.memo(function AnalyticsScreen() {
+function AnalyticsCategoryBlock({
+  eyebrow,
+  title,
+  subtitle,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  const { theme } = useTheme();
+
+  return (
+    <View style={styles.categorySection}>
+      <View style={styles.categoryHeader}>
+        <View style={styles.categoryHeaderTopRow}>
+          <View
+            style={[
+              styles.categoryEyebrowBadge,
+              { backgroundColor: theme.colors.primary + '14', borderColor: theme.colors.primary + '22' },
+            ]}
+          >
+            <Text style={[styles.categoryEyebrow, { color: theme.colors.primary }]}>{eyebrow}</Text>
+          </View>
+          <View style={[styles.categoryHeaderLine, { backgroundColor: theme.colors.primary + '18' }]} />
+        </View>
+        <Text style={[styles.categoryTitle, { color: theme.colors.text }]}>{title}</Text>
+        <Text style={[styles.categorySubtitle, { color: theme.colors.textSecondary }]}>{subtitle}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function AnalyticsCategoryPlaceholder({
+  eyebrow,
+  title,
+  subtitle,
+  cardCount = 2,
+  chartCardIndex = 0,
+}: {
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  cardCount?: number;
+  chartCardIndex?: number;
+}) {
+  const { theme } = useTheme();
+
+  return (
+    <AnalyticsCategoryBlock eyebrow={eyebrow} title={title} subtitle={subtitle}>
+      {Array.from({ length: cardCount }).map((_, index) => {
+        const usesChartBlock = index === chartCardIndex;
+        const detailLineStyle = index === 0 ? styles.loadingLineLong : styles.loadingLineMedium;
+
+        return (
+          <View
+            key={`${title}-placeholder-${index}`}
+            style={[
+              styles.loadingCard,
+              styles.inlineLoadingCard,
+              { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
+            ]}
+          >
+            <View style={[styles.loadingLineShort, { backgroundColor: theme.colors.border }]} />
+            <View style={[detailLineStyle, { backgroundColor: theme.colors.border }]} />
+            <View
+              style={[
+                usesChartBlock ? styles.loadingChartBlock : styles.loadingStatRow,
+                { backgroundColor: theme.colors.border },
+              ]}
+            />
+          </View>
+        );
+      })}
+    </AnalyticsCategoryBlock>
+  );
+}
+
+const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: { visibleStage: number }) {
   const { transactions, allTransactions, accounts, debtAccounts, getTotalIncome, getTotalExpenses, formatCurrency, financialIntelligence } = useTransactionStore();
   const { theme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
@@ -249,27 +356,48 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
   const netWorthSimulation = financialIntelligence.netWorthSimulation;
   const debtPayoffPlan = financialIntelligence.debtPayoff;
   const milestoneProgress = financialIntelligence.milestones;
+  const chartCaptureRefs = useRef<Record<ExportableChartId, ViewShot | null>>({
+    'net-worth-progress': null,
+    'expense-distribution': null,
+    'trend-14-day': null,
+    'comparison-6-month': null,
+    'spending-by-category': null,
+    'net-worth-forecast': null,
+  });
+  const [exportingChartId, setExportingChartId] = useState<ExportableChartId | null>(null);
 
   const netWorthForecastData = useMemo(() => {
     if (!netWorthSimulation) {
       return null;
     }
 
+    const baseDate = new Date();
+    const buildForecastDate = (yearOffset: number) =>
+      new Date(baseDate.getFullYear() + yearOffset, baseDate.getMonth(), baseDate.getDate());
+
     const data = netWorthSimulation.points.map((point) => ({
-      x: new Date(point.year, 0, 1),
+      x: buildForecastDate(point.year),
       y: point.netWorth,
     }));
 
     const tickValues = netWorthSimulation.points
       .filter((_, index) => index % 2 === 0)
-      .map((point) => new Date(point.year, 0, 1));
+      .map((point) => buildForecastDate(point.year));
 
-    return { data, tickValues };
+    return {
+      data,
+      tickValues,
+      projectedDate: data[data.length - 1]?.x ?? buildForecastDate(netWorthSimulation.years),
+    };
   }, [netWorthSimulation]);
 
   const chartWidth = Math.max(screenWidth - 32, 260);
   const gridColor = theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)';
   const axisLabelColor = theme.isDark ? 'rgba(255,255,255,0.7)' : 'rgba(15,23,42,0.6)';
+  const cardBackground = theme.isDark ? '#0F172A' : '#FFFFFF';
+  const secondarySurface = theme.isDark ? 'rgba(15,23,42,0.82)' : '#F8FAFC';
+  const analyticsCanvasBackground = theme.isDark ? 'rgba(15,23,42,0.92)' : '#F8FAFC';
+  const softBorderColor = theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)';
   const tooltipFlyoutStyle = useMemo(
     () => ({
       fill: theme.isDark ? '#0F172A' : '#FFFFFF',
@@ -291,6 +419,13 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
     () => ({ duration: 900, easing: 'cubicOut' as const }),
     []
   );
+  const chartCaptureOptions = useMemo(
+    () => ({ format: 'png' as const, quality: 1, result: 'tmpfile' as const }),
+    []
+  );
+  const setChartCaptureRef = (chartId: ExportableChartId) => (ref: ViewShot | null) => {
+    chartCaptureRefs.current[chartId] = ref;
+  };
   const today = new Date();
   const currentMonth = toMonthKey(today);
   const elapsedDays = Math.max(1, today.getDate());
@@ -466,6 +601,22 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
     return roundCurrency(totals.reduce((sum, value) => sum + value, 0) / totals.length);
   }, [transactions]);
 
+  const averageMonthlyIncome = useMemo(() => {
+    const recentMonths = buildRecentMonths(3);
+    if (recentMonths.length === 0) {
+      return 0;
+    }
+
+    const totals = recentMonths.map((month) => {
+      const key = toMonthKey(month);
+      return transactions
+        .filter((transaction) => transaction.type === 'income' && toMonthKey(transaction.date) === key)
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+    });
+
+    return roundCurrency(totals.reduce((sum, value) => sum + value, 0) / totals.length);
+  }, [transactions]);
+
   const monthlySavings = Math.max(0, netWorthSimulation?.monthlySavings ?? (monthlyIncome - monthlyExpenses));
   const annualReturn = netWorthSimulation?.annualReturn ?? 0.05;
 
@@ -498,7 +649,10 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
   const debtProgress = originalDebt > 0 ? clamp(1 - debtBalance / originalDebt) : 1;
   const debtEtaMonths = debtPayoffPlan ? debtPayoffPlan[debtPayoffPlan.recommendedStrategy].months : null;
 
-  const investmentTarget = 1000;
+  const investmentTarget = useMemo(
+    () => computeStarterInvestmentTarget(netWorthProgress.currentNetWorth, averageMonthlyIncome, averageMonthlyExpenses),
+    [averageMonthlyExpenses, averageMonthlyIncome, netWorthProgress.currentNetWorth]
+  );
   const investmentProgress = investmentTarget > 0 ? clamp(investmentBalance / investmentTarget) : 0;
   const investmentEtaMonths = investmentTarget > 0
     ? estimateMonthsToTarget(investmentBalance, investmentTarget, monthlySavings, annualReturn)
@@ -558,6 +712,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
       estimatedMonths: emergencyFundEtaMonths,
       insights: emergencyInsights,
       achieved: emergencyFundProgress >= 1 && emergencyFundTarget > 0,
+      etaPrefix: 'At recent pace',
     });
 
     const debtInsights: string[] = [];
@@ -582,18 +737,19 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
       insights: debtInsights,
       achieved: debtBalance <= 0,
       tone: debtBalance > 0 ? 'warning' : 'positive',
+      etaPrefix: 'At payment pace',
     });
 
     const investmentInsights: string[] = [];
     if (investmentBalance < investmentTarget) {
-      investmentInsights.push('Starting with $1,000 can begin your long-term growth.');
+      investmentInsights.push(`Reaching ${formatCurrency(investmentTarget)} gives you a practical base for long-term investing.`);
     } else {
-      investmentInsights.push('You have started investing. Keep the momentum going.');
+      investmentInsights.push(`You have already built a starter investment base above ${formatCurrency(investmentTarget)}.`);
     }
 
     cards.push({
       id: 'first-investment',
-      title: 'First Investment',
+      title: 'Starter Investment',
       targetLabel: 'Target',
       currentLabel: 'Invested',
       target: investmentTarget,
@@ -602,15 +758,16 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
       estimatedMonths: investmentEtaMonths,
       insights: investmentInsights,
       achieved: investmentProgress >= 1,
+      etaPrefix: 'At recent pace',
     });
 
     const netWorthInsights: string[] = [];
     if (!netWorthTarget) {
-      netWorthInsights.push('You have achieved the highest net worth milestone in this list.');
+      netWorthInsights.push('You have cleared the current net worth milestone ladder.');
     } else if (netWorthEtaMonths !== null) {
       const etaText = formatDurationLong(netWorthEtaMonths);
       if (etaText) {
-        netWorthInsights.push(`You could reach ${formatCurrency(netWorthTarget)} in about ${etaText}.`);
+        netWorthInsights.push(`At your recent saving pace, you could reach ${formatCurrency(netWorthTarget)} in about ${etaText}.`);
       }
     }
 
@@ -625,6 +782,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
       estimatedMonths: netWorthEtaMonths,
       insights: netWorthInsights,
       achieved: !netWorthTarget,
+      etaPrefix: 'At recent pace',
     });
 
     const fiInsights: string[] = [];
@@ -665,6 +823,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
       estimatedMonths: financialIndependenceEtaMonths,
       insights: fiInsights,
       achieved: financialIndependenceProgress >= 1 && financialIndependenceTarget > 0,
+      etaPrefix: 'At recent pace',
     });
 
     return cards;
@@ -683,6 +842,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
     investmentBalance,
     investmentEtaMonths,
     investmentProgress,
+    investmentTarget,
     liquidBalance,
     milestoneProgress,
     monthlySavings,
@@ -860,40 +1020,284 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
     [monthlyComparisonSeries]
   );
 
+  const handleExportChart = async (chartId: ExportableChartId, title: string) => {
+    if (exportingChartId) {
+      return;
+    }
+
+    const chartRef = chartCaptureRefs.current[chartId];
+    if (!chartRef?.capture) {
+      Alert.alert('Export unavailable', 'This chart is not ready to export yet.');
+      return;
+    }
+
+    setExportingChartId(chartId);
+
+    try {
+      const captureUri = await chartRef.capture();
+      if (!captureUri) {
+        throw new Error('Unable to create a PNG for this chart.');
+      }
+
+      const fileName = `analytics-${sanitizeFileSegment(title)}-${Date.now()}.png`;
+      const baseDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
+      let exportUri = captureUri;
+
+      if (baseDir) {
+        exportUri = `${baseDir}${fileName}`;
+        await FileSystem.deleteAsync(exportUri, { idempotent: true }).catch(() => {});
+        if (exportUri !== captureUri) {
+          await FileSystem.copyAsync({ from: captureUri, to: exportUri });
+        }
+      }
+
+      if (Platform.OS === 'android' && FileSystem.StorageAccessFramework) {
+        const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+        if (permission.granted && permission.directoryUri) {
+          const destinationUri = await FileSystem.StorageAccessFramework.createFileAsync(
+            permission.directoryUri,
+            fileName,
+            'image/png'
+          );
+          const payload = await FileSystem.readAsStringAsync(exportUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          await FileSystem.writeAsStringAsync(destinationUri, payload, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          Alert.alert('Chart saved', `${title} was saved as a PNG file.`);
+          return;
+        }
+      }
+
+      if (!(await Sharing.isAvailableAsync())) {
+        throw new Error('PNG sharing is not available on this device.');
+      }
+
+      await Sharing.shareAsync(exportUri, {
+        dialogTitle: `Save ${title}`,
+        mimeType: 'image/png',
+        UTI: 'public.png',
+      });
+      Alert.alert('Chart ready', `${title} is ready to save or share as a PNG file.`);
+    } catch (error) {
+      console.error('Failed to export analytics chart:', error);
+      Alert.alert(
+        'Export Failed',
+        error instanceof Error ? error.message : 'Unable to export chart right now. Please try again.'
+      );
+    } finally {
+      setExportingChartId(null);
+    }
+  };
+
+  const renderChartExportAction = (
+    chartId: ExportableChartId,
+    title: string,
+    disabled = false
+  ) => {
+    const isExporting = exportingChartId === chartId;
+    const shouldDisable = disabled || (exportingChartId !== null && !isExporting);
+    const tintColor = shouldDisable ? theme.colors.textSecondary : theme.colors.primary;
+
+    return (
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={`Download ${title} as PNG`}
+        style={[
+          styles.chartExportButton,
+          { backgroundColor: secondarySurface, borderColor: theme.colors.border },
+          shouldDisable && styles.chartExportButtonDisabled,
+        ]}
+        disabled={shouldDisable}
+        onPress={() => handleExportChart(chartId, title)}
+      >
+        {isExporting ? (
+          <ActivityIndicator size="small" color={theme.colors.primary} />
+        ) : (
+          <Download size={15} color={tintColor} />
+        )}
+        <Text style={[styles.chartExportButtonText, { color: tintColor }]}>PNG</Text>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <>
-      <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>This Month</Text>
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <Text style={[styles.summaryValue, styles.incomeText]}>{formatCurrency(monthlyIncome)}</Text>
-          </View>
-          <View style={styles.summaryItem}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <Text style={[styles.summaryValue, styles.expenseText]}>{formatCurrency(monthlyExpenses)}</Text>
+      <ScrollView
+        style={[styles.container, { backgroundColor: theme.colors.background }]}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={[styles.analyticsHero, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
+          <View style={[styles.analyticsHeroOrb, { backgroundColor: theme.colors.primary + '14' }]} />
+          <View style={styles.analyticsHeroContent}>
+            <View
+              style={[
+                styles.analyticsHeroBadge,
+                { backgroundColor: secondarySurface, borderColor: softBorderColor },
+              ]}
+            >
+              <Text style={[styles.analyticsHeroBadgeText, { color: theme.colors.primary }]}>Live overview</Text>
+            </View>
+            <Text style={[styles.analyticsHeroTitle, { color: theme.colors.text }]}>Analytics</Text>
+            <Text style={[styles.analyticsHeroSubtitle, { color: theme.colors.textSecondary }]}>A cleaner view of your cash flow, spending patterns, and financial momentum.</Text>
+            <View style={styles.analyticsHeroStats}>
+              <View
+                style={[
+                  styles.analyticsHeroStat,
+                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                ]}
+              >
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
+                <AdaptiveAmountText
+                  style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}
+                  minFontSize={14}
+                  value={formatCurrency(netWorthProgress.currentNetWorth)}
+                />
+              </View>
+              <View
+                style={[
+                  styles.analyticsHeroStat,
+                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                ]}
+              >
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Monthly Net</Text>
+                <AdaptiveAmountText
+                  style={[
+                    styles.analyticsHeroStatValue,
+                    quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText,
+                  ]}
+                  minFontSize={14}
+                  value={formatSignedCurrency(formatCurrency, quickStats.netAmount)}
+                />
+              </View>
+              <View
+                style={[
+                  styles.analyticsHeroStat,
+                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                ]}
+              >
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Savings Rate</Text>
+                <Text style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}>
+                  {formatPercentage(savingsRate)}
+                </Text>
+              </View>
+            </View>
+            <View style={styles.analyticsHeroFooter}>
+              <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
+                {quickStats.transactionCount} transaction{quickStats.transactionCount === 1 ? '' : 's'} this month
+              </Text>
+              <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                {topCategory ? `${topCategory.categoryName} leads your spending this month.` : 'Add more activity to unlock deeper patterns.'}
+              </Text>
+            </View>
           </View>
         </View>
-        <View style={[styles.netIncomeContainer, { borderTopColor: theme.colors.border }]}>
-          <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Income</Text>
-          <Text style={[styles.netIncomeValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
-            {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
+      <AnalyticsCategoryBlock
+        eyebrow="Snapshot"
+        title="Overview"
+        subtitle="Core balances and high-level performance for the current period."
+      >
+      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <View style={styles.summaryCardHeader}>
+          <View style={styles.summaryCardTitleWrap}>
+            <Text style={[styles.cardTitle, styles.summaryCardTitle, { color: theme.colors.text }]}>This Month</Text>
+            <Text style={[styles.summaryCardCaption, { color: theme.colors.textSecondary }]}>
+              Income, expenses, and savings for {formatShortMonthLabel(today)}.
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.summaryCardBadge,
+              {
+                backgroundColor: secondarySurface,
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryCardBadgeText, { color: theme.colors.textSecondary }]}>
+              {quickStats.transactionCount} txn{quickStats.transactionCount === 1 ? '' : 's'}
+            </Text>
+          </View>
+        </View>
+        <View
+          style={[
+            styles.summaryHero,
+            {
+              backgroundColor: secondarySurface,
+              borderColor: theme.colors.border,
+            },
+          ]}
+        >
+          <Text style={[styles.summaryHeroLabel, { color: theme.colors.textSecondary }]}>Net Income</Text>
+          <AdaptiveAmountText
+            style={[
+              styles.summaryHeroValue,
+              quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText,
+            ]}
+            minFontSize={18}
+            value={formatSignedCurrency(formatCurrency, quickStats.netAmount)}
+          />
+          <Text style={[styles.summaryHeroHint, { color: theme.colors.textSecondary }]}>
+            {monthlyIncome > 0
+              ? `${formatPercentage(savingsRate)} of income remained after expenses.`
+              : monthlyExpenses > 0
+                ? 'Expenses are recorded, but no income has been added yet this month.'
+                : 'No income or expense activity has been recorded yet this month.'}
           </Text>
-          <Text style={[styles.savingsRateText, { color: theme.colors.textSecondary }]}>
-            Savings Rate: {formatPercentage(savingsRate)}
+        </View>
+        <View style={styles.summaryMetricGrid}>
+          <View
+            style={[
+              styles.summaryMetricCard,
+              {
+                backgroundColor: secondarySurface,
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+            <AdaptiveAmountText style={[styles.summaryMetricValue, styles.incomeText]} minFontSize={12} value={formatCurrency(monthlyIncome)} />
+          </View>
+          <View
+            style={[
+              styles.summaryMetricCard,
+              {
+                backgroundColor: secondarySurface,
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+            <AdaptiveAmountText style={[styles.summaryMetricValue, styles.expenseText]} minFontSize={12} value={formatCurrency(monthlyExpenses)} />
+          </View>
+        </View>
+        <View style={[styles.summaryFooter, { borderTopColor: theme.colors.border }]}>
+          <Text style={[styles.summaryFooterLabel, { color: theme.colors.textSecondary }]}>Savings Rate</Text>
+          <Text style={[styles.summaryFooterValue, { color: theme.colors.text }]}>
+            {formatPercentage(savingsRate)}
           </Text>
         </View>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Progress</Text>
-          <Text style={[styles.netWorthChangeText, netWorthProgress.monthlyChange >= 0 ? styles.incomeText : styles.expenseText]}>
-            {netWorthTrendText}
-          </Text>
+          <View style={styles.cardHeaderLeading}>
+            <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Net Worth Progress</Text>
+            <Text
+              style={[styles.netWorthChangeText, styles.cardHeaderMetaText, netWorthProgress.monthlyChange >= 0 ? styles.incomeText : styles.expenseText]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.82}
+            >
+              {netWorthTrendText}
+            </Text>
+          </View>
+          {renderChartExportAction('net-worth-progress', 'Net Worth Progress', !hasActiveAccounts)}
         </View>
+        <ViewShot ref={setChartCaptureRef('net-worth-progress')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         {!hasActiveAccounts ? (
           <View style={styles.emptyState}>
             <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
@@ -909,15 +1313,17 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
               style={[
                 styles.netWorthValueBlock,
                 {
-                  backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                  backgroundColor: secondarySurface,
                   borderColor: theme.colors.border,
                 },
               ]}
             >
               <Text style={[styles.netWorthLabel, { color: theme.colors.textSecondary }]}>Current Net Worth</Text>
-              <Text style={[styles.netWorthValue, { color: theme.colors.text }]}>
-                {formatCurrency(netWorthProgress.currentNetWorth)}
-              </Text>
+              <AdaptiveAmountText
+                style={[styles.netWorthValue, { color: theme.colors.text }]}
+                minFontSize={18}
+                value={formatCurrency(netWorthProgress.currentNetWorth)}
+              />
             </View>
             <View style={styles.netWorthBreakdownRow}>
               <View style={styles.netWorthBreakdownItem}>
@@ -973,7 +1379,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
                 <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Cumulative Inflow/Outflow</Text>
               </View>
             </View>
-            <View style={styles.chartContainer}>
+            <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
               <VictoryChart
                 width={chartWidth}
                 height={220}
@@ -1034,10 +1440,10 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
                       fill: 'url(#netWorthGradient)',
                     },
                   }}
-                  labels={({ datum }) =>
-                    `${formatShortMonthLabel(new Date(datum.x))} ${new Date(datum.x).getFullYear()}
+                    labels={({ datum }) =>
+                      `${formatDateWithWeekday(new Date(datum.x))}
 ${formatCurrency(datum.y)}`
-                  }
+                    }
                   labelComponent={
                     <VictoryTooltip
                       flyoutStyle={tooltipFlyoutStyle}
@@ -1089,7 +1495,7 @@ ${formatCurrency(datum.y)}`
                 style={[
                   styles.monthTooltip,
                   {
-                    backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                    backgroundColor: secondarySurface,
                     borderColor: theme.colors.border,
                   },
                 ]}
@@ -1163,18 +1569,39 @@ ${formatCurrency(datum.y)}`
             </Text>
           </>
         )}
+          </View>
+        </ViewShot>
       </View>
 
+      </AnalyticsCategoryBlock>      {visibleStage >= 2 ? (
+
+      <AnalyticsCategoryBlock
+        eyebrow="Activity"
+        title="Spending & Trends"
+        subtitle="Track where money is going and how income and expenses are changing."
+      >
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
-          <View style={styles.cardSubtitle}>
-            <DollarSign size={16} color={theme.colors.textSecondary} />
-            <Text style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}>{formatCurrency(monthlyExpenses)} total</Text>
+          <View style={styles.cardHeaderTrailing}>
+            <View style={styles.cardSubtitle}>
+              <DollarSign size={16} color={theme.colors.textSecondary} />
+              <Text
+                style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.72}
+              >
+                {formatCurrency(monthlyExpenses)} total
+              </Text>
+            </View>
+            {renderChartExportAction('expense-distribution', 'Expense Distribution', expenseDonutData.length === 0)}
           </View>
         </View>
+        <ViewShot ref={setChartCaptureRef('expense-distribution')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         <View style={styles.chartSummary}>
-          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(monthlyExpenses)}</Text>
+          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(monthlyExpenses)} />
           <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>total expenses this month</Text>
         </View>
         {expenseDonutData.length === 0 ? (
@@ -1185,7 +1612,7 @@ ${formatCurrency(datum.y)}`
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
           </View>
         ) : (
-          <View style={styles.chartContainer}>
+          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
             <View style={styles.donutWrapper}>
               <VictoryPie
                 data={expenseDonutData}
@@ -1204,35 +1631,42 @@ ${formatCurrency(datum.y)}`
                   },
                 }}
               />
-              <View style={styles.donutCenter}>
+              <View style={[styles.donutCenter, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
                 <Text style={[styles.donutLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
-                <Text style={[styles.donutValue, { color: theme.colors.text }]}>{formatCurrency(monthlyExpenses)}</Text>
+                <AdaptiveAmountText style={[styles.donutValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(monthlyExpenses)} />
               </View>
             </View>
           </View>
         )}
+          </View>
+        </ViewShot>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>14-Day Trend</Text>
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
-              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+          <View style={styles.cardHeaderLegendActions}>
+            <View style={[styles.legendRow, styles.headerLegendRow]}>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
+                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
+                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.savings }]} />
+                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
+              </View>
             </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
-              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
-            </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: chartPalette.savings }]} />
-              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
-            </View>
+            {renderChartExportAction('trend-14-day', '14-Day Trend', !hasTrendData)}
           </View>
         </View>
+        <ViewShot ref={setChartCaptureRef('trend-14-day')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         <View style={styles.chartSummary}>
-          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(trendSeries.totalExpenses)}</Text>
+          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(trendSeries.totalExpenses)} />
           <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>last 14 days spend</Text>
         </View>
         {!hasTrendData ? (
@@ -1243,7 +1677,7 @@ ${formatCurrency(datum.y)}`
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No transactions in the last 14 days</Text>
           </View>
         ) : (
-          <View style={styles.chartContainer}>
+          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
             <VictoryChart
               width={chartWidth}
               height={220}
@@ -1344,22 +1778,29 @@ ${formatCurrency(datum.y)}`
             </VictoryChart>
           </View>
         )}
+          </View>
+        </ViewShot>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>6-Month Income vs Expenses</Text>
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
-              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+          <View style={styles.cardHeaderLegendActions}>
+            <View style={[styles.legendRow, styles.headerLegendRow]}>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
+                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+              </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
+                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
+              </View>
             </View>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
-              <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
-            </View>
+            {renderChartExportAction('comparison-6-month', '6-Month Income vs Expenses', !hasComparisonData)}
           </View>
         </View>
+        <ViewShot ref={setChartCaptureRef('comparison-6-month')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         <View style={styles.chartSummary}>
           <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatSignedCurrency(formatCurrency, monthlyIncome - monthlyExpenses)}</Text>
           <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>net this month</Text>
@@ -1372,7 +1813,7 @@ ${formatCurrency(datum.y)}`
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No data for comparison</Text>
           </View>
         ) : (
-          <View style={styles.chartContainer}>
+          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
             <VictoryChart
               width={chartWidth}
               height={220}
@@ -1425,12 +1866,19 @@ ${formatCurrency(datum.y)}`
             </VictoryChart>
           </View>
         )}
+          </View>
+        </ViewShot>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
+        <View style={styles.cardHeader}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
+          {renderChartExportAction('spending-by-category', 'Spending by Category', categorySpending.length === 0)}
+        </View>
+        <ViewShot ref={setChartCaptureRef('spending-by-category')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         <View style={styles.chartSummary}>
-          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatCurrency(topCategory?.amount ?? 0)}</Text>
+          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(topCategory?.amount ?? 0)} />
           <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
             {topCategory ? `${topCategory.categoryName} top category` : 'Top category'}
           </Text>
@@ -1443,7 +1891,7 @@ ${formatCurrency(datum.y)}`
             <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
           </View>
         ) : (
-          <View style={styles.chartContainer}>
+          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
             <VictoryChart
               width={chartWidth}
               height={220}
@@ -1484,31 +1932,79 @@ ${formatCurrency(datum.y)}`
             </VictoryChart>
           </View>
         )}
+          </View>
+        </ViewShot>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
         <View style={styles.statsGrid}>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Transactions This Month</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{formatCurrency(quickStats.averageDailySpend)}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Daily Spend</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{quickStats.activeCategories}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Active Categories</Text>
-          </View>
-          <View style={[styles.statItem, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-            <Text style={[styles.statValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}>
-              {quickStats.netAmount >= 0 ? '+' : ''}{formatCurrency(quickStats.netAmount)}
+          <View style={[styles.statItem, { backgroundColor: secondarySurface, borderColor: theme.colors.border }]}>
+            <Text
+              style={[styles.statValue, { color: theme.colors.text }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.72}
+            >
+              {quickStats.transactionCount}
             </Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Net This Month</Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+              Transactions
+            </Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: secondarySurface, borderColor: theme.colors.border }]}>
+            <AdaptiveAmountText
+              style={[styles.statValue, { color: theme.colors.text }]}
+              minFontSize={11}
+              minimumFontScale={0.64}
+              value={formatCurrency(quickStats.averageDailySpend)}
+            />
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+              Daily Spend
+            </Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: secondarySurface, borderColor: theme.colors.border }]}>
+            <Text
+              style={[styles.statValue, { color: theme.colors.text }]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.72}
+            >
+              {quickStats.activeCategories}
+            </Text>
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+              Active Categories
+            </Text>
+          </View>
+          <View style={[styles.statItem, { backgroundColor: secondarySurface, borderColor: theme.colors.border }]}>
+            <AdaptiveAmountText
+              style={[styles.statValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}
+              minFontSize={11}
+              minimumFontScale={0.64}
+              value={(quickStats.netAmount >= 0 ? '+' : '').concat(formatCurrency(quickStats.netAmount))}
+            />
+            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+              Net This Month
+            </Text>
           </View>
         </View>
       </View>
+      </AnalyticsCategoryBlock>
+      ) : (
+        <AnalyticsCategoryPlaceholder
+          eyebrow="Activity"
+          title="Spending & Trends"
+          subtitle="Track where money is going and how income and expenses are changing."
+          cardCount={3}
+          chartCardIndex={0}
+        />
+      )}      {visibleStage >= 3 ? (
+
+      <AnalyticsCategoryBlock
+        eyebrow="Guidance"
+        title="Smart Insights"
+        subtitle="Recommendations, warnings, and budgeting ideas generated from your recent data."
+      >
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Smart Advisor</Text>
         {advisorInsights.length === 0 ? (
@@ -1601,8 +2097,29 @@ ${formatCurrency(datum.y)}`
         )}
       </View>
 
+      </AnalyticsCategoryBlock>
+      ) : (
+        <AnalyticsCategoryPlaceholder
+          eyebrow="Guidance"
+          title="Smart Insights"
+          subtitle="Recommendations, warnings, and budgeting ideas generated from your recent data."
+          cardCount={3}
+          chartCardIndex={-1}
+        />
+      )}      {visibleStage >= 4 ? (
+
+      <AnalyticsCategoryBlock
+        eyebrow="Planning"
+        title="Forecasts & Goals"
+        subtitle="See where your finances may be heading and how current progress compares to long-term targets."
+      >
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Forecast</Text>
+        <View style={styles.cardHeader}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Forecast</Text>
+          {renderChartExportAction('net-worth-forecast', 'Net Worth Forecast', !netWorthSimulation || !netWorthForecastData)}
+        </View>
+        <ViewShot ref={setChartCaptureRef('net-worth-forecast')} options={chartCaptureOptions}>
+          <View collapsable={false}>
         {!netWorthSimulation ? (
           <View style={styles.emptyState}>
             <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
@@ -1613,18 +2130,25 @@ ${formatCurrency(datum.y)}`
         ) : (
           <View>
             <View style={styles.forecastHeader}>
-              <Text style={[styles.forecastValue, { color: theme.colors.text }]}>
-                {formatCurrency(netWorthSimulation.futureValue)}
-              </Text>
+              <AdaptiveAmountText
+                style={[styles.forecastValue, { color: theme.colors.text }]}
+                minFontSize={18}
+                value={formatCurrency(netWorthSimulation.futureValue)}
+              />
               <Text style={[styles.forecastMeta, { color: theme.colors.textSecondary }]}>
-                Projected in {netWorthSimulation.years} years
+                Projected by {netWorthForecastData ? formatDateWithWeekday(netWorthForecastData.projectedDate) : `${netWorthSimulation.years} years from now`}
               </Text>
-              <Text style={[styles.forecastSub, { color: theme.colors.textSecondary }]}>
+              <Text
+                style={[styles.forecastSub, { color: theme.colors.textSecondary }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.72}
+              >
                 Contributions {formatCurrency(netWorthSimulation.totalContributions)} - Growth {formatCurrency(netWorthSimulation.investmentGrowth)}
               </Text>
             </View>
             {netWorthForecastData ? (
-              <View style={styles.chartContainer}>
+              <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
                 <VictoryChart
                   width={chartWidth}
                   height={220}
@@ -1686,7 +2210,7 @@ ${formatCurrency(datum.y)}`
                       },
                     }}
                     labels={({ datum }) =>
-                      `${new Date(datum.x).getFullYear()}
+                      `${formatDateWithWeekday(new Date(datum.x))}
 ${formatCurrency(datum.y)}`
                     }
                     labelComponent={
@@ -1704,6 +2228,8 @@ ${formatCurrency(datum.y)}`
             ) : null}
           </View>
         )}
+          </View>
+        </ViewShot>
       </View>
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
@@ -1750,8 +2276,8 @@ ${formatCurrency(datum.y)}`
         <View style={styles.milestoneList}>
           {milestoneCards.map((milestone) => {
             const progressPercent = Math.min(100, Math.round(clamp(milestone.progress) * 100));
-            const etaText = formatDurationShort(milestone.estimatedMonths ?? null);
             const achieved = milestone.achieved ?? milestone.progress >= 1;
+            const etaText = achieved ? null : formatDurationShort(milestone.estimatedMonths ?? null);
             const toneColor = milestone.tone === 'warning'
               ? theme.colors.warning
               : achieved
@@ -1765,7 +2291,7 @@ ${formatCurrency(datum.y)}`
                   styles.milestoneCard,
                   {
                     borderColor: theme.colors.border,
-                    backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                    backgroundColor: secondarySurface,
                   },
                 ]}
               >
@@ -1786,17 +2312,21 @@ ${formatCurrency(datum.y)}`
                   <Text style={[styles.milestoneLabel, { color: theme.colors.textSecondary }]}>
                     {milestone.targetLabel}
                   </Text>
-                  <Text style={[styles.milestoneAmount, { color: theme.colors.text }]}>
-                    {formatCurrency(milestone.target)}
-                  </Text>
+                  <AdaptiveAmountText
+                    style={[styles.milestoneAmount, { color: theme.colors.text }]}
+                    minFontSize={12}
+                    value={formatCurrency(milestone.target)}
+                  />
                 </View>
                 <View style={styles.milestoneRow}>
                   <Text style={[styles.milestoneLabel, { color: theme.colors.textSecondary }]}>
                     {milestone.currentLabel}
                   </Text>
-                  <Text style={[styles.milestoneAmount, { color: theme.colors.text }]}>
-                    {formatCurrency(milestone.current)}
-                  </Text>
+                  <AdaptiveAmountText
+                    style={[styles.milestoneAmount, { color: theme.colors.text }]}
+                    minFontSize={12}
+                    value={formatCurrency(milestone.current)}
+                  />
                 </View>
                 <View style={[styles.progressTrack, { backgroundColor: theme.colors.border, marginTop: 10 }]}>
                   <View
@@ -1810,7 +2340,7 @@ ${formatCurrency(datum.y)}`
                   />
                 </View>
                 <Text style={[styles.milestoneMeta, { color: theme.colors.textSecondary }]}>
-                  Progress {progressPercent}%{etaText ? ` - Est ${etaText}` : ''}
+                  Progress {progressPercent}%{etaText ? ` - ${milestone.etaPrefix ?? 'At current pace'} ${etaText}` : ''}
                 </Text>
                 {milestone.insights?.map((insight, index) => (
                   <Text
@@ -1825,6 +2355,16 @@ ${formatCurrency(datum.y)}`
           })}
         </View>
       </View>
+      </AnalyticsCategoryBlock>
+      ) : (
+        <AnalyticsCategoryPlaceholder
+          eyebrow="Planning"
+          title="Forecasts & Goals"
+          subtitle="See where your finances may be heading and how current progress compares to long-term targets."
+          cardCount={2}
+          chartCardIndex={0}
+        />
+      )}
       </ScrollView>
       <Modal
         visible={showMonthDrillDown}
@@ -1861,15 +2401,19 @@ ${formatCurrency(datum.y)}`
             <View style={[styles.monthModalSummary, { borderBottomColor: theme.colors.border }]}>
               <View style={styles.monthModalMetric}>
                 <Text style={[styles.monthModalMetricLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                <Text style={[styles.monthModalMetricValue, styles.incomeText]}>
-                  {formatCurrency(monthContributionSummary.income)}
-                </Text>
+                <AdaptiveAmountText
+                  style={[styles.monthModalMetricValue, styles.incomeText]}
+                  minFontSize={12}
+                  value={formatCurrency(monthContributionSummary.income)}
+                />
               </View>
               <View style={styles.monthModalMetric}>
                 <Text style={[styles.monthModalMetricLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                <Text style={[styles.monthModalMetricValue, styles.expenseText]}>
-                  {formatCurrency(monthContributionSummary.expenses)}
-                </Text>
+                <AdaptiveAmountText
+                  style={[styles.monthModalMetricValue, styles.expenseText]}
+                  minFontSize={12}
+                  value={formatCurrency(monthContributionSummary.expenses)}
+                />
               </View>
               <View style={styles.monthModalMetric}>
                 <Text style={[styles.monthModalMetricLabel, { color: theme.colors.textSecondary }]}>Net Flow</Text>
@@ -1943,55 +2487,386 @@ ${formatCurrency(datum.y)}`
   );
 });
 
+const AnalyticsLoadingState = React.memo(function AnalyticsLoadingState() {
+  const { theme } = useTheme();
+
+  return (
+    <View style={[styles.loadingContainer, { backgroundColor: theme.colors.background }]}> 
+      <View style={[styles.loadingHero, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+        <View style={styles.loadingHeroRow}>
+          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <Text style={[styles.loadingTitle, { color: theme.colors.text }]}>Preparing analytics</Text>
+        </View>
+        <Text style={[styles.loadingSubtitle, { color: theme.colors.textSecondary }]}>Opening charts and insights without blocking the tab switch.</Text>
+      </View>
+
+      <View style={[styles.loadingCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <View style={[styles.loadingLineShort, { backgroundColor: theme.colors.border }]} />
+        <View style={[styles.loadingLineLong, { backgroundColor: theme.colors.border }]} />
+        <View style={[styles.loadingChartBlock, { backgroundColor: theme.colors.border }]} />
+      </View>
+
+      <View style={[styles.loadingCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <View style={[styles.loadingLineShort, { backgroundColor: theme.colors.border }]} />
+        <View style={[styles.loadingLineMedium, { backgroundColor: theme.colors.border }]} />
+        <View style={[styles.loadingStatRow, { backgroundColor: theme.colors.border }]} />
+      </View>
+    </View>
+  );
+});
+
+const AnalyticsScreen = React.memo(function AnalyticsScreen() {
+  const [isReady, setIsReady] = useState(false);
+  const [visibleStage, setVisibleStage] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsReady(false);
+    setVisibleStage(0);
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (cancelled) {
+        return;
+      }
+
+      startTransition(() => {
+        setIsReady(true);
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      task.cancel();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isReady) {
+      setVisibleStage(0);
+      return;
+    }
+
+    let cancelled = false;
+    setVisibleStage(1);
+
+    const stageTimers = [2, 3, 4].map((stage, index) =>
+      setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+
+        startTransition(() => {
+          setVisibleStage(stage);
+        });
+      }, 160 + index * 180)
+    );
+
+    return () => {
+      cancelled = true;
+      stageTimers.forEach((timer) => clearTimeout(timer));
+    };
+  }, [isReady]);
+
+  if (!isReady) {
+    return <AnalyticsLoadingState />;
+  }
+
+  return <AnalyticsContent visibleStage={visibleStage} />;
+});
+
 export default AnalyticsScreen;
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  loadingContainer: {
+    flex: 1,
+    padding: 16,
+    gap: 16,
+  },
+  loadingHero: {
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 18,
+  },
+  loadingHeroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  loadingTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  loadingSubtitle: {
+    marginTop: 10,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  loadingCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 18,
+  },
+  inlineLoadingCard: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  loadingLineShort: {
+    width: '34%',
+    height: 12,
+    borderRadius: 999,
+    opacity: 0.45,
+  },
+  loadingLineMedium: {
+    width: '48%',
+    height: 12,
+    borderRadius: 999,
+    marginTop: 12,
+    opacity: 0.35,
+  },
+  loadingLineLong: {
+    width: '72%',
+    height: 12,
+    borderRadius: 999,
+    marginTop: 12,
+    opacity: 0.35,
+  },
+  loadingChartBlock: {
+    height: 150,
+    borderRadius: 16,
+    marginTop: 18,
+    opacity: 0.2,
+  },
+  loadingStatRow: {
+    height: 84,
+    borderRadius: 16,
+    marginTop: 18,
+    opacity: 0.2,
+  },
+  scrollContent: {
+    paddingBottom: 28,
+  },
+  analyticsHero: {
+    marginHorizontal: 16,
+    marginTop: 18,
+    marginBottom: 10,
+    padding: 22,
+    borderRadius: 28,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowColor: '#020617',
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 5,
+    position: 'relative',
+  },
+  analyticsHeroOrb: {
+    position: 'absolute',
+    top: -26,
+    right: -12,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+  },
+  analyticsHeroContent: {
+    gap: 14,
+  },
+  analyticsHeroBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  analyticsHeroBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  analyticsHeroTitle: {
+    fontSize: 30,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  analyticsHeroSubtitle: {
+    fontSize: 14,
+    lineHeight: 21,
+    maxWidth: '92%',
+  },
+  analyticsHeroStats: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  analyticsHeroStat: {
+    minWidth: '30%',
+    flex: 1,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 6,
+  },
+  analyticsHeroStatLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  analyticsHeroStatValue: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  analyticsHeroFooter: {
+    paddingTop: 4,
+    gap: 4,
+  },
+  analyticsHeroFooterText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  categorySection: {
+    paddingBottom: 6,
+  },
+  categoryHeader: {
+    marginHorizontal: 16,
+    marginTop: 18,
+    marginBottom: 8,
+  },
+  categoryHeaderTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  categoryEyebrowBadge: {
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  categoryHeaderLine: {
+    flex: 1,
+    height: 1,
+    borderRadius: 999,
+  },
+  categoryEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  categoryTitle: {
+    marginTop: 10,
+    fontSize: 25,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  categorySubtitle: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 20,
+    maxWidth: '94%',
+  },
   summaryCard: {
     margin: 16,
-    padding: 20,
-    borderRadius: 16,
+    padding: 22,
+    borderRadius: 24,
     borderWidth: 1,
-    shadowColor: '#000',
+    shadowColor: '#020617',
     shadowOpacity: 0.1,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
   },
   card: {
     marginHorizontal: 16,
     marginBottom: 16,
-    padding: 20,
-    borderRadius: 16,
+    padding: 22,
+    borderRadius: 24,
     borderWidth: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 3,
+    shadowColor: '#020617',
+    shadowOpacity: 0.08,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 4,
+  },
+  summaryCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 16,
+  },
+  summaryCardTitleWrap: {
+    flex: 1,
+  },
+  summaryCardTitle: {
+    marginBottom: 0,
+  },
+  summaryCardCaption: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  summaryCardBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  summaryCardBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
   },
   cardTitle: {
     fontSize: 18,
     fontWeight: '600',
     marginBottom: 16,
   },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-    gap: 16,
-  },
-  summaryItem: {
-    flex: 1,
-  },
   summaryLabel: {
     fontSize: 12,
     fontWeight: '500',
     marginBottom: 4,
   },
-  summaryValue: {
+  summaryHero: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
+  },
+  summaryHeroLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  summaryHeroValue: {
+    fontSize: 30,
+    fontWeight: '800',
+  },
+  summaryHeroHint: {
+    marginTop: 8,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  summaryMetricGrid: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 12,
+  },
+  summaryMetricCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  summaryMetricValue: {
     fontSize: 20,
     fontWeight: '700',
   },
@@ -2001,19 +2876,22 @@ const styles = StyleSheet.create({
   expenseText: {
     color: '#DC2626',
   },
-  netIncomeContainer: {
-    alignItems: 'center',
-    paddingTop: 16,
+  summaryFooter: {
     borderTopWidth: 1,
+    marginTop: 14,
+    paddingTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
-  netIncomeValue: {
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  savingsRateText: {
-    marginTop: 6,
+  summaryFooterLabel: {
     fontSize: 12,
     fontWeight: '500',
+  },
+  summaryFooterValue: {
+    fontSize: 16,
+    fontWeight: '700',
   },
   netWorthChangeText: {
     fontSize: 11,
@@ -2135,38 +3013,93 @@ const styles = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
+    alignItems: 'flex-start',
+    marginBottom: 18,
     gap: 12,
+  },
+  cardHeaderLeading: {
+    flex: 1,
+    minWidth: 0,
+  },
+  cardHeaderTitle: {
+    marginBottom: 4,
+  },
+  cardHeaderMetaText: {
+    textAlign: 'left',
+  },
+  cardHeaderTrailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    flexShrink: 1,
+  },
+  cardHeaderLegendActions: {
+    flex: 1,
+    alignItems: 'flex-end',
+    gap: 8,
+    minWidth: 0,
+  },
+  chartExportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 64,
+  },
+  chartExportButtonDisabled: {
+    opacity: 0.55,
+  },
+  chartExportButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   cardSubtitle: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(148,163,184,0.12)',
   },
   cardSubtitleText: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   chartSummary: {
-    marginBottom: 12,
+    marginBottom: 14,
+    gap: 4,
   },
   chartSummaryValue: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: -0.4,
   },
   chartSummaryLabel: {
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   donutWrapper: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 6,
   },
   donutCenter: {
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    borderWidth: 1,
+    paddingHorizontal: 14,
   },
   donutLabel: {
     fontSize: 11,
@@ -2178,27 +3111,43 @@ const styles = StyleSheet.create({
   },
   legendRow: {
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    gap: 8,
+    rowGap: 8,
     flexWrap: 'wrap',
+  },
+  headerLegendRow: {
+    justifyContent: 'flex-end',
+    alignSelf: 'stretch',
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(148,163,184,0.12)',
   },
   legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 9,
+    height: 9,
+    borderRadius: 999,
   },
   legendText: {
     fontSize: 10,
-    fontWeight: '500',
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   chartContainer: {
     alignItems: 'center',
     marginVertical: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 12,
+    borderRadius: 22,
+    borderWidth: 1,
   },
   lineChartStyle: {
     marginVertical: 8,
@@ -2281,25 +3230,36 @@ const styles = StyleSheet.create({
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 16,
+    justifyContent: 'space-between',
+    gap: 10,
   },
   statItem: {
-    flex: 1,
-    minWidth: '45%',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 12,
+    width: '48%',
+    minWidth: 0,
+    alignItems: 'stretch',
+    justifyContent: 'flex-start',
+    gap: 6,
+    minHeight: 78,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 14,
     borderWidth: 1,
   },
   statValue: {
+    width: '100%',
     fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 4,
+    lineHeight: 21,
+    fontWeight: '800',
+    marginBottom: 0,
+    letterSpacing: -0.2,
   },
   statLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    textAlign: 'center',
+    width: '100%',
+    fontSize: 10,
+    fontWeight: '700',
+    textAlign: 'left',
+    lineHeight: 13,
+    letterSpacing: 0.15,
   },
   modalOverlay: {
     flex: 1,
@@ -2397,9 +3357,10 @@ const styles = StyleSheet.create({
   },
   insightRow: {
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-    gap: 4,
+    borderRadius: 18,
+    padding: 14,
+    gap: 6,
+    backgroundColor: 'rgba(148,163,184,0.08)',
   },
   insightTitle: {
     fontSize: 14,
@@ -2415,10 +3376,12 @@ const styles = StyleSheet.create({
   suggestionRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 12,
+    alignItems: 'center',
+    gap: 14,
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: 'rgba(148,163,184,0.08)',
   },
   suggestionMain: {
     flex: 1,
@@ -2483,8 +3446,9 @@ const styles = StyleSheet.create({
   debtItem: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 18,
+    padding: 14,
+    backgroundColor: 'rgba(148,163,184,0.08)',
   },
   debtLabel: {
     fontSize: 11,
@@ -2509,9 +3473,14 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   milestoneCard: {
-    borderRadius: 14,
+    borderRadius: 20,
     borderWidth: 1,
-    padding: 14,
+    padding: 16,
+    shadowColor: '#020617',
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
   },
   milestoneHeaderRow: {
     flexDirection: 'row',
@@ -2563,10 +3532,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   progressTrack: {
-    height: 8,
-    borderRadius: 6,
+    height: 10,
+    borderRadius: 999,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   progressFill: {
     height: '100%',
@@ -2580,3 +3549,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+
+
+
+
+
+
+
+
+

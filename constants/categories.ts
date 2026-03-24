@@ -1,6 +1,26 @@
-import TextRecognition from '@react-native-ml-kit/text-recognition';
 import { Transaction, TransactionCategory } from '@/types/transaction';
 import { enqueueWrite, STORAGE_KEYS, safeReadJSON, safeWriteJSON } from '@/lib/storage';
+type TextRecognitionModule = {
+  recognize: (imageUri: string) => Promise<{ text?: string | null }>;
+};
+
+async function recognizeReceiptText(imageUri: string): Promise<string> {
+  try {
+    const module = await import('@react-native-ml-kit/text-recognition');
+    const textRecognition = (module as unknown as { default?: TextRecognitionModule }).default;
+
+    if (!textRecognition?.recognize) {
+      throw new Error('Text recognition module unavailable');
+    }
+
+    const result = await textRecognition.recognize(imageUri);
+    return result?.text?.trim() ?? '';
+  } catch {
+    throw new Error(
+      'Receipt OCR requires a development build. Expo Go can open the app, but receipt scanning is unavailable there.'
+    );
+  }
+}
 
 /* ----------------------------- Currency ----------------------------- */
 export interface CurrencyOption {
@@ -12,10 +32,10 @@ export interface CurrencyOption {
 export const CURRENCY_OPTIONS: CurrencyOption[] = [
   { code: 'ZMW', symbol: 'K', name: 'Zambian Kwacha' },
   { code: 'USD', symbol: '$', name: 'US Dollar' },
-  { code: 'EUR', symbol: '€', name: 'Euro' },
-  { code: 'GBP', symbol: '£', name: 'British Pound' },
+  { code: 'EUR', symbol: 'Ã¢â€šÂ¬', name: 'Euro' },
+  { code: 'GBP', symbol: 'Ã‚Â£', name: 'British Pound' },
   { code: 'KES', symbol: 'KSh', name: 'Kenyan Shilling' },
-  { code: 'NGN', symbol: '₦', name: 'Nigerian Naira' },
+  { code: 'NGN', symbol: 'Ã¢â€šÂ¦', name: 'Nigerian Naira' },
   // add more currencies as needed
 ];
 
@@ -78,8 +98,7 @@ function extractMerchant(text: string): string | undefined {
 }
 
 export async function runReceiptOcr(imageUri: string): Promise<ReceiptData & { rawText: string }> {
-  const result = await TextRecognition.recognize(imageUri);
-  const rawText = result?.text?.trim() ?? '';
+  const rawText = await recognizeReceiptText(imageUri);
   return {
     rawText,
     amount: extractAmount(rawText),
@@ -92,22 +111,45 @@ export async function runReceiptOcr(imageUri: string): Promise<ReceiptData & { r
 /* --------------------------- Categories --------------------------- */
 export const MODAL_EXPENSE_CATEGORIES: TransactionCategory[] = [
   { id: 'housing', name: 'Housing', icon: 'Home', color: '#FF6B6B' },
+  { id: 'utilities', name: 'Utilities', icon: 'Lightbulb', color: '#F59E0B' },
   { id: 'groceries', name: 'Groceries', icon: 'ShoppingBag', color: '#FFD166' },
-  { id: 'transport', name: 'Transport', icon: 'Car', color: '#06D6A0' },
   { id: 'dining', name: 'Dining Out', icon: 'Utensils', color: '#EF476F' },
+  { id: 'transport', name: 'Transport', icon: 'Car', color: '#06D6A0' },
+  { id: 'fuel', name: 'Fuel', icon: 'Fuel', color: '#14B8A6' },
+  { id: 'phone-internet', name: 'Phone & Internet', icon: 'Wifi', color: '#0EA5E9' },
+  { id: 'subscriptions', name: 'Subscriptions', icon: 'RefreshCw', color: '#8B5CF6' },
   { id: 'entertainment', name: 'Entertainment', icon: 'Film', color: '#7209B7' },
+  { id: 'education', name: 'Education', icon: 'BookOpen', color: '#3B82F6' },
+  { id: 'clothing', name: 'Clothing', icon: 'Shirt', color: '#EC4899' },
+  { id: 'personal-care', name: 'Personal Care', icon: 'Scissors', color: '#F472B6' },
+  { id: 'travel', name: 'Travel', icon: 'Plane', color: '#38BDF8' },
+  { id: 'family', name: 'Family', icon: 'Users', color: '#FB7185' },
+  { id: 'gifts-donations', name: 'Gifts & Donations', icon: 'Gift', color: '#F43F5E' },
   { id: 'health', name: 'Health', icon: 'Heart', color: '#FF595E' },
   { id: 'insurance', name: 'Insurance', icon: 'Shield', color: '#073B4C' },
+  { id: 'taxes-fees', name: 'Taxes & Fees', icon: 'Receipt', color: '#64748B' },
+  { id: 'maintenance', name: 'Maintenance', icon: 'Wrench', color: '#F97316' },
+  { id: 'farm-labor', name: 'Farm Labor', icon: 'Users', color: '#84CC16' },
+  { id: 'livestock', name: 'Livestock', icon: 'PawPrint', color: '#A16207' },
   { id: 'fertilizers', name: 'Fertilizers', icon: 'Leaf', color: '#34D399' },
   { id: 'seeds', name: 'Seeds & Plants', icon: 'Sprout', color: '#22C55E' },
+  { id: 'farm-equipment', name: 'Farm Equipment', icon: 'Tractor', color: '#65A30D' },
   { id: 'debt', name: 'Debt', icon: 'Landmark', color: '#64748B' },
   { id: 'other', name: 'Other', icon: 'MoreHorizontal', color: '#94A3B8' },
 ];
 
 export const MODAL_INCOME_CATEGORIES: TransactionCategory[] = [
   { id: 'salary', name: 'Salary', icon: 'Briefcase', color: '#10B981' },
+  { id: 'bonus', name: 'Bonus', icon: 'BadgeDollarSign', color: '#22C55E' },
   { id: 'freelance', name: 'Freelance', icon: 'Laptop', color: '#8B5CF6' },
   { id: 'business', name: 'Business', icon: 'Building', color: '#F59E0B' },
+  { id: 'farming-income', name: 'Farming Income', icon: 'Leaf', color: '#16A34A' },
+  { id: 'sales', name: 'Sales', icon: 'Store', color: '#F97316' },
+  { id: 'rental-income', name: 'Rental Income', icon: 'Home', color: '#38BDF8' },
+  { id: 'interest', name: 'Interest', icon: 'Landmark', color: '#0EA5E9' },
+  { id: 'dividends', name: 'Dividends', icon: 'TrendingUp', color: '#6366F1' },
+  { id: 'refund', name: 'Refund', icon: 'RotateCcw', color: '#14B8A6' },
+  { id: 'allowance', name: 'Allowance', icon: 'Wallet', color: '#EAB308' },
   { id: 'gift', name: 'Gift', icon: 'Gift', color: '#F43F5E' },
   { id: 'other-income', name: 'Other Income', icon: 'MoreHorizontal', color: '#94A3B8' },
 ];
@@ -120,6 +162,106 @@ export const ALL_CATEGORIES: TransactionCategory[] = [
 
 export function normalizeCategoryLookup(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function normalizeCategoryName(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function getCategoryLookupKeys(category: Pick<TransactionCategory, 'id' | 'name'>): string[] {
+  return [category.id, category.name]
+    .map((value) => normalizeCategoryLookup(value))
+    .filter(Boolean);
+}
+
+export function mergeCategories(
+  ...collections: Array<ReadonlyArray<TransactionCategory | null | undefined>>
+): TransactionCategory[] {
+  const merged: TransactionCategory[] = [];
+  const seen = new Set<string>();
+
+  for (const collection of collections) {
+    for (const category of collection) {
+      if (!category?.id || !category?.name?.trim()) {
+        continue;
+      }
+
+      const normalizedCategory = {
+        ...category,
+        name: normalizeCategoryName(category.name),
+      };
+      const lookupKeys = getCategoryLookupKeys(normalizedCategory);
+
+      if (lookupKeys.length === 0 || lookupKeys.some((key) => seen.has(key))) {
+        continue;
+      }
+
+      merged.push(normalizedCategory);
+      lookupKeys.forEach((key) => seen.add(key));
+    }
+  }
+
+  return merged;
+}
+
+export function findMatchingCategory(
+  categories: ReadonlyArray<TransactionCategory>,
+  value?: Partial<TransactionCategory> | string | null
+): TransactionCategory | null {
+  if (!value) {
+    return null;
+  }
+
+  const lookupKeys =
+    typeof value === 'string'
+      ? [normalizeCategoryLookup(value)].filter(Boolean)
+      : getCategoryLookupKeys({
+          id: value.id ?? '',
+          name: value.name ?? '',
+        });
+
+  if (lookupKeys.length === 0) {
+    return null;
+  }
+
+  return (
+    categories.find((category) => {
+      const categoryKeys = getCategoryLookupKeys(category);
+      return lookupKeys.some((key) => categoryKeys.includes(key));
+    }) ?? null
+  );
+}
+
+export function createCustomCategory(
+  name: string,
+  type: 'income' | 'expense' | 'debt',
+  existingCategories: ReadonlyArray<TransactionCategory> = []
+): TransactionCategory {
+  const normalizedName = normalizeCategoryName(name);
+  const existing = findMatchingCategory(existingCategories, normalizedName);
+  if (existing) {
+    return existing;
+  }
+
+  const baseSlug = normalizeCategoryLookup(normalizedName) || `${type}category`;
+  const prefix = type === 'income' ? 'income' : type === 'debt' ? 'debt' : 'expense';
+  const existingIds = new Set(
+    existingCategories.map((category) => normalizeCategoryLookup(category.id)).filter(Boolean)
+  );
+
+  let candidateId = `custom-${prefix}-${baseSlug}`;
+  let suffix = 2;
+  while (existingIds.has(normalizeCategoryLookup(candidateId))) {
+    candidateId = `custom-${prefix}-${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+
+  return {
+    id: candidateId,
+    name: normalizedName,
+    icon: 'Tag',
+    color: type === 'income' ? '#16A34A' : type === 'debt' ? '#A855F7' : '#F97316',
+  };
 }
 
 export function resolveCanonicalCategoryId(value?: string | null): string | null {

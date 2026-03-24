@@ -30,6 +30,7 @@ import { TransactionItem } from '@/components/TransactionItem';
 import { AddTransactionModal } from '@/components/AddTransactionModal';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
 import { SmartInsightsCard } from '@/components/dashboard/SmartInsightsCard';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useQuickActionsStore } from '@/store/quick-actions-store';
 import { useTheme } from '@/store/theme-store';
@@ -38,6 +39,7 @@ import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
 import { Insight, Transaction } from '@/types/transaction';
 import { getActiveBudgets } from '@/src/domain/budgeting';
 import * as Haptics from 'expo-haptics';
+import { useI18n } from '@/src/i18n';
 
 function SkeletonBlock({ width, height, style }: { width: number | string; height: number; style?: object }) {
   const opacity = useRef(new Animated.Value(0.3)).current;
@@ -180,32 +182,34 @@ const InsightCard = React.memo(function InsightCard({ insight, isDark, onPress }
 const insightStyles = StyleSheet.create({
   card: {
     flexDirection: 'row',
-    padding: 14,
-    borderRadius: 14,
-    marginBottom: 8,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 6,
     alignItems: 'center',
   },
   iconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
+    width: 30,
+    height: 30,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   content: {
     flex: 1,
   },
   title: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700' as const,
-    marginBottom: 2,
+    marginBottom: 1,
   },
   message: {
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 11,
+    lineHeight: 15,
   },
 });
+
+type MetricCardTarget = 'budget' | 'health' | 'goals' | 'savings';
 
 export default function HomeScreen() {
   const [showAddModal, setShowAddModal] = useState(false);
@@ -213,8 +217,16 @@ export default function HomeScreen() {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [preferredType, setPreferredType] = useState<'income' | 'expense' | 'transfer' | 'debt' | null>(null);
+  const [activeMetricTooltip, setActiveMetricTooltip] = useState<MetricCardTarget | null>(null);
   const { theme } = useTheme();
+  const { t } = useI18n();
   const fabScale = useRef(new Animated.Value(1)).current;
+  const metricTooltipMessages: Record<MetricCardTarget, string> = {
+    budget: t('home.metricTooltip.budget'),
+    health: t('home.metricTooltip.health'),
+    goals: t('home.metricTooltip.goals'),
+    savings: t('home.metricTooltip.savings'),
+  };
 
   const {
     transactions,
@@ -243,13 +255,7 @@ export default function HomeScreen() {
     [transactions]
   );
 
-  
-  const activeAccounts = useMemo(() => accounts.filter((account) => account.isActive), [accounts]);
 
-  const accountOverview = useMemo(
-    () => [...activeAccounts].sort((a, b) => b.balance - a.balance).slice(0, 3),
-    [activeAccounts]
-  );
 
   const topSpending = useMemo(() => {
     const totals = new Map<string, { name: string; color: string; amount: number }>();
@@ -368,7 +374,7 @@ export default function HomeScreen() {
   }, [fabScale]);
 
   const handleFabLongPress = useCallback(() => {
-    Alert.alert('Add transaction', 'Choose a type', [
+    Alert.alert(t('home.addType.title'), t('home.addType.message'), [
       {
         text: 'Income',
         onPress: () => {
@@ -394,22 +400,41 @@ export default function HomeScreen() {
     ]);
   }, [setPreferredType, setShowAddModal]);
 
-  const handleMetricPress = useCallback((target: 'budget' | 'health' | 'goals' | 'savings') => {
-    const messageMap = {
-      budget: 'Open the Budget screen to review active budgets.',
-      health: 'Open Financial Health to see your full score breakdown.',
-      goals: 'Open Planning to manage goals and milestones.',
-      savings: 'Open Accounts to review your savings balances.',
-    };
-
-    Alert.alert('Navigate', messageMap[target]);
+  const handleMetricPress = useCallback((target: MetricCardTarget) => {
+    setActiveMetricTooltip((current) => (current === target ? null : target));
   }, []);
+
+  useEffect(() => {
+    if (!activeMetricTooltip) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setActiveMetricTooltip(null);
+    }, 2400);
+
+    return () => clearTimeout(timeout);
+  }, [activeMetricTooltip]);
 
   const handleInsightPress = useCallback((insight: Insight) => {
     Alert.alert(insight.title, insight.message);
   }, []);
 
   const isDark = theme.isDark;
+  const metricTooltipBackground = isDark ? '#0F172A' : '#1F2937';
+
+  const renderMetricTooltip = (target: MetricCardTarget) => {
+    if (activeMetricTooltip !== target) {
+      return null;
+    }
+
+    return (
+      <View pointerEvents="none" style={[styles.metricTooltip, { backgroundColor: metricTooltipBackground }]}>
+        <Text style={styles.metricTooltipText}>{metricTooltipMessages[target]}</Text>
+        <View style={[styles.metricTooltipArrow, { borderTopColor: metricTooltipBackground }]} />
+      </View>
+    );
+  };
 
   useEffect(() => {
     if (isLoaded) {
@@ -441,18 +466,18 @@ export default function HomeScreen() {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.skeletonWrap}>
-          <SkeletonBlock width="100%" height={160} />
+          <SkeletonBlock width="100%" height={144} />
           <View style={{ height: 16 }} />
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
-            <SkeletonBlock width="48%" height={100} />
-            <SkeletonBlock width="48%" height={100} />
-            <SkeletonBlock width="48%" height={100} />
-            <SkeletonBlock width="48%" height={100} />
+            <SkeletonBlock width="48%" height={88} />
+            <SkeletonBlock width="48%" height={88} />
+            <SkeletonBlock width="48%" height={88} />
+            <SkeletonBlock width="48%" height={88} />
           </View>
           <View style={{ height: 16 }} />
-          <SkeletonBlock width="100%" height={80} />
+          <SkeletonBlock width="100%" height={68} />
           <View style={{ height: 12 }} />
-          <SkeletonBlock width="100%" height={80} />
+          <SkeletonBlock width="100%" height={68} />
         </View>
       </View>
     );
@@ -463,6 +488,7 @@ export default function HomeScreen() {
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
+        onScrollBeginDrag={() => setActiveMetricTooltip(null)}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
         }
@@ -476,10 +502,17 @@ export default function HomeScreen() {
           <View style={styles.heroTop}>
             <View>
               <Text style={styles.heroLabel}>Net Worth</Text>
-              <Text style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}>
-                {netBalance < 0 ? '-' : ''}{formatCurrency(Math.abs(netBalance))}
-              </Text>
-              <Text style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}>
+              <AdaptiveAmountText
+                style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}
+                minFontSize={18}
+                value={`${netBalance < 0 ? '-' : ''}${formatCurrency(Math.abs(netBalance))}`}
+              />
+              <Text
+                style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.72}
+              >
                 This month {monthlyCashFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(monthlyCashFlow))}
               </Text>
             </View>
@@ -491,12 +524,14 @@ export default function HomeScreen() {
                 ) : (
                   <ArrowDownRight size={12} color="#F87171" />
                 )}
-                <Text style={[
-                  styles.cashFlowPillText,
-                  { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
-                ]}>
-                  {monthlyCashFlow >= 0 ? '+' : ''}{formatCurrency(monthlyCashFlow)}
-                </Text>
+                <AdaptiveAmountText
+                  style={[
+                    styles.cashFlowPillText,
+                    { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
+                  ]}
+                  minFontSize={9}
+                  value={`${monthlyCashFlow >= 0 ? '+' : ''}${formatCurrency(monthlyCashFlow)}`}
+                />
               </View>
             </View>
           </View>
@@ -508,7 +543,7 @@ export default function HomeScreen() {
               </View>
               <View>
                 <Text style={styles.flowLabel}>Income</Text>
-                <Text style={styles.flowValue}>{formatCurrency(monthlyIncome)}</Text>
+                <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyIncome)} />
               </View>
             </View>
             <View style={styles.flowDivider} />
@@ -518,7 +553,7 @@ export default function HomeScreen() {
               </View>
               <View>
                 <Text style={styles.flowLabel}>Expenses</Text>
-                <Text style={styles.flowValue}>{formatCurrency(monthlyExpenses)}</Text>
+                <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyExpenses)} />
               </View>
             </View>
           </View>
@@ -527,7 +562,11 @@ export default function HomeScreen() {
 
         <View style={styles.metricsRow}>
           <TouchableOpacity
-            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            style={[
+              styles.metricCard,
+              activeMetricTooltip === 'budget' && styles.metricCardActive,
+              { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' },
+            ]}
             activeOpacity={0.85}
             onPress={() => handleMetricPress('budget')}
           >
@@ -566,10 +605,15 @@ export default function HomeScreen() {
                 </Text>
               </>
             )}
+            {renderMetricTooltip('budget')}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            style={[
+              styles.metricCard,
+              activeMetricTooltip === 'health' && styles.metricCardActive,
+              { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' },
+            ]}
             activeOpacity={0.85}
             onPress={() => handleMetricPress('health')}
           >
@@ -585,10 +629,15 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add transactions</Text>
               </>
             )}
+            {renderMetricTooltip('health')}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            style={[
+              styles.metricCard,
+              activeMetricTooltip === 'goals' && styles.metricCardActive,
+              { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' },
+            ]}
             activeOpacity={0.85}
             onPress={() => handleMetricPress('goals')}
           >
@@ -621,10 +670,15 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add one in Planning</Text>
               </>
             )}
+            {renderMetricTooltip('goals')}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.metricCard, { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' }]}
+            style={[
+              styles.metricCard,
+              activeMetricTooltip === 'savings' && styles.metricCardActive,
+              { backgroundColor: isDark ? theme.colors.card : '#FFFFFF' },
+            ]}
             activeOpacity={0.85}
             onPress={() => handleMetricPress('savings')}
           >
@@ -634,13 +688,12 @@ export default function HomeScreen() {
             <Text style={[styles.metricLabel, { color: theme.colors.textSecondary }]}>Savings</Text>
             {savingsAccounts.length > 0 ? (
               <>
-                <Text
+                <AdaptiveAmountText
                   style={[styles.metricValue, { color: theme.colors.text }]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                >
-                  {formatCurrency(totalSavings)}
-                </Text>
+                  minFontSize={10}
+                  minimumFontScale={0.64}
+                  value={formatCurrency(totalSavings)}
+                />
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
                   {savingsAccounts.length} {savingsAccounts.length === 1 ? 'account' : 'accounts'}
                 </Text>
@@ -654,45 +707,10 @@ export default function HomeScreen() {
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add a savings account</Text>
               </>
             )}
+            {renderMetricTooltip('savings')}
           </TouchableOpacity>
         </View>
 
-        {accountOverview.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Accounts</Text>
-              {activeAccounts.length > accountOverview.length && (
-                <TouchableOpacity style={styles.seeAllBtn} onPress={() => handleMetricPress('savings')}>
-                  <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
-                  <ChevronRight size={14} color={theme.colors.primary} />
-                </TouchableOpacity>
-              )}
-            </View>
-            <View
-              style={[
-                styles.overviewCard,
-                { backgroundColor: isDark ? theme.colors.card : '#FFFFFF', borderColor: theme.colors.border },
-              ]}
-            >
-              {accountOverview.map((account, index) => (
-                <View key={account.id}>
-                  {index > 0 && <View style={[styles.txDivider, { backgroundColor: theme.colors.border }]} />}
-                  <View style={styles.overviewRow}>
-                    <View style={styles.overviewNameWrap}>
-                      <View style={[styles.overviewDot, { backgroundColor: account.color || theme.colors.primary }]} />
-                      <Text style={[styles.overviewName, { color: theme.colors.text }]} numberOfLines={1}>
-                        {account.name}
-                      </Text>
-                    </View>
-                    <Text style={[styles.overviewValue, { color: theme.colors.text }]}>
-                      {formatCurrency(account.balance)}
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          </View>
-        )}
 
         {topSpending.length > 0 && (
           <View style={styles.section}>
@@ -716,9 +734,11 @@ export default function HomeScreen() {
                         {item.name}
                       </Text>
                     </View>
-                    <Text style={[styles.overviewValue, { color: theme.colors.text }]}>
-                      {formatCurrency(item.amount)}
-                    </Text>
+                    <AdaptiveAmountText
+                      style={[styles.overviewValue, { color: theme.colors.text }]}
+                      minFontSize={10}
+                      value={formatCurrency(item.amount)}
+                    />
                   </View>
                 </View>
               ))}
@@ -771,28 +791,34 @@ export default function HomeScreen() {
                   ? (isDark ? '#052E16' : '#DCFCE7')
                   : (isDark ? '#450A0A' : '#FEE2E2'),
               }]}>
-                <Text style={{
-                  fontSize: 11,
-                  fontWeight: '700' as const,
-                  color: farmSummary.profit >= 0 ? '#16A34A' : '#DC2626',
-                }}>
-                  {farmSummary.profit >= 0 ? '+' : ''}{formatCurrency(farmSummary.profit)}
-                </Text>
+                <AdaptiveAmountText
+                  style={{
+                    fontSize: 11,
+                    fontWeight: '700' as const,
+                    color: farmSummary.profit >= 0 ? '#16A34A' : '#DC2626',
+                  }}
+                  minFontSize={9}
+                  value={`${farmSummary.profit >= 0 ? '+' : ''}${formatCurrency(farmSummary.profit)}`}
+                />
               </View>
             </View>
             <View style={styles.farmStats}>
               <View style={styles.farmStat}>
                 <Text style={[styles.farmStatLabel, { color: theme.colors.textSecondary }]}>Revenue</Text>
-                <Text style={[styles.farmStatValue, { color: '#16A34A' }]}>
-                  {formatCurrency(farmSummary.totalFarmIncome)}
-                </Text>
+                <AdaptiveAmountText
+                  style={[styles.farmStatValue, { color: '#16A34A' }]}
+                  minFontSize={11}
+                  value={formatCurrency(farmSummary.totalFarmIncome)}
+                />
               </View>
               <View style={[styles.farmStatDivider, { backgroundColor: isDark ? '#1A4D3D' : '#BBF7D0' }]} />
               <View style={styles.farmStat}>
                 <Text style={[styles.farmStatLabel, { color: theme.colors.textSecondary }]}>Costs</Text>
-                <Text style={[styles.farmStatValue, { color: '#DC2626' }]}>
-                  {formatCurrency(farmSummary.totalFarmExpenses)}
-                </Text>
+                <AdaptiveAmountText
+                  style={[styles.farmStatValue, { color: '#DC2626' }]}
+                  minFontSize={11}
+                  value={formatCurrency(farmSummary.totalFarmExpenses)}
+                />
               </View>
             </View>
           </View>
@@ -826,7 +852,7 @@ export default function HomeScreen() {
           ) : (
             <View style={[styles.txList, {
               backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
-              borderRadius: 16,
+              borderRadius: 14,
               overflow: 'hidden',
             }]}>
               {recentTransactions.map((transaction, index) => (
@@ -836,7 +862,7 @@ export default function HomeScreen() {
                   )}
                   <TransactionItem
                     transaction={transaction}
-                    showActions
+                    showActions compact
                     onEdit={() => setEditingTransaction(transaction)}
                     onDelete={() => confirmDeleteTransaction(transaction)}
                   />
@@ -897,14 +923,14 @@ const styles = StyleSheet.create({
   heroCard: {
     marginHorizontal: 16,
     marginTop: 8,
-    borderRadius: 22,
-    padding: 22,
+    borderRadius: 18,
+    padding: 18,
   },
   heroTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   heroLabel: {
     color: 'rgba(255,255,255,0.55)',
@@ -915,16 +941,16 @@ const styles = StyleSheet.create({
   },
   heroBalance: {
     color: '#FFFFFF',
-    fontSize: 30,
+    fontSize: 26,
     fontWeight: '800' as const,
-    marginTop: 4,
+    marginTop: 3,
     letterSpacing: -0.5,
   },
   heroMeta: {
     color: 'rgba(255,255,255,0.72)',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600' as const,
-    marginTop: 6,
+    marginTop: 5,
   },
   heroMetaNegative: {
     color: '#FCA5A5',
@@ -935,15 +961,15 @@ const styles = StyleSheet.create({
   cashFlowPill: {
     flexDirection: 'column',
     alignItems: 'flex-start',
-    gap: 2,
+    gap: 1,
     backgroundColor: 'rgba(255,255,255,0.08)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 18,
-    marginTop: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 14,
+    marginTop: 2,
   },
   cashFlowPillLabel: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600' as const,
     color: 'rgba(255,255,255,0.6)',
     letterSpacing: 0.3,
@@ -954,15 +980,16 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   cashFlowPillText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700' as const,
+    flexShrink: 1,
   },
   flowRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 12,
+    padding: 12,
   },
   flowItem: {
     flex: 1,
@@ -970,81 +997,121 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   flowIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
+    width: 26,
+    height: 26,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
+    marginRight: 8,
   },
   flowLabel: {
     color: 'rgba(255,255,255,0.5)',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600' as const,
     letterSpacing: 0.3,
   },
   flowValue: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700' as const,
     marginTop: 1,
+    flexShrink: 1,
   },
   flowDivider: {
     width: 1,
-    height: 28,
+    height: 24,
     backgroundColor: 'rgba(255,255,255,0.12)',
-    marginHorizontal: 10,
+    marginHorizontal: 8,
   },
   metricsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     paddingHorizontal: 16,
-    gap: 10,
-    marginTop: 12,
+    gap: 8,
+    marginTop: 10,
   },
   metricCard: {
     width: '48%',
-    minHeight: 102,
-    borderRadius: 16,
-    paddingHorizontal: 10,
-    paddingVertical: 12,
+    minHeight: 88,
+    borderRadius: 14,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
     shadowRadius: 8,
     elevation: 2,
   },
+  metricCardActive: {
+    zIndex: 12,
+    elevation: 5,
+  },
+  metricTooltip: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    bottom: '100%',
+    marginBottom: 8,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 10,
+  },
+  metricTooltipText: {
+    color: 'white',
+    fontSize: 11,
+    fontWeight: '600' as const,
+    lineHeight: 15,
+    textAlign: 'center',
+  },
+  metricTooltipArrow: {
+    position: 'absolute',
+    top: '100%',
+    left: '50%',
+    marginLeft: -6,
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderTopWidth: 7,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
   metricIconBg: {
-    width: 28,
-    height: 28,
-    borderRadius: 9,
+    width: 24,
+    height: 24,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
+    marginBottom: 5,
   },
   metricLabel: {
     fontSize: 9,
     fontWeight: '700' as const,
-    marginBottom: 6,
+    marginBottom: 5,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.5,
   },
   metricEmpty: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700' as const,
     marginBottom: 3,
     textAlign: 'center',
   },
   metricValue: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800' as const,
     marginBottom: 3,
     textAlign: 'center',
   },
   metricMeta: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '600' as const,
     marginTop: 1,
     textAlign: 'center',
@@ -1056,32 +1123,32 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   metricSub: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '500' as const,
     marginTop: 1,
     textAlign: 'center',
   },
   section: {
     paddingHorizontal: 16,
-    paddingTop: 20,
+    paddingTop: 16,
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   sectionTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700' as const,
     letterSpacing: -0.2,
   },
   sectionMeta: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600' as const,
   },
   overviewCard: {
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -1089,78 +1156,80 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   overviewNameWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
     flex: 1,
-    marginRight: 10,
+    marginRight: 8,
   },
   overviewDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   overviewName: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600' as const,
     flex: 1,
   },
   overviewValue: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700' as const,
+    flexShrink: 1,
+    textAlign: 'right',
   },
   spendingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   spendingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   seeAllBtn: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   seeAll: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600' as const,
   },
   farmCard: {
     marginHorizontal: 16,
-    marginTop: 14,
-    borderRadius: 18,
-    padding: 16,
+    marginTop: 12,
+    borderRadius: 16,
+    padding: 14,
   },
   farmHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 14,
+    gap: 7,
+    marginBottom: 12,
   },
   farmIconBg: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   farmTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700' as const,
     flex: 1,
   },
   farmProfitPill: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 10,
   },
   farmStats: {
     flexDirection: 'row',
@@ -1175,15 +1244,16 @@ const styles = StyleSheet.create({
     height: 28,
   },
   farmStatLabel: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600' as const,
     marginBottom: 2,
     letterSpacing: 0.3,
     textTransform: 'uppercase' as const,
   },
   farmStatValue: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700' as const,
+    flexShrink: 1,
   },
   txList: {
     shadowColor: '#000',
@@ -1194,30 +1264,30 @@ const styles = StyleSheet.create({
   },
   txDivider: {
     height: 1,
-    marginHorizontal: 16,
+    marginHorizontal: 12,
   },
   emptyState: {
     alignItems: 'center',
-    padding: 36,
-    borderRadius: 18,
+    padding: 28,
+    borderRadius: 15,
   },
   emptyIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
   },
   emptyTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600' as const,
-    marginBottom: 6,
+    marginBottom: 5,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: 12,
     textAlign: 'center',
-    lineHeight: 18,
+    lineHeight: 16,
   },
   fabContainer: {
     position: 'absolute',

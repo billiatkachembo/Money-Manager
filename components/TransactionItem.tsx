@@ -6,6 +6,7 @@ import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
 import { formatDateDDMMYYYY } from '@/utils/date';
 import * as Icons from 'lucide-react-native';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
 interface TransactionItemProps {
   transaction: Transaction;
@@ -13,6 +14,7 @@ interface TransactionItemProps {
   onEdit?: () => void;
   onDelete?: () => void;
   showActions?: boolean;
+  compact?: boolean;
 }
 
 export function TransactionItem({
@@ -21,6 +23,7 @@ export function TransactionItem({
   onEdit,
   onDelete,
   showActions = false,
+  compact = false,
 }: TransactionItemProps) {
   const { theme } = useTheme();
   const { formatCurrency } = useTransactionStore();
@@ -56,56 +59,58 @@ export function TransactionItem({
           shadowOpacity: theme.isDark ? 0 : 0.08,
           elevation: theme.isDark ? 0 : 2,
         },
+        compact && styles.compactContainer,
       ]}
     >
       <TouchableOpacity
         activeOpacity={onPress ? 0.82 : 1}
         disabled={!onPress}
         onPress={onPress}
-        style={styles.mainRow}
+        style={[styles.mainRow, compact && styles.compactMainRow]}
       >
-        <View style={[styles.iconContainer, { backgroundColor: transaction.category.color + '20' }]}>
-          <IconComponent size={20} color={transaction.category.color} />
+        <View style={[styles.iconContainer, compact && styles.compactIconContainer, { backgroundColor: transaction.category.color + '20' }]}>
+          <IconComponent size={compact ? 18 : 20} color={transaction.category.color} />
         </View>
 
         <View style={styles.content}>
-          <Text style={[styles.description, { color: theme.colors.text }]} numberOfLines={1}>
+          <Text style={[styles.description, compact && styles.compactDescription, { color: theme.colors.text }]} numberOfLines={1}>
             {transaction.description}
           </Text>
-          <Text style={[styles.category, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          <Text style={[styles.category, compact && styles.compactMeta, { color: theme.colors.textSecondary }]} numberOfLines={1}>
             {transaction.category.name}
           </Text>
         </View>
 
-        <View style={styles.rightContent}>
-          <Text style={[styles.amount, amountColor]}>
-            {amountPrefix}
-            {formatCurrency(transaction.amount)}
-          </Text>
-          <Text style={[styles.date, { color: theme.colors.textSecondary }]}>{formatDate(transaction.date)}</Text>
+        <View style={[styles.rightContent, compact && styles.compactRightContent]}>
+          <AdaptiveAmountText
+            style={[styles.amount, compact && styles.compactAmount, amountColor]}
+            minFontSize={11}
+            value={`${amountPrefix}${formatCurrency(transaction.amount)}`}
+          />
+          <Text style={[styles.date, compact && styles.compactMeta, { color: theme.colors.textSecondary }]}>{formatDate(transaction.date)}</Text>
         </View>
       </TouchableOpacity>
 
       {hasActions ? (
-        <View style={[styles.actionsRow, { borderTopColor: theme.colors.border }]}> 
+        <View style={[styles.actionsRow, compact && styles.compactActionsRow, { borderTopColor: theme.colors.border }]}> 
           {onEdit ? (
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onEdit}
-              style={[styles.actionButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+              style={[styles.actionButton, compact && styles.compactActionButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
             >
-              <Pencil size={14} color={theme.colors.primary} />
-              <Text style={[styles.actionText, { color: theme.colors.primary }]}>Edit</Text>
+              <Pencil size={compact ? 13 : 14} color={theme.colors.primary} />
+              <Text style={[styles.actionText, compact && styles.compactActionText, { color: theme.colors.primary }]}>Edit</Text>
             </TouchableOpacity>
           ) : null}
           {onDelete ? (
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onDelete}
-              style={[styles.actionButton, { backgroundColor: '#FEE2E2', borderColor: '#FECACA' }]}
+              style={[styles.actionButton, compact && styles.compactActionButton, { backgroundColor: '#FEE2E2', borderColor: '#FECACA' }]}
             >
-              <Trash2 size={14} color="#DC2626" />
-              <Text style={[styles.actionText, { color: '#DC2626' }]}>Delete</Text>
+              <Trash2 size={compact ? 13 : 14} color="#DC2626" />
+              <Text style={[styles.actionText, compact && styles.compactActionText, { color: '#DC2626' }]}>Delete</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -126,10 +131,23 @@ const styles = StyleSheet.create({
     },
     shadowRadius: 3,
   },
+  compactContainer: {
+    marginHorizontal: 0,
+    marginVertical: 0,
+    borderRadius: 0,
+    borderWidth: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
   mainRow: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 16,
+  },
+  compactMainRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
   iconContainer: {
     width: 40,
@@ -139,6 +157,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 12,
   },
+  compactIconContainer: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginRight: 10,
+  },
   content: {
     flex: 1,
   },
@@ -147,18 +171,33 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 2,
   },
+  compactDescription: {
+    fontSize: 14,
+  },
   category: {
     fontSize: 12,
     fontWeight: '500',
   },
+  compactMeta: {
+    fontSize: 11,
+  },
   rightContent: {
     alignItems: 'flex-end',
     marginLeft: 12,
+    maxWidth: '46%',
+    flexShrink: 1,
+  },
+  compactRightContent: {
+    marginLeft: 10,
   },
   amount: {
     fontSize: 16,
     fontWeight: '700',
     marginBottom: 2,
+    textAlign: 'right',
+  },
+  compactAmount: {
+    fontSize: 14,
   },
   incomeAmount: {
     color: '#16A34A',
@@ -178,6 +217,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     paddingTop: 12,
   },
+  compactActionsRow: {
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    paddingTop: 10,
+  },
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -188,10 +233,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
+  compactActionButton: {
+    borderRadius: 8,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
   actionText: {
     fontSize: 12,
     fontWeight: '700',
   },
+  compactActionText: {
+    fontSize: 11,
+  },
 });
-
-

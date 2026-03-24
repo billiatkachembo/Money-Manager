@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
+﻿/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -16,8 +16,8 @@ import {
   Modal,
 } from 'react-native';
 import { 
-  User, 
-  Settings, 
+  User,
+  Settings,
   HelpCircle, 
   Shield, 
   Trash2, 
@@ -46,12 +46,15 @@ import {
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
+import { exchangeCodeAsync, type AuthSessionResult } from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
-import { makeRedirectUri } from 'expo-auth-session';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
+import { formatDateTimeWithWeekday, formatDateWithWeekday, parseDateValue } from '@/utils/date';
 import { ALL_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
+import { SUPPORTED_LANGUAGES } from '@/constants/languages';
 import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
@@ -59,12 +62,11 @@ import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupR
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { BlurView } from 'expo-blur';
+import { Transaction, Budget } from '@/types/transaction';
 import {
   ProfileHeader,
   ProfileStats,
   MenuGrid,
-  CurrencyPickerModal,
-  LanguagePickerModal,
   AutoLockPickerModal,
   EditProfileModal,
   PrivacySecurityModal,
@@ -110,6 +112,41 @@ function toReminderTimeValue(date: Date): string {
 function formatReminderTime(value?: string | null): string {
   const date = parseReminderTime(value);
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function parseExpiresInSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+function extractGoogleAuthPayload(response: AuthSessionResult | null): {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresIn?: number;
+  code?: string;
+} {
+  if (!response || response.type !== 'success') {
+    return {};
+  }
+
+  return {
+    accessToken: response.authentication?.accessToken ?? response.params.access_token,
+    refreshToken: response.authentication?.refreshToken ?? response.params.refresh_token,
+    expiresIn: parseExpiresInSeconds(
+      response.authentication?.expiresIn ?? response.params.expires_in
+    ),
+    code: response.params.code,
+  };
 }
 
 interface UserProfile {
@@ -159,7 +196,7 @@ export default function ProfileScreen() {
     allTransactions,
     accounts,
     notes,
-    settings, 
+    settings,
     budgets,
     budgetAlerts,
     financialGoals,
@@ -182,14 +219,14 @@ export default function ProfileScreen() {
   const [showBackupRestore, setShowBackupRestore] = useState<boolean>(false);
   const [showPrivacySecurity, setShowPrivacySecurity] = useState<boolean>(false);
   const [showReminderTimePicker, setShowReminderTimePicker] = useState(false);
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+  const [passwordDraft, setPasswordDraft] = useState('');
   const [reminderTime, setReminderTime] = useState<Date>(() => parseReminderTime(settings.dailyReminderTime));
 
   const [editForm, setEditForm] = useState<UserProfile>(userProfile);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importFormat, setImportFormat] = useState<'json' | 'csv'>('json');
   const [importText, setImportText] = useState('');
-  const [showCurrencyPicker, setShowCurrencyPicker] = useState(false);
-  const [showLanguagePicker, setShowLanguagePicker] = useState(false);
   const [showAutoLockPicker, setShowAutoLockPicker] = useState(false);
 
   const [backupStatus, setBackupStatus] = useState<'idle' | 'backingup' | 'restoring' | 'success' | 'error'>('idle');
@@ -198,54 +235,43 @@ export default function ProfileScreen() {
   const [avatarError, setAvatarError] = useState(false);
   const autoBackupPromptedRef = useRef(false);
 
-  const googleClientIds = {
-    expo: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-    ios: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-    android: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-    web: '899633160812-ik36192hb5idmc817bnum89vmbqgi7sv.apps.googleusercontent.com',
-  };
+  const googleClientIds = useMemo(
+    () => ({
+      expo: process.env.EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID?.trim() || null,
+      ios: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID?.trim() || null,
+      android: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID?.trim() || null,
+      web: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID?.trim() || null,
+    }),
+    []
+  );
+
+  const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
   const authClientIds = {
-    expo:
-      googleClientIds.expo ??
-      googleClientIds.web ??
-      googleClientIds.ios ??
-      googleClientIds.android ??
-      'MISSING_EXPO_CLIENT_ID',
-    ios:
-      googleClientIds.ios ??
-      googleClientIds.expo ??
-      googleClientIds.web ??
-      googleClientIds.android ??
-      'MISSING_IOS_CLIENT_ID',
-    android:
-      googleClientIds.android ??
-      googleClientIds.expo ??
-      googleClientIds.web ??
-      googleClientIds.ios ??
-      'MISSING_ANDROID_CLIENT_ID',
-    web:
-      googleClientIds.web ??
-      googleClientIds.expo ??
-      googleClientIds.ios ??
-      googleClientIds.android ??
-      'MISSING_WEB_CLIENT_ID',
+    ios: googleClientIds.ios ?? 'MISSING_IOS_CLIENT_ID',
+    android: googleClientIds.android ?? 'MISSING_ANDROID_CLIENT_ID',
+    web: googleClientIds.web ?? 'MISSING_WEB_CLIENT_ID',
   };
 
-  const redirectUri = makeRedirectUri({ scheme: 'myapp' });
+  const currentAuthClientId =
+    Platform.OS === 'ios'
+      ? authClientIds.ios
+      : Platform.OS === 'android'
+        ? authClientIds.android
+        : authClientIds.web;
 
   const [googleAuthRequest, , promptGoogleAuth] = Google.useAuthRequest({
-    clientId: authClientIds.web,
+    clientId: currentAuthClientId,
     iosClientId: authClientIds.ios,
     androidClientId: authClientIds.android,
     webClientId: authClientIds.web,
+    shouldAutoExchangeCode: false,
     scopes: [
       'https://www.googleapis.com/auth/drive.file',
       'openid',
       'profile',
       'email',
     ],
-    redirectUri,
     extraParams: {
       access_type: 'offline',
       prompt: 'consent',
@@ -283,7 +309,7 @@ export default function ProfileScreen() {
   const importCategories = useMemo(() => {
     const map = new Map<string, (typeof ALL_CATEGORIES)[number]>();
 
-    [...ALL_CATEGORIES, ...transactions.map((transaction) => transaction.category), ...budgets.map((budget) => budget.category)]
+    [...ALL_CATEGORIES, ...transactions.map((transaction: Transaction) => transaction.category), ...budgets.map((budget: Budget) => budget.category)]
       .filter((category): category is (typeof ALL_CATEGORIES)[number] => Boolean(category?.id))
       .forEach((category) => {
         if (!map.has(category.id)) {
@@ -323,16 +349,7 @@ export default function ProfileScreen() {
     };
   }, []);
 
-  const languages = [
-    { code: 'en', name: 'English' },
-    { code: 'es', name: 'Spanish' },
-    { code: 'fr', name: 'French' },
-    { code: 'de', name: 'German' },
-    { code: 'it', name: 'Italian' },
-    { code: 'pt', name: 'Portuguese' },
-  ];
-
-  const selectedLanguageLabel = languages.find((language) => language.code === settings.language)?.name ?? 'English';
+  const languages = SUPPORTED_LANGUAGES;
 
   const autoLockOptions = [
     { value: 0, label: 'Immediately' },
@@ -370,13 +387,15 @@ export default function ProfileScreen() {
   const autoLockLabel = getAutoLockLabel(selectedAutoLockValue);
   const autoLockShort = getAutoLockLabel(selectedAutoLockValue, true);
   const memberSinceDate = settings.firstUsedAt ?? userProfile.joinDate;
-  const selectedCurrencyCode = (settings.currency || 'ZMW').toUpperCase();
   const reminderTimeLabel = formatReminderTime(settings.dailyReminderTime);
   const lastBackupDate = settings.lastBackupDate ? new Date(settings.lastBackupDate) : null;
   const lastBackupText =
     lastBackupDate && !Number.isNaN(lastBackupDate.getTime())
-      ? `Last backup ${lastBackupDate.toLocaleDateString()}`
+      ? `Last backup ${formatDateTimeWithWeekday(lastBackupDate)}`
       : undefined;
+
+  const driveConnected = Boolean(driveAuth?.accessToken || driveAuth?.refreshToken);
+  const driveAccountLabel = driveConnected ? (userProfile.email?.trim() || 'Connected') : undefined;
 
   const resetBackupStatus = () => {
     setTimeout(() => {
@@ -476,9 +495,9 @@ export default function ProfileScreen() {
     const dataToExport = {
       transactions: allTransactions,
       accounts,
-      notes,
-      settings,
-      budgets,
+    notes,
+    settings,
+    budgets,
       budgetAlerts,
       financialGoals,
       userProfile,
@@ -578,9 +597,9 @@ export default function ProfileScreen() {
         throw new Error('This JSON payload does not contain a Money Manager backup.');
       }
 
-      const exportDate = importedData.exportDate ? new Date(importedData.exportDate) : null;
+      const exportDate = parseDateValue(importedData.exportDate as string | Date | undefined) ?? null;
       const exportLabel = exportDate && !Number.isNaN(exportDate.getTime())
-        ? exportDate.toLocaleDateString()
+        ? formatDateTimeWithWeekday(exportDate)
         : 'the selected backup';
 
       Alert.alert(
@@ -680,30 +699,44 @@ export default function ProfileScreen() {
   };
   const resolveGoogleClientId = useCallback(() => {
     if (Platform.OS === 'ios') {
-      return (
-        googleClientIds.ios ??
-        googleClientIds.web ??
-        googleClientIds.android ??
-        googleClientIds.expo
-      );
+      return googleClientIds.ios;
     }
 
     if (Platform.OS === 'android') {
-      return (
-        googleClientIds.android ??
-        googleClientIds.web ??
-        googleClientIds.ios ??
-        googleClientIds.expo
-      );
+      return googleClientIds.android;
     }
 
-    return (
-      googleClientIds.web ??
-      googleClientIds.ios ??
-      googleClientIds.android ??
-      googleClientIds.expo
-    );
+    return googleClientIds.web;
   }, [googleClientIds]);
+
+  const resolveGoogleClientRequirement = useCallback(() => {
+    const requiredClientIdEnv =
+      Platform.OS === 'ios'
+        ? 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID'
+        : Platform.OS === 'android'
+          ? 'EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID'
+          : 'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID';
+
+    return {
+      clientId: resolveGoogleClientId(),
+      requiredClientIdEnv,
+    };
+  }, [resolveGoogleClientId]);
+
+  const googleDriveUnavailableReason = useMemo(() => {
+    if (isExpoGo) {
+      return 'Google Drive requires a development build. Expo Go cannot complete Google OAuth for this app.';
+    }
+
+    const { clientId, requiredClientIdEnv } = resolveGoogleClientRequirement();
+    if (!clientId) {
+      return `Google Drive requires ${requiredClientIdEnv} to be configured first.`;
+    }
+
+    return null;
+  }, [isExpoGo, resolveGoogleClientRequirement]);
+
+  const googleDriveAvailable = !googleDriveUnavailableReason;
 
   const syncGoogleProfile = useCallback(async (accessToken: string) => {
     try {
@@ -717,16 +750,16 @@ export default function ProfileScreen() {
         throw new Error('Unable to fetch Google profile.');
       }
 
-      const profile = await response.json();
+      const profile = (await response.json()) as Record<string, unknown>;
       if (!profile || typeof profile !== 'object') {
         return;
       }
 
       updateUserProfile({
         ...userProfile,
-        name: profile.name ?? userProfile.name,
-        email: profile.email ?? userProfile.email,
-        avatar: profile.picture ?? userProfile.avatar,
+        name: (profile.name as string | undefined) ?? userProfile.name,
+        email: (profile.email as string | undefined) ?? userProfile.email,
+        avatar: (profile.picture as string | undefined) ?? userProfile.avatar,
       });
     } catch (error) {
       console.error('Google profile sync error:', error);
@@ -734,9 +767,16 @@ export default function ProfileScreen() {
   }, [updateUserProfile, userProfile]);
 
   const ensureDriveAuth = useCallback(async () => {
-    const clientId = resolveGoogleClientId();
+    if (isExpoGo) {
+      throw new Error(
+        'Google Drive requires a development build. Expo Go cannot complete Google OAuth for this app.'
+      );
+    }
+
+    const { clientId, requiredClientIdEnv } = resolveGoogleClientRequirement();
+
     if (!clientId) {
-      throw new Error('Google client ID is missing. Configure EXPO_PUBLIC_GOOGLE_*_CLIENT_ID values first.');
+      throw new Error(`Google client ID is missing. Configure ${requiredClientIdEnv} first.`);
     }
 
     let stored = driveAuth ?? (await loadDriveAuth());
@@ -764,6 +804,7 @@ export default function ProfileScreen() {
         console.error('Google token refresh error:', error);
         await clearDriveAuth();
         setDriveAuth(null);
+        stored = null;
       }
     }
 
@@ -772,55 +813,114 @@ export default function ProfileScreen() {
     }
 
     const response = await promptGoogleAuth();
-    if (response.type !== 'success' || !response.authentication?.accessToken) {
+    if (response.type === 'error') {
+      throw new Error(
+        response.error?.message ||
+          response.params?.error_description ||
+          response.params?.error ||
+          'Google sign-in failed.'
+      );
+    }
+
+    if (response.type === 'locked') {
+      throw new Error('Google sign-in is already in progress.');
+    }
+
+    if (response.type !== 'success') {
       throw new Error('Google sign-in was cancelled.');
     }
 
+    let { accessToken, refreshToken, expiresIn, code } = extractGoogleAuthPayload(response);
+
+    if (!accessToken && code) {
+      if (!googleAuthRequest.codeVerifier || !googleAuthRequest.redirectUri) {
+        throw new Error('Google sign-in completed, but the secure code verifier was unavailable.');
+      }
+
+      const exchanged = await exchangeCodeAsync(
+        {
+          clientId,
+          code,
+          redirectUri: googleAuthRequest.redirectUri,
+          extraParams: {
+            code_verifier: googleAuthRequest.codeVerifier,
+          },
+        },
+        Google.discovery
+      );
+
+      accessToken = exchanged.accessToken;
+      refreshToken = exchanged.refreshToken;
+      expiresIn = parseExpiresInSeconds(exchanged.expiresIn);
+    }
+
+    if (!accessToken) {
+      throw new Error(
+        'Google sign-in completed, but no access token was returned. Check your Google OAuth client configuration.'
+      );
+    }
+
     const nextAuth: DriveAuthState = {
-      accessToken: response.authentication.accessToken,
-      refreshToken: response.authentication.refreshToken,
-      expiresAt: response.authentication.expiresIn
-        ? Date.now() + response.authentication.expiresIn * 1000
-        : undefined,
+      accessToken,
+      refreshToken,
+      expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : undefined,
     };
 
-    await saveDriveAuth(nextAuth, response.authentication.expiresIn);
+    await saveDriveAuth(nextAuth, expiresIn);
     setDriveAuth(nextAuth);
-    await syncGoogleProfile(nextAuth.accessToken);
-    await attemptAutoRestoreFromDrive({ force: true });
 
     return nextAuth;
   }, [
-    attemptAutoRestoreFromDrive,
     driveAuth,
     googleAuthRequest,
+    isExpoGo,
     loadDriveAuth,
     promptGoogleAuth,
     refreshAccessToken,
     resolveGoogleClientId,
+    resolveGoogleClientRequirement,
     saveDriveAuth,
-    syncGoogleProfile,
   ]);
+  const handleConnectDriveAccount = async () => {
+    try {
+      setBackupStatus('backingup');
+      setBackupMessage('Connecting to Google Drive...');
+      const auth = await ensureDriveAuth();
+      await syncGoogleProfile(auth.accessToken);
+      const stored = await loadDriveAuth();
+      if (stored) {
+        setDriveAuth(stored);
+      }
+      setBackupStatus('success');
+      setBackupMessage('Google Drive account connected.');
+      resetBackupStatus();
+    } catch (error) {
+      console.error('Google Drive connect error:', error);
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Failed to connect Google Drive.');
+    }
+  };
+
+  const handleDisconnectDriveAccount = async () => {
+    try {
+      await clearDriveAuth();
+      setDriveAuth(null);
+      setBackupStatus('success');
+      setBackupMessage('Google Drive account disconnected.');
+      resetBackupStatus();
+    } catch (error) {
+      console.error('Google Drive disconnect error:', error);
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Failed to disconnect Google Drive.');
+    }
+  };
 
   useEffect(() => {
+    // Reset auto backup prompt flag when setting is disabled
     if (!settings.autoBackup) {
       autoBackupPromptedRef.current = false;
-      return;
     }
-
-    if (driveAuth || !googleAuthRequest) {
-      return;
-    }
-
-    if (autoBackupPromptedRef.current) {
-      return;
-    }
-
-    autoBackupPromptedRef.current = true;
-    void ensureDriveAuth().catch((error) => {
-      console.error('Auto backup sign-in error:', error);
-    });
-  }, [driveAuth, ensureDriveAuth, googleAuthRequest, settings.autoBackup]);
+  }, [settings.autoBackup]);
 
   const handleBackupToGoogleDrive = async () => {
     try {
@@ -837,9 +937,9 @@ export default function ProfileScreen() {
       const dataToExport = {
         transactions: allTransactions,
         accounts,
-        notes,
-        settings,
-        budgets,
+    notes,
+    settings,
+    budgets,
         budgetAlerts,
         financialGoals,
         userProfile,
@@ -926,7 +1026,7 @@ export default function ProfileScreen() {
     }
   };
 
-  const updateSetting = (key: string, value: any) => {
+  const updateSetting = (key: string, value: unknown) => {
     if (key === 'darkMode') {
       toggleTheme();
     } else {
@@ -934,7 +1034,7 @@ export default function ProfileScreen() {
     }
   };
 
-  const updatePrivacySetting = (key: string, value: any) => {
+  const updatePrivacySetting = (key: string, value: unknown) => {
     updateSettings({
       privacy: {
         hideAmounts: false,
@@ -947,8 +1047,8 @@ export default function ProfileScreen() {
     });
   };
 
-  const updateSecuritySetting = (key: string, value: any) => {
-    const nextValue = key === 'autoLock' ? normalizeAutoLockValue(value) : value;
+  const updateSecuritySetting = (key: string, value: unknown) => {
+    const nextValue = key === 'autoLock' ? normalizeAutoLockValue(value as number | undefined) : value;
 
     updateSettings({
       security: {
@@ -1038,17 +1138,6 @@ export default function ProfileScreen() {
     setShowReminderTimePicker(false);
     void applyReminderTime(reminderTime);
   };
-  const handleCurrencySelect = (currencyCode: string) => {
-    updateSetting('currency', currencyCode);
-    setShowCurrencyPicker(false);
-    Alert.alert('Currency Updated', `Currency changed to ${currencyCode}`);
-  };
-
-  const handleLanguageSelect = (languageCode: string) => {
-    updateSetting('language', languageCode);
-    setShowLanguagePicker(false);
-    Alert.alert('Language Updated', `Language changed to ${languages.find(l => l.code === languageCode)?.name}`);
-  };
 
   const handleAutoLockSelect = (minutes: number) => {
     const normalizedMinutes = normalizeAutoLockValue(minutes);
@@ -1075,41 +1164,65 @@ export default function ProfileScreen() {
     }
   };
 
+  const closePasswordPrompt = () => {
+    setPasswordDraft('');
+    setShowPasswordPrompt(false);
+  };
+
+  const submitPasswordPrompt = () => {
+    const normalizedPassword = passwordDraft.trim();
+    if (normalizedPassword.length < 4) {
+      Alert.alert('Error', 'Password must be at least 4 characters long.');
+      return;
+    }
+
+    updateSecuritySetting('passwordEnabled', true);
+    closePasswordPrompt();
+    Alert.alert('Success', 'App password has been set.');
+  };
+
   const handlePasswordToggle = (value: boolean) => {
     if (value) {
-      Alert.prompt(
-        'Set App Password',
-        'Enter a password to protect your app:',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Set Password',
-            onPress: (password?: string) => {
-              if (password && password.length >= 4) {
-                updateSecuritySetting('passwordEnabled', true);
-                Alert.alert('Success', 'App password has been set.');
-              } else {
-                Alert.alert('Error', 'Password must be at least 4 characters long.');
-              }
+      if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+        Alert.prompt(
+          'Set App Password',
+          'Enter a password to protect your app:',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Set Password',
+              onPress: (password?: string) => {
+                if (password && password.trim().length >= 4) {
+                  updateSecuritySetting('passwordEnabled', true);
+                  Alert.alert('Success', 'App password has been set.');
+                } else {
+                  Alert.alert('Error', 'Password must be at least 4 characters long.');
+                }
+              },
             },
-          },
-        ],
-        'secure-text'
-      );
-    } else {
-      Alert.alert(
-        'Disable App Password',
-        'Are you sure you want to disable the app password?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Disable',
-            style: 'destructive',
-            onPress: () => updateSecuritySetting('passwordEnabled', false),
-          },
-        ]
-      );
+          ],
+          'secure-text'
+        );
+        return;
+      }
+
+      setPasswordDraft('');
+      setShowPasswordPrompt(true);
+      return;
     }
+
+    Alert.alert(
+      'Disable App Password',
+      'Are you sure you want to disable the app password?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Disable',
+          style: 'destructive',
+          onPress: () => updateSecuritySetting('passwordEnabled', false),
+        },
+      ]
+    );
   };
 
   const handleTwoFactorToggle = (value: boolean) => {
@@ -1208,78 +1321,6 @@ export default function ProfileScreen() {
       );
     }, 300);
   };
-
-  const menuItems: Array<{ icon: typeof Settings; title: string; onPress: () => void; destructive?: boolean }> = [
-    {
-      icon: Settings,
-      title: 'Settings',
-      onPress: () => setShowSettings(true),
-    },
-    {
-      icon: HelpCircle,
-      title: 'Support',
-      onPress: () => setShowHelpSupport(true),
-    },
-    {
-      icon: Moon,
-      title: 'Toggle Theme',
-      onPress: toggleTheme,
-    },
-    {
-      icon: DollarSign,
-      title: 'Currency',
-      onPress: () => setShowCurrencyPicker(true),
-    },
-    {
-      icon: Clock,
-      title: 'Auto Lock',
-      onPress: () => setShowAutoLockPicker(true),
-    },
-    {
-      icon: Download,
-      title: 'Export JSON',
-      onPress: handleExportData,
-    },
-    {
-      icon: Database,
-      title: 'Import JSON',
-      onPress: handleImportData,
-    },
-    {
-      icon: Download,
-      title: 'Export CSV',
-      onPress: handleExportCsv,
-    },
-    {
-      icon: Database,
-      title: 'Import CSV',
-      onPress: handleImportCsv,
-    },
-    {
-      icon: Download,
-      title: 'Drive Backup',
-      onPress: handleBackupToGoogleDrive,
-    },
-    {
-      icon: Database,
-      title: 'Drive Restore',
-      onPress: handleRestoreFromGoogleDrive,
-    },
-    {
-      icon: Mail,
-      title: 'Email Support',
-      onPress: openEmailSupport,
-    },
-  ];
-
-  const MENU_GRID_COLUMNS = 3;
-  const MENU_GRID_ROWS = Math.max(1, Math.ceil(menuItems.length / MENU_GRID_COLUMNS));
-  const MENU_GRID_SIZE = MENU_GRID_COLUMNS * MENU_GRID_ROWS;
-  const menuGridItems = [
-    ...menuItems,
-    ...Array.from({ length: Math.max(0, MENU_GRID_SIZE - menuItems.length) }, () => null),
-  ];
-
   const totalIncome = transactions
     .filter((t: any) => t.type === 'income')
     .reduce((sum: number, t: any) => sum + t.amount, 0);
@@ -1292,6 +1333,15 @@ export default function ProfileScreen() {
     <ScrollView style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
       {/* Header Section */}
       <View style={[styles.header, { backgroundColor: theme.colors.surface }]}>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.headerActionButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+            onPress={() => setShowSettings(true)}
+            activeOpacity={0.85}
+          >
+            <Settings size={18} color={theme.colors.text} />
+          </TouchableOpacity>
+        </View>
         <View style={styles.avatarContainer}>
           {userProfile.avatar && userProfile.avatar.startsWith('http') && !avatarError ? (
             <Image
@@ -1318,7 +1368,7 @@ export default function ProfileScreen() {
           <View style={styles.profileDetailItem}>
             <Calendar size={12} color="#666" />
             <Text style={[styles.profileDetailText, { color: theme.colors.textSecondary }]}>
-              Member since {memberSinceDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+              Member since {formatDateWithWeekday(memberSinceDate)}
             </Text>
           </View>
         </View>
@@ -1346,48 +1396,6 @@ export default function ProfileScreen() {
           </View>
         </View>
       </View>
-
-      {/* Menu Section */}
-      <View style={[styles.menuSection, { backgroundColor: theme.colors.surface }]}>
-        <Text style={[styles.menuSectionTitle, { color: theme.colors.text }]}>More</Text>
-        <View style={styles.menuGrid}>
-          {menuGridItems.map((item, index) => {
-            if (!item) {
-              return <View key={`placeholder-${index}`} style={styles.menuTilePlaceholder} />;
-            }
-
-            const IconComponent = item.icon;
-            return (
-              <TouchableOpacity
-                key={item.title}
-                style={[
-                  styles.menuTile,
-                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                  item.destructive && styles.menuTileDestructive,
-                ]}
-                onPress={item.onPress}
-                activeOpacity={0.85}
-              >
-                <View
-                  style={[
-                    styles.menuTileIcon,
-                    { backgroundColor: item.destructive ? '#F4433620' : theme.colors.primary + '1F' },
-                  ]}
-                >
-                  <IconComponent size={20} color={item.destructive ? '#F44336' : theme.colors.primary} />
-                </View>
-                <Text
-                  style={[styles.menuTileTitle, { color: item.destructive ? '#F44336' : theme.colors.text }]}
-                  numberOfLines={2}
-                >
-                  {item.title}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
       <View style={styles.footer}>
         <Text style={[styles.version, { color: theme.colors.textSecondary }]}>Money Manager v1.0.0</Text>
         <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Made with Billiat</Text>
@@ -1400,17 +1408,108 @@ export default function ProfileScreen() {
         theme={theme}
         settings={settings}
         updateSettings={updateSettings}
-        openEditProfile={openEditProfile}
+        openEditProfile={() => openSettingsDestination(openEditProfile)}
         toggleTheme={toggleTheme}
         onClearData={handleClearData}
-        onBackupRestore={() => setShowBackupRestore(true)}
-        onPrivacySecurity={() => setShowPrivacySecurity(true)}
+        onBackupRestore={() => openSettingsDestination(() => setShowBackupRestore(true))}
+        onPrivacySecurity={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
+        onHelpSupport={() => openSettingsDestination(() => setShowHelpSupport(true))}
         userProfile={userProfile}
+        currencies={currencies}
         languages={languages}
-        onShowLanguagePicker={() => setShowLanguagePicker(true)}
-        onShowCurrencyPicker={() => setShowCurrencyPicker(true)}
-        onShowAutoLockPicker={() => setShowAutoLockPicker(true)}
+        onShowAutoLockPicker={() => openSettingsDestination(() => setShowAutoLockPicker(true))}
+        onQuickAddToggle={handleQuickAddToggle}
+        onDailyReminderToggle={handleDailyReminderToggle}
+        reminderTimeLabel={reminderTimeLabel}
+        onShowReminderTimePicker={() => openSettingsDestination(() => setShowReminderTimePicker(true))}
       />
+
+      {Platform.OS === 'android' && showReminderTimePicker ? (
+        <DateTimePicker
+          value={reminderTime}
+          mode="time"
+          display="default"
+          onChange={handleReminderTimeChange}
+        />
+      ) : null}
+
+      <Modal
+        visible={Platform.OS === 'ios' && showReminderTimePicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={handleReminderTimeCancel}
+      >
+        <View style={[styles.pickerModalContainer, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
+          <View style={[styles.pickerModal, { backgroundColor: theme.colors.background }]}>
+            <Text style={[styles.pickerTitle, { color: theme.colors.text }]}>Reminder Time</Text>
+            <DateTimePicker
+              value={reminderTime}
+              mode="time"
+              display="spinner"
+              onChange={handleReminderTimeChange}
+            />
+            <View style={styles.modalActionRow}>
+              <TouchableOpacity
+                style={[styles.modalActionButton, { backgroundColor: theme.colors.surface }]}
+                onPress={handleReminderTimeCancel}
+              >
+                <Text style={[styles.modalActionText, { color: theme.colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalActionButton, styles.modalActionPrimary, { backgroundColor: theme.colors.primary }]}
+                onPress={handleReminderTimeConfirm}
+              >
+                <Text style={styles.modalActionPrimaryText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showPasswordPrompt}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={closePasswordPrompt}
+      >
+        <View style={styles.dialogOverlay}>
+          <View style={[styles.dialogCard, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
+            <Text style={[styles.dialogTitle, { color: theme.colors.text }]}>Set App Password</Text>
+            <Text style={[styles.dialogMessage, { color: theme.colors.textSecondary }]}>Enter a password with at least 4 characters.</Text>
+            <TextInput
+              style={[
+                styles.textInput,
+                styles.dialogInput,
+                { backgroundColor: theme.colors.surface, borderColor: theme.colors.border, color: theme.colors.text },
+              ]}
+              value={passwordDraft}
+              onChangeText={setPasswordDraft}
+              placeholder="Enter password"
+              placeholderTextColor={theme.colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={submitPasswordPrompt}
+            />
+            <View style={styles.modalActionRow}>
+              <TouchableOpacity
+                style={[styles.modalActionButton, { backgroundColor: theme.colors.surface }]}
+                onPress={closePasswordPrompt}
+              >
+                <Text style={[styles.modalActionText, { color: theme.colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalActionButton, styles.modalActionPrimary, { backgroundColor: theme.colors.primary }]}
+                onPress={submitPasswordPrompt}
+              >
+                <Text style={styles.modalActionPrimaryText}>Set Password</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <BackupRestoreModal
         show={showBackupRestore}
@@ -1422,73 +1521,17 @@ export default function ProfileScreen() {
         onImportData={handleImportData}
         onExportCsv={handleExportCsv}
         onImportCsv={handleImportCsv}
+        onConnectDrive={handleConnectDriveAccount}
+        onDisconnectDrive={handleDisconnectDriveAccount}
+        driveConnected={driveConnected}
+        driveAccountLabel={driveAccountLabel}
+        googleDriveAvailable={googleDriveAvailable}
+        googleDriveUnavailableReason={googleDriveUnavailableReason ?? undefined}
         onBackupToGoogleDrive={handleBackupToGoogleDrive}
         onRestoreFromGoogleDrive={handleRestoreFromGoogleDrive}
         backupHistory={backupHistory}
         onRestoreHistoryItem={handleRestoreFromHistoryItem}
       />
-
-      {/* Currency Picker Modal */}
-      <Modal visible={showCurrencyPicker} animationType="slide" transparent={true}>
-        <View style={[styles.pickerModalContainer, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
-          <View style={[styles.pickerModal, { backgroundColor: theme.colors.background }]}>
-            <Text style={[styles.pickerTitle, { color: theme.colors.text }]}>Select Currency</Text>
-            <ScrollView style={styles.pickerList}>
-              {currencies.map((currency) => (
-                <TouchableOpacity
-                  key={currency.code}
-                  style={[styles.pickerItem, { borderBottomColor: theme.colors.border }]}
-                  onPress={() => handleCurrencySelect(currency.code)}
-                >
-                  <Text style={[styles.pickerItemText, { color: theme.colors.text }]}>
-                    {currency.symbol} {currency.name} ({currency.code})
-                  </Text>
-                  {selectedCurrencyCode === currency.code && (
-                    <CheckCircle size={20} color="#4CAF50" />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            <TouchableOpacity 
-              style={[styles.pickerCancel, { backgroundColor: theme.colors.surface }]}
-              onPress={() => setShowCurrencyPicker(false)}
-            >
-              <Text style={[styles.pickerCancelText, { color: theme.colors.text }]}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Language Picker Modal */}
-      <Modal visible={showLanguagePicker} animationType="slide" transparent={true}>
-        <View style={[styles.pickerModalContainer, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
-          <View style={[styles.pickerModal, { backgroundColor: theme.colors.background }]}>
-            <Text style={[styles.pickerTitle, { color: theme.colors.text }]}>Select Language</Text>
-            <ScrollView style={styles.pickerList}>
-              {languages.map((language) => (
-                <TouchableOpacity
-                  key={language.code}
-                  style={[styles.pickerItem, { borderBottomColor: theme.colors.border }]}
-                  onPress={() => handleLanguageSelect(language.code)}
-                >
-                  <Text style={[styles.pickerItemText, { color: theme.colors.text }]}>
-                    {language.name}
-                  </Text>
-                  {settings.language === language.code && (
-                    <CheckCircle size={20} color="#4CAF50" />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-            <TouchableOpacity 
-              style={[styles.pickerCancel, { backgroundColor: theme.colors.surface }]}
-              onPress={() => setShowLanguagePicker(false)}
-            >
-              <Text style={[styles.pickerCancelText, { color: theme.colors.text }]}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
 
       {/* Auto Lock Picker Modal */}
       <Modal visible={showAutoLockPicker} animationType="slide" transparent={true}>
@@ -1569,8 +1612,8 @@ export default function ProfileScreen() {
 
               <Text style={[styles.importHelpText, { color: theme.colors.textSecondary }]}>
                 {importFormat === 'json'
-                  ? 'Paste a full Money Manager backup payload to replace the current app data.'
-                  : 'Paste CSV with headers. Supported columns include date/timestamp, type, amount or total, description, categoryId/categoryName, accounts, transfer/debt fields, currency, tags, createdAt, and updatedAt.'}
+                  ? 'Paste a full Money Manager backup payload to replace the current app data. Backup dates can be ISO or DD/MM/YYYY.'
+                  : 'Paste CSV with headers. Date fields accept DD/MM/YYYY, DD/MM/YYYY HH:mm, or ISO timestamps. Supported columns include date/timestamp, type, amount or total, description, categoryId/categoryName, accounts, transfer/debt fields, currency, tags, createdAt, and updatedAt.'}
               </Text>
 
               <TextInput
@@ -1961,6 +2004,19 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     marginBottom: 16,
   },
+  headerActions: {
+    width: '100%',
+    alignItems: 'flex-end',
+    marginBottom: 12,
+  },
+  headerActionButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   avatarContainer: {
     width: 80,
     height: 80,
@@ -2032,64 +2088,6 @@ const styles = StyleSheet.create({
   expenseText: {
     color: '#F44336',
   },
-  menuSection: {
-    backgroundColor: 'white',
-    marginHorizontal: 16,
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  menuSectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
-  },
-  menuGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 12,
-  },
-  menuTile: {
-    width: '31.8%',
-    aspectRatio: 1,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-  },
-  menuTileDestructive: {
-    borderColor: '#F4433660',
-  },
-  menuTileIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  menuTileTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-    lineHeight: 16,
-  },
-  menuTilePlaceholder: {
-    width: '31.8%',
-    aspectRatio: 1,
-    borderRadius: 14,
-    opacity: 0,
-  },
   footer: {
     alignItems: 'center',
     padding: 24,
@@ -2135,11 +2133,11 @@ const styles = StyleSheet.create({
     color: '#1a1a1a',
   },
   cancelButton: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#666',
   },
   saveButton: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#667eea',
     fontWeight: '600',
   },
@@ -2245,10 +2243,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
-    borderRadius: 12,
+    padding: 13,
+    borderRadius: 10,
     marginBottom: 12,
-    gap: 12,
+    gap: 10,
     borderWidth: 1,
     borderColor: 'transparent',
   },
@@ -2256,7 +2254,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   backupButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     color: '#fff',
   },
@@ -2331,6 +2329,59 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  modalActionRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 16,
+  },
+  modalActionButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  modalActionPrimary: {
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  modalActionText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalActionPrimaryText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  dialogOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  dialogCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 20,
+  },
+  dialogTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  dialogMessage: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  dialogInput: {
+    minHeight: 0,
+  },
   dataActionButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2396,14 +2447,14 @@ const styles = StyleSheet.create({
   },
   importFormatButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   importFormatButtonText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   importHelpText: {
@@ -2427,3 +2478,13 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+
+
+
+
+
+
+
+
+
+

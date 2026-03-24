@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,8 @@ import {
 import { Home, List, BarChart3, User, Calendar, CreditCard, FileText, Target, LucideIcon } from 'lucide-react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/store/theme-store';
+import { AppTab, useTabNavigationStore } from '@/store/tab-navigation-store';
+import { useI18n } from '@/src/i18n';
 
 import HomeScreen from './home';
 import TransactionsScreen from './transactions';
@@ -18,38 +20,37 @@ import AccountsScreen from './accounts';
 import NotesScreen from './notes';
 import PlanningScreen from './planning';
 
-type TabType = 'home' | 'transactions' | 'analytics' | 'profile' | 'calendar' | 'accounts' | 'notes' | 'planning';
-
 interface TabItem {
-  key: TabType;
+  key: AppTab;
   title: string;
   icon: LucideIcon;
   component: React.ComponentType;
 }
 
-const topTabs: TabItem[] = [
-  { key: 'home', title: 'Home', icon: Home, component: HomeScreen },
-  { key: 'transactions', title: 'Transactions', icon: List, component: TransactionsScreen },
-  { key: 'analytics', title: 'Analytics', icon: BarChart3, component: AnalyticsScreen },
-  { key: 'profile', title: 'Profile', icon: User, component: ProfileScreen },
-];
-
-const bottomTabs: TabItem[] = [
-  { key: 'calendar', title: 'Calendar', icon: Calendar, component: CalendarScreen },
-  { key: 'accounts', title: 'Accounts', icon: CreditCard, component: AccountsScreen },
-  { key: 'notes', title: 'Notes', icon: FileText, component: NotesScreen },
-  { key: 'planning', title: 'Planning', icon: Target, component: PlanningScreen },
-];
-
-const allTabs = [...topTabs, ...bottomTabs];
-
 export default function TabLayout() {
-  const [activeTab, setActiveTab] = useState<TabType>('home');
+  const activeTab = useTabNavigationStore((state) => state.activeTab);
+  const setActiveTab = useTabNavigationStore((state) => state.setActiveTab);
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
-  
-  const ActiveComponent = allTabs.find(tab => tab.key === activeTab)?.component || HomeScreen;
-  
+  const { t } = useI18n();
+
+  const topTabs: TabItem[] = [
+    { key: 'home', title: t('tabs.home'), icon: Home, component: HomeScreen },
+    { key: 'transactions', title: t('tabs.transactions'), icon: List, component: TransactionsScreen },
+    { key: 'analytics', title: t('tabs.analytics'), icon: BarChart3, component: AnalyticsScreen },
+    { key: 'profile', title: t('tabs.profile'), icon: User, component: ProfileScreen },
+  ];
+
+  const bottomTabs: TabItem[] = [
+    { key: 'calendar', title: t('tabs.calendar'), icon: Calendar, component: CalendarScreen },
+    { key: 'accounts', title: t('tabs.accounts'), icon: CreditCard, component: AccountsScreen },
+    { key: 'notes', title: t('tabs.notes'), icon: FileText, component: NotesScreen },
+    { key: 'planning', title: t('tabs.planning'), icon: Target, component: PlanningScreen },
+  ];
+
+  const allTabs = [...topTabs, ...bottomTabs];
+  const ActiveComponent = allTabs.find((tab) => tab.key === activeTab)?.component || HomeScreen;
+
   const styles = StyleSheet.create({
     container: {
       flex: 1,
@@ -139,64 +140,65 @@ export default function TabLayout() {
       flex: 1,
     },
   });
-  
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Top Navigation Bar */}
       <View style={[styles.topNavContainer, { paddingTop: insets.top }]}>
-        {/* Top 4 Tabs */}
         <View style={styles.topTabsGrid}>
           {topTabs.map((tab) => {
             const isActive = activeTab === tab.key;
             const IconComponent = tab.icon;
-            
+
             return (
               <TouchableOpacity
                 key={tab.key}
                 style={[
                   styles.topTabItem,
-                  isActive && styles.activeTopTabItem
+                  isActive && styles.activeTopTabItem,
                 ]}
                 onPress={() => setActiveTab(tab.key)}
               >
-                <IconComponent 
-                  size={22} 
-                  color={isActive ? theme.colors.primary : theme.colors.textSecondary} 
+                <IconComponent
+                  size={22}
+                  color={isActive ? theme.colors.primary : theme.colors.textSecondary}
                 />
-                <Text style={[
-                  styles.topTabLabel,
-                  isActive && styles.activeTopTabLabel
-                ]}>
+                <Text
+                  style={[
+                    styles.topTabLabel,
+                    isActive && styles.activeTopTabLabel,
+                  ]}
+                >
                   {tab.title}
                 </Text>
               </TouchableOpacity>
             );
           })}
         </View>
-        
-        {/* Bottom Tabs Row */}
+
         <View style={styles.bottomTabsContainer}>
           {bottomTabs.map((tab) => {
             const isActive = activeTab === tab.key;
             const IconComponent = tab.icon;
-            
+
             return (
               <TouchableOpacity
                 key={tab.key}
                 style={[
                   styles.bottomTabItem,
-                  isActive && styles.activeBottomTabItem
+                  isActive && styles.activeBottomTabItem,
                 ]}
                 onPress={() => setActiveTab(tab.key)}
               >
-                <IconComponent 
-                  size={18} 
-                  color={isActive ? theme.colors.primary : theme.colors.textSecondary} 
+                <IconComponent
+                  size={18}
+                  color={isActive ? theme.colors.primary : theme.colors.textSecondary}
                 />
-                <Text style={[
-                  styles.bottomTabLabel,
-                  isActive && styles.activeBottomTabLabel
-                ]}>
+                <Text
+                  style={[
+                    styles.bottomTabLabel,
+                    isActive && styles.activeBottomTabLabel,
+                  ]}
+                >
                   {tab.title}
                 </Text>
               </TouchableOpacity>
@@ -204,12 +206,10 @@ export default function TabLayout() {
           })}
         </View>
       </View>
-      
-      {/* Content */}
+
       <View style={styles.content}>
         <ActiveComponent />
       </View>
     </SafeAreaView>
   );
 }
-

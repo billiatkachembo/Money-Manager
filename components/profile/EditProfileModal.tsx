@@ -130,10 +130,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cancelButton: {
-    fontSize: 16,
+    fontSize: 14,
   },
   saveButton: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   modalContent: {

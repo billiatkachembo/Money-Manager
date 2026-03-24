@@ -20,7 +20,11 @@ import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { formatDateDDMMYYYY } from '@/utils/date';
 import { Transaction, TransactionCategory } from '@/types/transaction';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '@/constants/categories';
+import {
+  createCustomCategory,
+  findMatchingCategory,
+  mergeCategories,
+} from '@/constants/categories';
 
 interface EditTransactionModalProps {
   visible: boolean;
@@ -33,14 +37,14 @@ function parseDateInput(value: string): Date | null {
   const normalized = value.trim();
   if (!normalized) return null;
 
-  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const isoMatch = normalized.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);
   if (isoMatch) {
     const [, year, month, day] = isoMatch;
     const date = new Date(Number(year), Number(month) - 1, Number(day));
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  const dayFirstMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  const dayFirstMatch = normalized.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);
   if (dayFirstMatch) {
     const [, day, month, year] = dayFirstMatch;
     const date = new Date(Number(year), Number(month) - 1, Number(day));
@@ -66,7 +70,14 @@ function formatIsoDate(value?: Date): string {
 
 export function EditTransactionModal({ visible, transaction, onClose, onSave }: EditTransactionModalProps) {
   const { theme } = useTheme();
-  const { updateTransaction, formatCurrency, transactions } = useTransactionStore();
+  const {
+    updateTransaction,
+    formatCurrency,
+    transactions,
+    expenseCategories,
+    incomeCategories,
+    saveCustomCategory,
+  } = useTransactionStore();
   
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
@@ -92,9 +103,9 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       setType(transaction.type);
 
       const categoryPool = transaction.type === 'income'
-        ? INCOME_CATEGORIES
-        : transaction.type === 'expense'
-          ? EXPENSE_CATEGORIES
+        ? incomeCategories
+        : transaction.type === 'expense' || transaction.type === 'debt'
+          ? expenseCategories
           : [];
 
       const normalizedCategory = transaction.category
@@ -113,19 +124,17 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       setInterestRate(transaction.interestRate !== undefined ? transaction.interestRate.toString() : '');
       setDebtPayment(Boolean(transaction.debtPayment));
     }
-  }, [transaction]);
+  }, [expenseCategories, incomeCategories, transaction]);
 
-  const categories = type === 'transfer' ? [] : (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
+  const categories = useMemo(
+    () => (type === 'transfer' ? [] : type === 'income' ? incomeCategories : expenseCategories),
+    [expenseCategories, incomeCategories, type]
+  );
 
-  const displayedCategories = useMemo(() => {
-    if (!selectedCategory || type === 'transfer') {
-      return categories;
-    }
-
-    return categories.some((category) => category.id === selectedCategory.id)
-      ? categories
-      : [selectedCategory, ...categories];
-  }, [categories, selectedCategory, type]);
+  const displayedCategories = useMemo(
+    () => mergeCategories(categories, selectedCategory ? [selectedCategory] : []),
+    [categories, selectedCategory]
+  );
 
   const filteredCategories = useMemo(() => {
     const query = categorySearch.trim().toLowerCase();
@@ -134,6 +143,11 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     }
 
     return displayedCategories.filter((category) => category.name.toLowerCase().includes(query));
+  }, [categorySearch, displayedCategories]);
+
+  const canCreateCategory = useMemo(() => {
+    const trimmedQuery = categorySearch.trim();
+    return Boolean(trimmedQuery && !findMatchingCategory(displayedCategories, trimmedQuery));
   }, [categorySearch, displayedCategories]);
 
   const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
@@ -145,6 +159,18 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
   const handleCategorySelect = (category: TransactionCategory) => {
     setSelectedCategory(category);
     setCategorySearch(category.name);
+  };
+
+  const handleCreateCategory = () => {
+    const trimmedName = categorySearch.trim();
+    if (!trimmedName) {
+      return;
+    }
+
+    const categoryType = type === 'income' ? 'income' : type === 'debt' ? 'debt' : 'expense';
+    const nextCategory = createCustomCategory(trimmedName, categoryType, displayedCategories);
+    const savedCategory = saveCustomCategory(nextCategory, categoryType);
+    handleCategorySelect(savedCategory);
   };
 
   const spendingInsight = useMemo(() => {
@@ -209,7 +235,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
 
   const daysUntilBrokeLabel = useMemo(() => {
     if (!Number.isFinite(spendingInsight.daysUntilBroke)) {
-      return '∞';
+      return 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¹ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾';
     }
 
     return Math.max(0, Math.floor(spendingInsight.daysUntilBroke)).toString();
@@ -234,7 +260,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       } catch (error) {
         setCalculatorDisplay('Error');
       }
-    } else if (value === '⌫') {
+    } else if (value === 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â«') {
       setCalculatorDisplay(prev => prev.slice(0, -1) || '0');
     } else {
       setCalculatorDisplay(prev => prev === '0' ? value : prev + value);
@@ -261,7 +287,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
     const trimmedDueDate = dueDate.trim();
     const parsedDueDate = trimmedDueDate ? parseDateInput(trimmedDueDate) : null;
     if (trimmedDueDate && !parsedDueDate) {
-      Alert.alert('Error', 'Please enter a valid due date in DD-MM-YYYY format');
+      Alert.alert('Error', 'Please enter a valid due date in DD/MM/YYYY format');
       return;
     }
 
@@ -304,7 +330,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
   };
 
   const calculatorButtons = [
-    ['C', '⌫', '/', '*'],
+    ['C', 'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã¢â‚¬Â¦ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â«', '/', '*'],
     ['7', '8', '9', '-'],
     ['4', '5', '6', '+'],
     ['1', '2', '3', '='],
@@ -525,6 +551,16 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   </TouchableOpacity>
                 ) : null}
               </View>
+              {canCreateCategory ? (
+                <TouchableOpacity
+                  style={[styles.addCategoryButton, { borderColor: theme.colors.primary, backgroundColor: theme.colors.primary + '12' }]}
+                  onPress={handleCreateCategory}
+                >
+                  <Text style={[styles.addCategoryButtonText, { color: theme.colors.primary }]}>
+                    Add "{categorySearch.trim()}"
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoriesScroll}>
                 <View style={styles.categoriesRow}>
                   {filteredCategories.map((category) => {
@@ -553,7 +589,9 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
               </ScrollView>
               {filteredCategories.length === 0 ? (
                 <View style={styles.noResults}>
-                  <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>No categories found</Text>
+                  <Text style={[styles.noResultsText, { color: theme.colors.textSecondary }]}>
+                    {canCreateCategory ? 'Create this category to use it.' : 'No categories found'}
+                  </Text>
                 </View>
               ) : null}
             </View>
@@ -605,7 +643,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
                   style={[styles.dateInputText, { color: theme.colors.text }]}
                   value={dueDate}
                   onChangeText={setDueDate}
-                  placeholder="Due date (DD-MM-YYYY)"
+                  placeholder="Due date (DD/MM/YYYY)"
                   placeholderTextColor={theme.colors.textSecondary}
                 />
               </View>
@@ -784,15 +822,15 @@ const styles = StyleSheet.create({
   },
   typeButton: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 10,
     alignItems: 'center',
-    borderRadius: 8,
+    borderRadius: 7,
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: 8,
+    gap: 6,
   },
   typeButtonText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   debtDirectionRow: {
@@ -803,12 +841,12 @@ const styles = StyleSheet.create({
   },
   debtDirectionButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 8,
     alignItems: 'center',
-    borderRadius: 10,
+    borderRadius: 8,
   },
   debtDirectionText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   debtPaymentRow: {
@@ -834,6 +872,18 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     paddingVertical: 14,
+  },
+  addCategoryButton: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+    alignSelf: 'flex-start',
+  },
+  addCategoryButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   categoriesScroll: {
     marginHorizontal: -4,
@@ -874,27 +924,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: 16,
     borderTopWidth: 1,
-    gap: 12,
+    gap: 10,
   },
   cancelButton: {
     flex: 1,
-    borderRadius: 12,
-    paddingVertical: 16,
+    borderRadius: 10,
+    paddingVertical: 13,
     alignItems: 'center',
   },
   cancelButtonText: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   saveButton: {
     flex: 1,
-    borderRadius: 12,
-    paddingVertical: 16,
+    borderRadius: 10,
+    paddingVertical: 13,
     alignItems: 'center',
   },
   saveButtonText: {
     color: 'white',
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
 });

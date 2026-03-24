@@ -2,6 +2,8 @@ import React from 'react';
 import { View, Text, Modal, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { CheckCircle } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
+import { SUPPORTED_LANGUAGES } from '@/constants/languages';
+import { useI18n } from '@/src/i18n';
 
 interface LanguagePickerModalProps {
   visible: boolean;
@@ -10,14 +12,7 @@ interface LanguagePickerModalProps {
   selectedLanguage: string;
 }
 
-const languages = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'fr', name: 'French' },
-  { code: 'de', name: 'German' },
-  { code: 'it', name: 'Italian' },
-  { code: 'pt', name: 'Portuguese' },
-];
+const languages = SUPPORTED_LANGUAGES;
 
 export function LanguagePickerModal({
   visible,
@@ -26,6 +21,7 @@ export function LanguagePickerModal({
   selectedLanguage,
 }: LanguagePickerModalProps) {
   const theme = useTheme().theme;
+  const { t } = useI18n();
 
   const handleLanguageSelect = (languageCode: string) => {
     onSelect(languageCode);
@@ -36,7 +32,7 @@ export function LanguagePickerModal({
     <Modal visible={visible} animationType="slide" transparent={true}>
       <View style={[styles.pickerModalContainer, { backgroundColor: 'rgba(0,0,0,0.5)' }]}>
         <View style={[styles.pickerModal, { backgroundColor: theme.colors.background }]}>
-          <Text style={[styles.pickerTitle, { color: theme.colors.text }]}>Select Language</Text>
+          <Text style={[styles.pickerTitle, { color: theme.colors.text }]}>{t('settings.language.title')}</Text>
           <ScrollView style={styles.pickerList}>
             {languages.map((language) => (
               <TouchableOpacity
@@ -53,11 +49,11 @@ export function LanguagePickerModal({
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[styles.pickerCancel, { backgroundColor: theme.colors.surface }]}
             onPress={onClose}
           >
-            <Text style={[styles.pickerCancelText, { color: theme.colors.text }]}>Cancel</Text>
+            <Text style={[styles.pickerCancelText, { color: theme.colors.text }]}>{t('common.cancel')}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -108,4 +104,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-

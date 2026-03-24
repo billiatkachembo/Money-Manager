@@ -1,5 +1,6 @@
 import { useReducer, useState } from 'react';
 import { Alert } from 'react-native';
+import { formatDateWithWeekday } from '@/utils/date';
 import {
   calculateInvestmentGrowth,
   calculateLoanPayment,
@@ -205,9 +206,9 @@ export function useFinancialCalculators({
       totalYears: (scenarioWithExtra.totalMonths / 12).toFixed(1),
       totalInterest: formatCurrency(scenarioWithExtra.totalInterest),
       totalPaid: formatCurrency(principal + scenarioWithExtra.totalInterest),
-      payoffDate: new Date(
-        new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths)
-      ).toLocaleDateString(),
+      payoffDate: formatDateWithWeekday(
+        new Date(new Date().setMonth(new Date().getMonth() + scenarioWithExtra.totalMonths))
+      ),
     };
 
     if (extraPayment > 0 && baselineScenario.paidOff) {

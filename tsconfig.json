@@ -1,9 +1,20 @@
 {
   "compilerOptions": {
-    "module": "ESNext",
-    "strict": true,
+    "target": "ES2020",
+    "module": "NodeNext",
+    "lib": [
+      "ES2022"
+    ],
     "jsx": "react-native",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "nodenext",
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "isolatedModules": true,
     "paths": {
       "@/*": [
         "./*"
@@ -17,8 +28,9 @@
     "expo-env.d.ts"
   ],
   "exclude": [
-    "backend/**"
+    "node_modules",
+    "backend/**",
+    "dist/**"
   ],
   "extends": "expo/tsconfig.base"
 }
-

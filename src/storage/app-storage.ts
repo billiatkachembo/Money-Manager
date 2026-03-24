@@ -8,8 +8,10 @@ import {
   Note,
   RecurringRule,
   Transaction,
+  TransactionCategory,
   UserProfile,
 } from '../../types/transaction';
+import { parseDateValue } from '../../utils/date';
 
 export interface AppSettings {
   currency: string;
@@ -48,6 +50,8 @@ export interface PersistedState {
   userProfile: UserProfile;
   recurringRules: RecurringRule[];
   merchantProfiles: MerchantProfile[];
+  customExpenseCategories: TransactionCategory[];
+  customIncomeCategories: TransactionCategory[];
 }
 
 export interface StorageAdapter {
@@ -69,6 +73,8 @@ export const STORAGE_KEYS = {
   userProfile: 'userProfile',
   recurringRules: 'recurringRules',
   merchantProfiles: 'merchantProfiles',
+  customExpenseCategories: 'customExpenseCategories',
+  customIncomeCategories: 'customIncomeCategories',
 } as const;
 
 const ALL_KEYS = Object.values(STORAGE_KEYS);
@@ -82,16 +88,7 @@ const asyncStorageAdapter: StorageAdapter = {
 };
 
 function parseDate(value: string | Date | undefined): Date | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-
-  return date;
+  return parseDateValue(value);
 }
 
 function serializeDate(value: string | Date | undefined, fallback?: Date): string | undefined {
@@ -422,6 +419,45 @@ function deserializeMerchantProfiles(raw: unknown): MerchantProfile[] {
     .filter((item): item is MerchantProfile => !!item);
 }
 
+function serializeTransactionCategories(categories: TransactionCategory[]): unknown[] {
+  return categories
+    .filter((category) => category?.id && category?.name)
+    .map((category) => ({
+      id: category.id,
+      name: category.name,
+      icon: category.icon,
+      color: category.color,
+    }));
+}
+
+function deserializeTransactionCategories(raw: unknown): TransactionCategory[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+      const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+      if (!id || !name) {
+        return null;
+      }
+
+      return {
+        id,
+        name,
+        icon: typeof candidate.icon === 'string' ? candidate.icon : 'Tag',
+        color: typeof candidate.color === 'string' ? candidate.color : '#F97316',
+      } as TransactionCategory;
+    })
+    .filter((item): item is TransactionCategory => !!item);
+}
+
 function parseJson<T>(value: string | null, fallback: T): T {
   if (!value) {
     return fallback;
@@ -451,6 +487,8 @@ export async function loadPersistedState(
   const rawProfile = parseJson<unknown>(map.get(STORAGE_KEYS.userProfile) ?? null, null);
   const rawRecurring = parseJson<unknown>(map.get(STORAGE_KEYS.recurringRules) ?? null, []);
   const rawMerchants = parseJson<unknown>(map.get(STORAGE_KEYS.merchantProfiles) ?? null, []);
+  const rawCustomExpenseCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customExpenseCategories) ?? null, []);
+  const rawCustomIncomeCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customIncomeCategories) ?? null, []);
 
   return {
     transactions: deserializeTransactions(rawTransactions),
@@ -463,6 +501,8 @@ export async function loadPersistedState(
     userProfile: deserializeUserProfile(rawProfile, defaults.userProfile),
     recurringRules: deserializeRecurringRules(rawRecurring),
     merchantProfiles: deserializeMerchantProfiles(rawMerchants),
+    customExpenseCategories: deserializeTransactionCategories(rawCustomExpenseCategories),
+    customIncomeCategories: deserializeTransactionCategories(rawCustomIncomeCategories),
   };
 }
 
@@ -513,6 +553,20 @@ export async function savePersistedPatch(
 
   if (patch.merchantProfiles) {
     entries.push([STORAGE_KEYS.merchantProfiles, JSON.stringify(serializeMerchantProfiles(patch.merchantProfiles))]);
+  }
+
+  if (patch.customExpenseCategories) {
+    entries.push([
+      STORAGE_KEYS.customExpenseCategories,
+      JSON.stringify(serializeTransactionCategories(patch.customExpenseCategories)),
+    ]);
+  }
+
+  if (patch.customIncomeCategories) {
+    entries.push([
+      STORAGE_KEYS.customIncomeCategories,
+      JSON.stringify(serializeTransactionCategories(patch.customIncomeCategories)),
+    ]);
   }
 
   if (entries.length === 0) {

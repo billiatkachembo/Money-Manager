@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,7 @@ import {
 import { Note } from '@/types/transaction';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
+import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { formatDateDDMMYYYY } from '@/utils/date';
 
 const NOTE_CATEGORIES = [
@@ -49,6 +50,8 @@ type NoteListItem =
 export default function NotesScreen() {
   const { theme } = useTheme();
   const { notes, addNote, updateNote, deleteNote } = useTransactionStore();
+  const openNoteComposerAt = useTabNavigationStore((state) => state.openNoteComposerAt);
+  const consumeNotesComposer = useTabNavigationStore((state) => state.consumeNotesComposer);
 
   const [showAddModal, setShowAddModal] = useState<boolean>(false);
   const [editingNote, setEditingNote] = useState<Note | null>(null);
@@ -110,6 +113,21 @@ export default function NotesScreen() {
       color: NOTE_COLORS[0],
     });
   };
+  useEffect(() => {
+    if (!openNoteComposerAt) {
+      return;
+    }
+
+    setEditingNote(null);
+    setFormData({
+      title: '',
+      content: '',
+      category: 'financial',
+      color: NOTE_COLORS[0],
+    });
+    setShowAddModal(true);
+    consumeNotesComposer();
+  }, [consumeNotesComposer, openNoteComposerAt]);
 
   const handleAddNote = () => {
     if (!formData.title.trim()) {
@@ -586,8 +604,8 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   actionButton: {
-    padding: 4,
-    borderRadius: 6,
+    padding: 3,
+    borderRadius: 5,
     backgroundColor: 'rgba(255, 255, 255, 0.8)',
   },
   noteTitle: {
@@ -636,11 +654,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   swipeActionButton: {
-    minWidth: 86,
+    minWidth: 78,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
+    gap: 5,
+    paddingHorizontal: 10,
   },
   swipePinAction: {
     backgroundColor: '#FFE082',
@@ -653,7 +671,7 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 12,
   },
   swipeActionText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#4a4a4a',
   },
@@ -664,9 +682,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     bottom: 16,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
@@ -693,10 +711,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cancelButton: {
-    fontSize: 16,
+    fontSize: 14,
   },
   saveButton: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
   },
   modalContent: {

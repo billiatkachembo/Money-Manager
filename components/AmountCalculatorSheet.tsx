@@ -1,9 +1,10 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { DollarSign, Trash2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/store/theme-store';
 import { AppBottomSheet, AppBottomSheetAction } from '@/components/ui/AppBottomSheet';
+import { useI18n } from '@/src/i18n';
 
 interface AmountCalculatorSheetProps {
   visible: boolean;
@@ -16,12 +17,9 @@ interface AmountCalculatorSheetProps {
 
 const OPERATORS = ['+', '-', '*', '/'] as const;
 
-const formatDisplayExpression = (expression: string) =>
-  expression.replace(/\*/g, '×').replace(/\//g, '÷');
 
 const normalizeKey = (value: string) => {
-  if (value === '×') return '*';
-  if (value === '÷') return '/';
+  if (value === 'x') return '*';
   return value;
 };
 
@@ -131,6 +129,7 @@ export function AmountCalculatorSheet({
   onCurrencyPress,
 }: AmountCalculatorSheetProps) {
   const { theme } = useTheme();
+  const { t } = useI18n();
   const [expression, setExpression] = useState(value || '0');
 
   useEffect(() => {
@@ -175,7 +174,6 @@ export function AmountCalculatorSheet({
           resolved = numeric || '0';
         }
         onConfirm(resolved);
-        onClose();
         return;
       }
 
@@ -213,41 +211,35 @@ export function AmountCalculatorSheet({
       {
         icon: DollarSign,
         onPress: () => onCurrencyPress?.(),
-        accessibilityLabel: 'Currency',
+        accessibilityLabel: t('amountCalculator.accessibility.currency'),
       },
       {
         icon: Trash2,
         onPress: () => handleKeyPress('DEL'),
-        accessibilityLabel: 'Delete',
+        accessibilityLabel: t('amountCalculator.accessibility.delete'),
       },
     ],
-    [handleKeyPress, onCurrencyPress]
+    [handleKeyPress, onCurrencyPress, t]
   );
 
-  const displayValue = formatDisplayExpression(expression);
 
   const keypadRows = [
     ['1', '2', '3', 'DEL'],
     ['4', '5', '6', '-'],
     ['7', '8', '9', '+'],
-    ['0', '.', 'Done', ''],
+    ['', '0', '.', 'Done'],
   ];
 
   return (
     <AppBottomSheet
       visible={visible}
-      title="Amount"
-      snapPoints={['60%', '75%']}
+      title={t('amountCalculator.title')}
+      snapPoints={['48%', '62%']}
       initialSnapIndex={0}
       actions={actions}
       onClose={onClose}
     >
-      <View style={[styles.display, { backgroundColor: theme.colors.background }]}
-      >
-        <Text style={[styles.displayText, { color: theme.colors.text }]} numberOfLines={1}>
-          {displayValue}
-        </Text>
-      </View>
+
       <View style={styles.keypad}>
         {keypadRows.map((row, rowIndex) => (
           <View key={`row-${rowIndex}`} style={styles.keypadRow}>
@@ -259,7 +251,7 @@ export function AmountCalculatorSheet({
               const isDone = key === 'Done';
               const isDelete = key === 'DEL';
               const isOperatorKey = ['-', '+'].includes(key);
-              const label = isDelete ? '⌫' : key;
+              const label = isDelete ? 'DEL' : key === 'Done' ? t('common.done') : key;
 
               return (
                 <Pressable
@@ -296,33 +288,18 @@ export function AmountCalculatorSheet({
 }
 
 const styles = StyleSheet.create({
-  display: {
-    borderRadius: 16,
-    paddingVertical: 20,
-    paddingHorizontal: 18,
-    alignItems: 'flex-end',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  displayText: {
-    fontSize: 32,
-    fontWeight: '700',
-    letterSpacing: -0.5,
-  },
+
   keypad: {
-    gap: 14,
+    gap: 12,
   },
   keypadRow: {
     flexDirection: 'row',
-    gap: 14,
+    gap: 12,
   },
   key: {
     flex: 1,
-    height: 64,
-    borderRadius: 14,
+    height: 58,
+    borderRadius: 12,
     borderWidth: 1.5,
     justifyContent: 'center',
     alignItems: 'center',
@@ -337,7 +314,7 @@ const styles = StyleSheet.create({
     borderWidth: 0,
   },
   keyText: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '600',
     letterSpacing: -0.3,
   },

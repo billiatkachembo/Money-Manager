@@ -3,7 +3,8 @@ import { Platform } from 'react-native';
 
 export const QUICK_ADD_NOTIFICATION_ID = 'quick-add-notification';
 export const QUICK_ADD_NOTIFICATION_SOURCE = 'quick-add';
-export const QUICK_ADD_NOTIFICATION_CHANNEL_ID = 'quick-add-actions';
+export const QUICK_ADD_NOTIFICATION_CHANNEL_ID = 'quick-add-actions';
+
 export const DAILY_REMINDER_NOTIFICATION_ID = 'daily-reminder';
 export const DAILY_REMINDER_CHANNEL_ID = 'daily-reminder';
 export const QUICK_ADD_NOTIFICATION_CATEGORY_ID = 'quick-add-actions';
@@ -31,8 +32,8 @@ async function ensurePermissionAsync(requestPermission: boolean): Promise<boolea
 async function ensureCategoryAsync(): Promise<void> {
   try {
     await Notifications.setNotificationCategoryAsync(QUICK_ADD_NOTIFICATION_CATEGORY_ID, [
-      { identifier: QUICK_ADD_ACTION_ID, buttonTitle: 'Quick Add' },
-      { identifier: QUICK_SEARCH_ACTION_ID, buttonTitle: 'Search' },
+      { identifier: QUICK_ADD_ACTION_ID, buttonTitle: '➕ Add' },
+      { identifier: QUICK_SEARCH_ACTION_ID, buttonTitle: '🔍 Search' },
     ]);
   } catch (error) {
     console.warn('Quick Add category unavailable', error);
@@ -134,13 +135,13 @@ export async function enableQuickAddNotificationAsync(
   await Notifications.scheduleNotificationAsync({
     identifier: QUICK_ADD_NOTIFICATION_ID,
     content: {
-      title: 'Quick Add',
-      body: 'Add a transaction or search history',
+      title: 'Money Manager',
+      body: 'Use ➕ Add for a transaction or note, or 🔍 Search for history.',
       data: { source: QUICK_ADD_NOTIFICATION_SOURCE },
       categoryIdentifier: QUICK_ADD_NOTIFICATION_CATEGORY_ID,
       sticky: true,
       autoDismiss: false,
-      priority: Notifications.AndroidNotificationPriority.MIN,
+      priority: Notifications.AndroidNotificationPriority.LOW,
     },
     trigger: Platform.OS === 'android' ? { channelId: QUICK_ADD_NOTIFICATION_CHANNEL_ID } : null,
   });
@@ -193,4 +194,3 @@ export async function enableDailyReminderAsync(
 export async function disableDailyReminderAsync(): Promise<void> {
   await clearDailyReminderAsync();
 }
-

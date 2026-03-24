@@ -1,20 +1,22 @@
-﻿import React, { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native';
-import { CreditCard, Landmark, PiggyBank, TrendingUp, Wallet, Maximize2, Pencil } from 'lucide-react-native';
+import { CreditCard, Landmark, PiggyBank, TrendingUp, Wallet, Maximize2, Plus } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/store/theme-store';
 import { Account } from '@/types/transaction';
 import { AppBottomSheet, AppBottomSheetAction } from '@/components/ui/AppBottomSheet';
+import { useI18n } from '@/src/i18n';
 
 interface AccountSelectorSheetProps {
   visible: boolean;
   accounts: Account[];
   selectedAccountId?: string;
   title?: string;
+  maxHeight?: number;
   onSelect: (account: Account) => void;
   onClose: () => void;
   onExpand?: () => void;
-  onEdit?: () => void;
+  onCreateAccount?: () => void;
 }
 
 const ACCOUNT_TYPE_ICONS = {
@@ -29,32 +31,34 @@ export function AccountSelectorSheet({
   visible,
   accounts,
   selectedAccountId,
-  title = 'Accounts',
+  title,
+  maxHeight,
   onSelect,
   onClose,
   onExpand,
-  onEdit,
+  onCreateAccount,
 }: AccountSelectorSheetProps) {
   const { theme } = useTheme();
+  const { t } = useI18n();
 
   const actions = useMemo<AppBottomSheetAction[]>(() => {
     const next: AppBottomSheetAction[] = [];
+    if (onCreateAccount) {
+      next.push({
+        icon: Plus,
+        onPress: onCreateAccount,
+        accessibilityLabel: t('accountSheet.accessibility.createAccount'),
+      });
+    }
     if (onExpand) {
       next.push({
         icon: Maximize2,
         onPress: onExpand,
-        accessibilityLabel: 'Open accounts',
-      });
-    }
-    if (onEdit) {
-      next.push({
-        icon: Pencil,
-        onPress: onEdit,
-        accessibilityLabel: 'Edit accounts',
+        accessibilityLabel: t('accountSheet.accessibility.openAccounts'),
       });
     }
     return next;
-  }, [onEdit, onExpand]);
+  }, [onCreateAccount, onExpand, t]);
 
   const handleSelect = (account: Account) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -67,15 +71,25 @@ export function AccountSelectorSheet({
   return (
     <AppBottomSheet
       visible={visible}
-      title={title}
+      title={title ?? t('common.accounts')}
       snapPoints={['75%']}
       initialSnapIndex={0}
+      maxHeight={maxHeight}
       actions={actions}
       onClose={onClose}
     >
       {accounts.length === 0 ? (
         <View style={styles.emptyState}>
-          <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>No accounts available</Text>
+          <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>{t('accountSheet.noneAvailable')}</Text>
+          {onCreateAccount ? (
+            <Pressable
+              style={[styles.createButton, { backgroundColor: theme.colors.primary }]}
+              onPress={onCreateAccount}
+            >
+              <Plus size={16} color="#fff" />
+              <Text style={styles.createButtonText}>{t('accountSheet.createAccount')}</Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         <FlatList
@@ -167,5 +181,19 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 15,
     fontWeight: '500',
+  },
+  createButton: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  createButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

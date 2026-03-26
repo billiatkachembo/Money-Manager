@@ -53,28 +53,6 @@ export function CalculatorsSection({ onOpenCalculator }: CalculatorsSectionProps
           );
         })}
       </View>
-
-      <View style={[styles.tipsContainer, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>Financial Tips</Text>
-        <View style={styles.tipItem}>
-          <Text style={[styles.tipText, { color: theme.colors.text }]}
-          >
-            - Aim to save 3-6 months of expenses for emergencies
-          </Text>
-        </View>
-        <View style={styles.tipItem}>
-          <Text style={[styles.tipText, { color: theme.colors.text }]}
-          >
-            - Invest at least 15% of income for retirement
-          </Text>
-        </View>
-        <View style={styles.tipItem}>
-          <Text style={[styles.tipText, { color: theme.colors.text }]}
-          >
-            - Pay off high-interest debt first (credit cards)
-          </Text>
-        </View>
-      </View>
     </View>
   );
 }
@@ -135,23 +113,5 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     bottom: 16,
-  },
-  tipsContainer: {
-    marginTop: 24,
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-  },
-  tipsTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 12,
-  },
-  tipItem: {
-    marginBottom: 8,
-  },
-  tipText: {
-    fontSize: 14,
-    lineHeight: 20,
   },
 });

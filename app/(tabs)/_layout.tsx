@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import {
   View,
   Text,
@@ -58,35 +58,27 @@ export default function TabLayout() {
     },
     topNavShell: {
       backgroundColor: theme.colors.background,
-      paddingTop: insets.top + 6,
-      paddingBottom: 8,
-      paddingHorizontal: 16,
+      paddingTop: insets.top + 2,
+      paddingBottom: 4,
+      paddingHorizontal: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.colors.border,
     },
     topNavTrack: {
       flexDirection: 'row',
-      padding: 4,
-      borderRadius: 18,
-      backgroundColor: theme.isDark ? '#111827' : '#EEF2F6',
-      borderWidth: 1,
-      borderColor: theme.isDark ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.05)',
+      alignItems: 'stretch',
+      justifyContent: 'space-between',
+      gap: 4,
     },
     topTabItem: {
       flex: 1,
-      minHeight: 46,
-      borderRadius: 14,
+      minHeight: 44,
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: 6,
       paddingVertical: 6,
     },
-    activeTopTabItem: {
-      backgroundColor: theme.colors.surface,
-      shadowColor: '#020617',
-      shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: theme.isDark ? 0.2 : 0.08,
-      shadowRadius: 12,
-      elevation: 3,
-    },
+    activeTopTabItem: {},
     topTabLabel: {
       marginTop: 3,
       fontSize: 10,
@@ -95,7 +87,14 @@ export default function TabLayout() {
       textAlign: 'center',
     },
     activeTopTabLabel: {
-      color: theme.colors.text,
+      color: theme.colors.primary,
+    },
+    topActiveIndicator: {
+      marginTop: 4,
+      width: 18,
+      height: 3,
+      borderRadius: 999,
+      backgroundColor: theme.colors.primary,
     },
     content: {
       flex: 1,
@@ -105,8 +104,8 @@ export default function TabLayout() {
       backgroundColor: theme.colors.surface,
       borderTopWidth: 1,
       borderTopColor: theme.colors.border,
-      paddingTop: 8,
-      paddingBottom: Math.max(insets.bottom, 10),
+      paddingTop: 6,
+      paddingBottom: Math.max(insets.bottom, 8),
       paddingHorizontal: 10,
     },
     bottomNavRow: {
@@ -116,16 +115,13 @@ export default function TabLayout() {
     },
     bottomTabItem: {
       flex: 1,
-      minHeight: 52,
+      minHeight: 50,
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: 4,
       paddingVertical: 6,
-      borderRadius: 12,
     },
-    activeBottomTabItem: {
-      backgroundColor: theme.colors.primary + '10',
-    },
+    activeBottomTabItem: {},
     bottomTabLabel: {
       marginTop: 3,
       fontSize: 10,
@@ -159,7 +155,7 @@ export default function TabLayout() {
       >
         <IconComponent
           size={17}
-          color={isActive ? theme.colors.text : theme.colors.textSecondary}
+          color={isActive ? theme.colors.primary : theme.colors.textSecondary}
         />
         <Text
           style={[styles.topTabLabel, isActive && styles.activeTopTabLabel]}
@@ -169,6 +165,7 @@ export default function TabLayout() {
         >
           {tab.title}
         </Text>
+        {isActive ? <View style={styles.topActiveIndicator} /> : null}
       </TouchableOpacity>
     );
   };

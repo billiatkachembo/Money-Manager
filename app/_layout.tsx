@@ -1,4 +1,3 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
@@ -21,13 +20,11 @@ import {
   QUICK_ADD_NOTIFICATION_SOURCE,
   QUICK_SEARCH_ACTION_ID,
 } from '@/src/notifications/quick-add-notification';
-import { trpc, trpcClient } from '@/lib/trpc';
 import { AppTooltipHost } from '@/components/ui/AppTooltipHost';
 import { installAlertTooltipBridge } from '@/src/ui/alert-tooltip-bridge';
 
 SplashScreen.preventAutoHideAsync();
 
-const queryClient = new QueryClient();
 
 function QuickAddNotificationManager() {
   const lastHandledId = useRef<string | null>(null);
@@ -277,18 +274,14 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <trpc.Provider client={trpcClient} queryClient={queryClient}>
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <TransactionProvider>
-            <GestureHandlerRootView style={styles.container}>
-              <BottomSheetModalProvider>
-                <RootLayoutNav />
-              </BottomSheetModalProvider>
-            </GestureHandlerRootView>
-          </TransactionProvider>
-        </ThemeProvider>
-      </QueryClientProvider>
-    </trpc.Provider>
+    <ThemeProvider>
+      <TransactionProvider>
+        <GestureHandlerRootView style={styles.container}>
+          <BottomSheetModalProvider>
+            <RootLayoutNav />
+          </BottomSheetModalProvider>
+        </GestureHandlerRootView>
+      </TransactionProvider>
+    </ThemeProvider>
   );
 }

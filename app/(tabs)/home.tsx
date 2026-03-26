@@ -8,11 +8,10 @@ import {
   Animated,
   RefreshControl,
   Alert,
+  TextInput,
 } from 'react-native';
 import {
   Plus,
-  TrendingUp,
-  TrendingDown,
   AlertTriangle,
   Info,
   Zap,
@@ -20,13 +19,15 @@ import {
   ChevronRight,
   Activity,
   Shield,
-  ArrowUpRight,
-  ArrowDownRight,
   PiggyBank,
   Target,
   FileText,
+  Search,
+  SlidersHorizontal,
+  ChevronLeft,
+  ChevronDown,
 } from 'lucide-react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { TransactionItem } from '@/components/TransactionItem';
 import { AddTransactionModal } from '@/components/AddTransactionModal';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
@@ -36,6 +37,7 @@ import { useTransactionStore } from '@/store/transaction-store';
 import { useQuickActionsStore } from '@/store/quick-actions-store';
 import { useTheme } from '@/store/theme-store';
 import { useTabNavigationStore } from '@/store/tab-navigation-store';
+import { useRouter } from 'expo-router';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
 import { Insight, Transaction } from '@/types/transaction';
@@ -209,6 +211,23 @@ const insightStyles = StyleSheet.create({
 });
 
 type MetricCardTarget = 'budget' | 'health' | 'goals' | 'savings';
+type HomeActivityFilter = 'all' | Transaction['type'];
+
+const HOME_ACTIVITY_FILTERS: Array<{ key: HomeActivityFilter; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'income', label: 'Income' },
+  { key: 'expense', label: 'Expenses' },
+  { key: 'transfer', label: 'Transfers' },
+  { key: 'debt', label: 'Debt' },
+];
+
+function toMonthKey(date: Date): string {
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0');
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 100) / 100;
+}
 
 export default function HomeScreen() {
   const [showAddModal, setShowAddModal] = useState(false);
@@ -218,6 +237,15 @@ export default function HomeScreen() {
   const [preferredType, setPreferredType] = useState<'income' | 'expense' | 'transfer' | 'debt' | null>(null);
   const [activeMetricTooltip, setActiveMetricTooltip] = useState<MetricCardTarget | null>(null);
   const [showQuickAddMenu, setShowQuickAddMenu] = useState(false);
+  const [selectedMonthDate, setSelectedMonthDate] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [showHomeSearch, setShowHomeSearch] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showHomeFilterMenu, setShowHomeFilterMenu] = useState(false);
+  const [activityFilter, setActivityFilter] = useState<HomeActivityFilter>('all');
   const { theme } = useTheme();
   const { t } = useI18n();
   const fabScale = useRef(new Animated.Value(1)).current;
@@ -233,6 +261,7 @@ export default function HomeScreen() {
     accounts,
     financialGoals,
     netBalance,
+    debtAccounts,
     getTotalIncome,
     getTotalExpenses,
     healthScore,
@@ -246,24 +275,67 @@ export default function HomeScreen() {
   } = useTransactionStore();
   const { openAddTransactionAt, consumeQuickAdd } = useQuickActionsStore();
   const openNotesComposer = useTabNavigationStore((state) => state.openNotesComposer);
+  const router = useRouter();
 
-  const currentMonth = useMemo(() => new Date().toISOString().slice(0, 7), []);
-  const monthlyIncome = getTotalIncome(currentMonth);
-  const monthlyExpenses = getTotalExpenses(currentMonth);
-  const monthlyCashFlow = monthlyIncome - monthlyExpenses;
-  const recentTransactions = useMemo(
-    () => [...transactions].sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 7),
-    [transactions]
+  const currentMonthKey = useMemo(() => toMonthKey(new Date()), []);
+  const selectedMonthKey = useMemo(() => toMonthKey(selectedMonthDate), [selectedMonthDate]);
+  const selectedMonthLabel = useMemo(
+    () => selectedMonthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+    [selectedMonthDate]
   );
+  const isCurrentSelectedMonth = selectedMonthKey === currentMonthKey;
+  const monthlyIncome = getTotalIncome(selectedMonthKey);
+  const monthlyExpenses = getTotalExpenses(selectedMonthKey);
+  const monthlyCashFlow = monthlyIncome - monthlyExpenses;
+  const remainingDebtBalance = useMemo(() => {
+    const borrowedBalance = debtAccounts
+      .filter((entry) => entry.direction === 'borrowed')
+      .reduce((sum, entry) => sum + entry.balance, 0);
+    const totalDebtPayments = transactions
+      .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+    return Math.max(0, roundCurrency(borrowedBalance - totalDebtPayments));
+  }, [debtAccounts, transactions]);
+  const borrowedDebtCount = useMemo(
+    () => debtAccounts.filter((entry) => entry.direction === 'borrowed').length,
+    [debtAccounts]
+  );
+  const selectedMonthTransactions = useMemo(
+    () => transactions.filter((transaction) => toMonthKey(transaction.date) === selectedMonthKey),
+    [selectedMonthKey, transactions]
+  );
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const recentTransactions = useMemo(() => {
+    return [...selectedMonthTransactions]
+      .filter((transaction) => activityFilter === 'all' || transaction.type === activityFilter)
+      .filter((transaction) => {
+        if (!normalizedSearchQuery) {
+          return true;
+        }
+
+        const searchFields = [
+          transaction.description,
+          transaction.note,
+          transaction.category?.name,
+          transaction.fromAccount,
+          transaction.toAccount,
+          transaction.type,
+        ];
+
+        return searchFields.some((value) => value?.toLowerCase().includes(normalizedSearchQuery));
+      })
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 7);
+  }, [activityFilter, normalizedSearchQuery, selectedMonthTransactions]);
 
 
 
   const topSpending = useMemo(() => {
     const totals = new Map<string, { name: string; color: string; amount: number }>();
 
-    for (const transaction of transactions) {
+    for (const transaction of selectedMonthTransactions) {
       if (transaction.type !== 'expense') continue;
-      if (transaction.date.toISOString().slice(0, 7) !== currentMonth) continue;
 
       const category = transaction.category;
       const key = category?.id ?? category?.name ?? 'uncategorized';
@@ -280,7 +352,7 @@ export default function HomeScreen() {
     }
 
     return Array.from(totals.values()).sort((a, b) => b.amount - a.amount).slice(0, 3);
-  }, [transactions, currentMonth]);
+  }, [selectedMonthTransactions]);
   const activeBudgets = useMemo(() => getActiveBudgets(budgets), [budgets]);
 
   const savingsAccounts = useMemo(
@@ -371,6 +443,11 @@ export default function HomeScreen() {
     Animated.spring(fabScale, { toValue: 1, useNativeDriver: true, friction: 6 }).start();
   }, [fabScale]);
 
+  const shiftSelectedMonth = useCallback((offset: number) => {
+    setSelectedMonthDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+    setShowHomeFilterMenu(false);
+  }, []);
+
   const handleAddFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowQuickAddMenu((current) => !current);
@@ -393,6 +470,33 @@ export default function HomeScreen() {
     setActiveMetricTooltip((current) => (current === target ? null : target));
   }, []);
 
+  const handleMonthChange = useCallback((_event: DateTimePickerEvent, selectedDate?: Date) => {
+    setShowMonthPicker(false);
+    if (!selectedDate) {
+      return;
+    }
+
+    setSelectedMonthDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
+  }, []);
+
+  const handleSearchToggle = useCallback(() => {
+    setShowQuickAddMenu(false);
+    setShowHomeFilterMenu(false);
+    setShowHomeSearch((current) => {
+      if (current) {
+        setSearchQuery('');
+      }
+      return !current;
+    });
+  }, []);
+
+  const handleFilterToggle = useCallback(() => {
+    setShowQuickAddMenu(false);
+    setShowHomeSearch(false);
+    setSearchQuery('');
+    setShowHomeFilterMenu((current) => !current);
+  }, []);
+
   useEffect(() => {
     if (!activeMetricTooltip) {
       return;
@@ -411,73 +515,110 @@ export default function HomeScreen() {
 
   const isDark = theme.isDark;
   const metricTooltipBackground = isDark ? '#0F172A' : '#1F2937';
+  const transactionEmptyState = useMemo(() => {
+    if (selectedMonthTransactions.length === 0) {
+      return {
+        title: 'No transactions in ' + selectedMonthLabel,
+        description: 'Use the Add button below to track activity for this month.',
+      };
+    }
 
-  const heroCard = (
-    <LinearGradient
-      colors={isDark ? ['#14332B', '#0C1F1A'] : ['#0D3B2E', '#155C47']}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 1 }}
-      style={styles.heroCard}
-    >
-      <View style={styles.heroTop}>
-        <View>
-          <Text style={styles.heroLabel}>Net Worth</Text>
+    return {
+      title: 'No matching transactions',
+      description: 'Try a different search term or clear the current filter.',
+    };
+  }, [selectedMonthLabel, selectedMonthTransactions.length]);
+
+  const recentActivitySummary = useMemo(() => {
+    const counts = recentTransactions.reduce(
+      (summary, transaction) => {
+        summary[transaction.type] += 1;
+        return summary;
+      },
+      {
+        income: 0,
+        expense: 0,
+        transfer: 0,
+        debt: 0,
+      } as Record<'income' | 'expense' | 'transfer' | 'debt', number>
+    );
+
+    return [
+      { label: 'Shown', value: `${recentTransactions.length}`, tone: 'neutral' as const },
+      counts.expense > 0 ? { label: 'Expenses', value: `${counts.expense}`, tone: 'negative' as const } : null,
+      counts.income > 0 ? { label: 'Income', value: `${counts.income}`, tone: 'positive' as const } : null,
+      counts.debt > 0 ? { label: 'Debt', value: `${counts.debt}`, tone: 'warning' as const } : null,
+      counts.transfer > 0 ? { label: 'Transfers', value: `${counts.transfer}`, tone: 'info' as const } : null,
+    ].filter(Boolean) as Array<{
+      label: string;
+      value: string;
+      tone: 'neutral' | 'positive' | 'negative' | 'warning' | 'info';
+    }>;
+  }, [recentTransactions]);
+  const homeSummary = (
+    <View style={[styles.homeSummaryStrip, { borderBottomColor: theme.colors.border }]}> 
+      <View style={styles.homeSummaryTopRow}>
+        <View style={styles.homeSummaryPrimary}>
+          <Text style={[styles.homeSummaryLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
           <AdaptiveAmountText
-            style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}
+            style={[
+              styles.homeSummaryPrimaryValue,
+              { color: netBalance < 0 ? theme.colors.error : theme.colors.text },
+            ]}
             minFontSize={18}
             value={`${netBalance < 0 ? '-' : ''}${formatCurrency(Math.abs(netBalance))}`}
           />
-          <Text
-            style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}
-            numberOfLines={1}
-            adjustsFontSizeToFit
-            minimumFontScale={0.72}
-          >
-            This month {monthlyCashFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(monthlyCashFlow))}
-          </Text>
+          <Text style={[styles.homeSummaryMeta, { color: theme.colors.textSecondary }]}>{selectedMonthLabel}</Text>
         </View>
-        <View style={styles.cashFlowPill}>
-          <Text style={styles.cashFlowPillLabel}>Cash Flow</Text>
-          <View style={styles.cashFlowValueRow}>
-            {monthlyCashFlow >= 0 ? (
-              <ArrowUpRight size={12} color="#4ADE80" />
-            ) : (
-              <ArrowDownRight size={12} color="#F87171" />
-            )}
+
+        <View style={styles.homeSummarySide}>
+          <View style={styles.homeSummarySideMetric}>
+            <Text style={[styles.homeSummaryLabel, { color: theme.colors.textSecondary }]}>Cash Flow</Text>
             <AdaptiveAmountText
               style={[
-                styles.cashFlowPillText,
-                { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
+                styles.homeSummarySideValue,
+                { color: monthlyCashFlow >= 0 ? theme.colors.success : theme.colors.error },
               ]}
-              minFontSize={9}
-              value={`${monthlyCashFlow >= 0 ? '+' : ''}${formatCurrency(monthlyCashFlow)}`}
+              minFontSize={12}
+              value={`${monthlyCashFlow >= 0 ? '+' : '-'}${formatCurrency(Math.abs(monthlyCashFlow))}`}
             />
           </View>
         </View>
+
       </View>
 
-      <View style={styles.flowRow}>
-        <View style={styles.flowItem}>
-          <View style={[styles.flowIcon, { backgroundColor: 'rgba(74,222,128,0.15)' }]}>
-            <TrendingUp size={13} color="#4ADE80" />
-          </View>
-          <View>
-            <Text style={styles.flowLabel}>Income</Text>
-            <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyIncome)} />
-          </View>
+      <View style={[styles.homeSummaryBottomRow, { borderTopColor: theme.colors.border }]}>
+        <View style={styles.homeSummaryBottomMetric}>
+          <Text style={[styles.homeSummaryBottomLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+          <AdaptiveAmountText
+            style={[styles.homeSummaryBottomValue, { color: theme.colors.success }]}
+            minFontSize={11}
+            value={formatCurrency(monthlyIncome)}
+          />
         </View>
-        <View style={styles.flowDivider} />
-        <View style={styles.flowItem}>
-          <View style={[styles.flowIcon, { backgroundColor: 'rgba(248,113,113,0.15)' }]}>
-            <TrendingDown size={13} color="#F87171" />
-          </View>
-          <View>
-            <Text style={styles.flowLabel}>Expenses</Text>
-            <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyExpenses)} />
-          </View>
+        <View style={[styles.homeSummaryBottomDivider, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.homeSummaryBottomMetric}>
+          <Text style={[styles.homeSummaryBottomLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+          <AdaptiveAmountText
+            style={[styles.homeSummaryBottomValue, { color: theme.colors.error }]}
+            minFontSize={11}
+            value={formatCurrency(monthlyExpenses)}
+          />
+        </View>
+        <View style={[styles.homeSummaryBottomDivider, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.homeSummaryBottomMetric}>
+          <Text style={[styles.homeSummaryBottomLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+          <AdaptiveAmountText
+            style={[
+              styles.homeSummaryBottomValue,
+              { color: remainingDebtBalance > 0 ? theme.colors.error : theme.colors.textSecondary },
+            ]}
+            minFontSize={11}
+            value={formatCurrency(remainingDebtBalance)}
+          />
         </View>
       </View>
-    </LinearGradient>
+    </View>
   );
 
   const renderMetricTooltip = (target: MetricCardTarget) => {
@@ -540,7 +681,103 @@ export default function HomeScreen() {
   }
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {heroCard}
+      <View style={[styles.homeToolbar, { borderBottomColor: theme.colors.border }]}>
+        <View style={styles.homeToolbarRow}>
+          <View style={styles.monthSelectorWrap}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Previous month"
+              style={styles.monthNavButton}
+              onPress={() => shiftSelectedMonth(-1)}
+            >
+              <ChevronLeft size={18} color={theme.colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Select month"
+              style={styles.monthSelectorButton}
+              onPress={() => {
+                setShowQuickAddMenu(false);
+                setShowHomeFilterMenu(false);
+                setShowMonthPicker(true);
+              }}
+            >
+              <Text style={[styles.monthSelectorText, { color: theme.colors.text }]}>{selectedMonthLabel}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Next month"
+              disabled={isCurrentSelectedMonth}
+              style={[styles.monthNavButton, isCurrentSelectedMonth && styles.toolbarIconDisabled]}
+              onPress={() => shiftSelectedMonth(1)}
+            >
+              <ChevronRight size={18} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.homeToolbarActions}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={showHomeSearch ? 'Close search' : 'Search transactions'}
+              style={styles.toolbarIconButton}
+              onPress={handleSearchToggle}
+            >
+              <Search size={18} color={theme.colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Filter transactions"
+              style={styles.toolbarIconButton}
+              onPress={handleFilterToggle}
+            >
+              <SlidersHorizontal size={18} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+        </View>
+        {showHomeSearch ? (
+          <View style={[styles.searchBar, { backgroundColor: isDark ? '#111827' : '#FFFFFF', borderColor: theme.colors.border }]}>
+            <Search size={15} color={theme.colors.textSecondary} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search transactions"
+              placeholderTextColor={theme.colors.textSecondary}
+              style={[styles.searchInput, { color: theme.colors.text }]}
+              autoFocus
+            />
+          </View>
+        ) : null}
+        {showHomeFilterMenu ? (
+          <View style={styles.filterChipsRow}>
+            {HOME_ACTIVITY_FILTERS.map((option) => {
+              const isActive = activityFilter === option.key;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  accessibilityRole="button"
+                  style={[
+                    styles.filterChip,
+                    {
+                      backgroundColor: isActive ? theme.colors.primary + '18' : isDark ? theme.colors.card : '#FFFFFF',
+                      borderColor: isActive ? theme.colors.primary + '50' : theme.colors.border,
+                    },
+                  ]}
+                  onPress={() => setActivityFilter(option.key)}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      { color: isActive ? theme.colors.primary : theme.colors.textSecondary },
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ) : null}
+      </View>
+      {homeSummary}
 
       <ScrollView
         style={styles.scrollView}
@@ -548,6 +785,7 @@ export default function HomeScreen() {
         onScrollBeginDrag={() => {
           setActiveMetricTooltip(null);
           setShowQuickAddMenu(false);
+          setShowHomeFilterMenu(false);
         }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
@@ -710,7 +948,7 @@ export default function HomeScreen() {
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Top Spending</Text>
-              <Text style={[styles.sectionMeta, { color: theme.colors.textSecondary }]}>This month</Text>
+              <Text style={[styles.sectionMeta, { color: theme.colors.textSecondary }]}>{selectedMonthLabel}</Text>
             </View>
             <View
               style={[
@@ -819,51 +1057,126 @@ export default function HomeScreen() {
         )}
 
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Recent Activity</Text>
-            {recentTransactions.length > 0 && (
-              <TouchableOpacity style={styles.seeAllBtn}>
-                <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
-                <ChevronRight size={14} color={theme.colors.primary} />
-              </TouchableOpacity>
+          <View
+            style={[
+              styles.activityCard,
+              {
+                backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
+                borderColor: theme.colors.border,
+                shadowColor: theme.colors.shadow,
+              },
+            ]}
+          >
+            <View style={styles.activityCardHeader}>
+              <View style={styles.activityHeadingWrap}>
+                <Text style={[styles.activityEyebrow, { color: theme.colors.textSecondary }]}>Home Feed</Text>
+                <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Recent Activity</Text>
+                <Text style={[styles.activitySubtitle, { color: theme.colors.textSecondary }]}>
+                  {showHomeSearch || activityFilter !== 'all'
+                    ? selectedMonthLabel + ' | ' + (HOME_ACTIVITY_FILTERS.find((option) => option.key === activityFilter)?.label ?? 'All')
+                    : selectedMonthLabel + ' snapshot'}
+                </Text>
+              </View>
+
+              <View style={styles.activityHeaderRight}>
+                <View
+                  style={[
+                    styles.activityCountBadge,
+                    { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                  ]}
+                >
+                  <Text style={[styles.activityCountValue, { color: theme.colors.text }]}>{recentTransactions.length}</Text>
+                  <Text style={[styles.activityCountLabel, { color: theme.colors.textSecondary }]}>items</Text>
+                </View>
+                {recentTransactions.length > 0 ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.activitySeeAllBtn,
+                      { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                    ]}
+                    activeOpacity={0.85}
+                    onPress={() => router.push('/(tabs)/transactions')}
+                  >
+                    <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
+                    <ChevronRight size={14} color={theme.colors.primary} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+
+            {recentTransactions.length === 0 ? (
+              <View
+                style={[
+                  styles.activityEmptyState,
+                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                ]}
+              >
+                <View style={[styles.activityEmptyIcon, { backgroundColor: isDark ? '#1A332920' : '#F0FDF4' }]}>
+                  <Activity size={22} color={isDark ? '#34D399' : '#059669'} />
+                </View>
+                <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>{transactionEmptyState.title}</Text>
+                <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
+                  {transactionEmptyState.description}
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View
+                  style={[
+                    styles.activitySummaryRow,
+                    { borderTopColor: theme.colors.border, borderBottomColor: theme.colors.border },
+                  ]}
+                >
+                  {recentActivitySummary.map((item) => {
+                    const toneStyles =
+                      item.tone === 'positive'
+                        ? { backgroundColor: isDark ? '#14332B' : '#DCFCE7', color: '#16A34A' }
+                        : item.tone === 'negative'
+                          ? { backgroundColor: isDark ? '#3F1D1D' : '#FEE2E2', color: '#DC2626' }
+                          : item.tone === 'warning'
+                            ? { backgroundColor: isDark ? '#3B2A11' : '#FEF3C7', color: '#D97706' }
+                            : item.tone === 'info'
+                              ? { backgroundColor: isDark ? '#1E3A5F' : '#DBEAFE', color: '#2563EB' }
+                              : { backgroundColor: theme.colors.background, color: theme.colors.textSecondary };
+
+                    return (
+                      <View
+                        key={item.label}
+                        style={[
+                          styles.activitySummaryChip,
+                          { backgroundColor: toneStyles.backgroundColor, borderColor: theme.colors.border },
+                        ]}
+                      >
+                        <Text style={[styles.activitySummaryLabel, { color: toneStyles.color }]}>{item.label}</Text>
+                        <Text style={[styles.activitySummaryValue, { color: toneStyles.color }]}>{item.value}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.activityFeedList}>
+                  {recentTransactions.map((transaction) => (
+                    <View
+                      key={transaction.id}
+                      style={[
+                        styles.activityRowShell,
+                        { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                      ]}
+                    >
+                      <TransactionItem
+                        transaction={transaction}
+                        showActions
+                        compact
+                        variant="activity"
+                        onEdit={() => setEditingTransaction(transaction)}
+                        onDelete={() => confirmDeleteTransaction(transaction)}
+                      />
+                    </View>
+                  ))}
+                </View>
+              </>
             )}
           </View>
-
-          {recentTransactions.length === 0 ? (
-            <View style={[styles.emptyState, {
-              backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
-              borderColor: theme.colors.border,
-              borderWidth: 1,
-            }]}>
-              <View style={[styles.emptyIcon, { backgroundColor: isDark ? '#1A332920' : '#F0FDF4' }]}>
-                <Plus size={24} color={isDark ? '#34D399' : '#059669'} />
-              </View>
-              <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>No transactions yet</Text>
-              <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
-                Tap the button below to start tracking
-              </Text>
-            </View>
-          ) : (
-            <View style={[styles.txList, {
-              backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
-              borderRadius: 14,
-              overflow: 'hidden',
-            }]}>
-              {recentTransactions.map((transaction, index) => (
-                <View key={transaction.id}>
-                  {index > 0 && (
-                    <View style={[styles.txDivider, { backgroundColor: theme.colors.border }]} />
-                  )}
-                  <TransactionItem
-                    transaction={transaction}
-                    showActions compact
-                    onEdit={() => setEditingTransaction(transaction)}
-                    onDelete={() => confirmDeleteTransaction(transaction)}
-                  />
-                </View>
-              ))}
-            </View>
-          )}
         </View>
 
         <View style={{ height: 100 }} />
@@ -909,6 +1222,15 @@ export default function HomeScreen() {
         }}
       />
 
+      {showMonthPicker ? (
+        <DateTimePicker
+          value={selectedMonthDate}
+          mode="date"
+          display="default"
+          onChange={handleMonthChange}
+        />
+      ) : null}
+
       {editingTransaction ? (
         <EditTransactionModal
           visible={true}
@@ -928,114 +1250,165 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
-  skeletonWrap: {
-    padding: 16,
-  },
-  heroCard: {
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    borderRadius: 14,
+  homeToolbar: {
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  heroTop: {
+  homeToolbarRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 10,
+    gap: 12,
+    minHeight: 36,
   },
-  heroLabel: {
-    color: 'rgba(255,255,255,0.55)',
-    fontSize: 11,
-    fontWeight: '600' as const,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase' as const,
-  },
-  heroBalance: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '800' as const,
-    marginTop: 1,
-    letterSpacing: -0.25,
-  },
-  heroMeta: {
-    color: 'rgba(255,255,255,0.72)',
-    fontSize: 9,
-    fontWeight: '600' as const,
-    marginTop: 3,
-  },
-  heroMetaNegative: {
-    color: '#FCA5A5',
-  },
-  negativeBalance: {
-    color: '#FCA5A5',
-  },
-  cashFlowPill: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    gap: 0,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    borderRadius: 11,
-    marginTop: 1,
-  },
-  cashFlowPillLabel: {
-    fontSize: 7,
-    fontWeight: '600' as const,
-    color: 'rgba(255,255,255,0.6)',
-    letterSpacing: 0.25,
-  },
-  cashFlowValueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-  },
-  cashFlowPillText: {
-    fontSize: 9,
-    fontWeight: '700' as const,
-    flexShrink: 1,
-  },
-  flowRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-  },
-  flowItem: {
+  monthSelectorWrap: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 2,
   },
-  flowIcon: {
-    width: 22,
-    height: 22,
-    borderRadius: 7,
+  monthSelectorButton: {
+    flexShrink: 1,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  monthSelectorText: {
+    fontSize: 17,
+    fontWeight: '700' as const,
+    letterSpacing: -0.3,
+  },
+  monthNavButton: {
+    width: 26,
+    height: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 6,
   },
-  flowLabel: {
-    color: 'rgba(255,255,255,0.5)',
-    fontSize: 8,
-    fontWeight: '600' as const,
-    letterSpacing: 0.25,
+  homeToolbarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
   },
-  flowValue: {
-    color: '#FFFFFF',
-    fontSize: 11,
+  toolbarIconButton: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolbarIconDisabled: {
+    opacity: 0.45,
+  },
+  searchBar: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500' as const,
+    paddingVertical: 0,
+  },
+  filterChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+    paddingLeft: 2,
+  },
+  filterChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  filterChipText: {
+    fontSize: 12,
     fontWeight: '700' as const,
-    marginTop: 1,
-    flexShrink: 1,
   },
-  flowDivider: {
+  skeletonWrap: {
+    padding: 16,
+  },
+  homeSummaryStrip: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+  },
+  homeSummaryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  homeSummaryPrimary: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeSummaryLabel: {
+    fontSize: 10,
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.6,
+  },
+  homeSummaryPrimaryValue: {
+    fontSize: 24,
+    fontWeight: '800' as const,
+    marginTop: 4,
+    letterSpacing: -0.35,
+  },
+  homeSummaryMeta: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+    marginTop: 4,
+  },
+  homeSummarySide: {
+    width: 118,
+    alignItems: 'flex-end',
+  },
+  homeSummarySideMetric: {
+    alignItems: 'flex-end',
+  },
+  homeSummarySideValue: {
+    fontSize: 15,
+    fontWeight: '800' as const,
+    marginTop: 3,
+    textAlign: 'right' as const,
+  },
+
+  homeSummaryBottomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    gap: 10,
+    borderTopWidth: 1,
+  },
+  homeSummaryBottomMetric: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeSummaryBottomLabel: {
+    fontSize: 10,
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  homeSummaryBottomValue: {
+    fontSize: 14,
+    fontWeight: '700' as const,
+    marginTop: 4,
+  },
+  homeSummaryBottomDivider: {
     width: 1,
-    height: 18,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    marginHorizontal: 6,
+    alignSelf: 'stretch',
   },
   metricsRow: {
     flexDirection: 'row',
@@ -1151,6 +1524,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
+  },
+  sectionHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   sectionTitle: {
     fontSize: 16,
@@ -1269,14 +1647,130 @@ const styles = StyleSheet.create({
     fontWeight: '700' as const,
     flexShrink: 1,
   },
+  activityCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
+    elevation: 3,
+  },
+  activityCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  activityHeadingWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  activityEyebrow: {
+    fontSize: 10,
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+  activitySubtitle: {
+    fontSize: 12,
+    fontWeight: '600' as const,
+    marginTop: 4,
+  },
+  activityHeaderRight: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  activityCountBadge: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    alignItems: 'center',
+    minWidth: 58,
+  },
+  activityCountValue: {
+    fontSize: 14,
+    fontWeight: '800' as const,
+    lineHeight: 16,
+  },
+  activityCountLabel: {
+    fontSize: 10,
+    fontWeight: '600' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+    marginTop: 2,
+  },
+  activitySeeAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  activitySummaryRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+  },
+  activitySummaryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  activitySummaryLabel: {
+    fontSize: 11,
+    fontWeight: '700' as const,
+  },
+  activitySummaryValue: {
+    fontSize: 11,
+    fontWeight: '800' as const,
+  },
+  activityFeedList: {
+    padding: 12,
+    gap: 10,
+  },
+  activityRowShell: {
+    borderWidth: 1,
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  activityEmptyState: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 28,
+    borderTopWidth: 1,
+  },
+  activityEmptyIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
   txList: {
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
     shadowRadius: 8,
     elevation: 2,
-  },
-  txDivider: {
+  },  txDivider: {
     height: 1,
     marginHorizontal: 12,
   },
@@ -1354,6 +1848,7 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 });
+
 
 
 

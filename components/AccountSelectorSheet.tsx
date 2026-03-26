@@ -1,9 +1,10 @@
 import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, Pressable, FlatList } from 'react-native';
-import { CreditCard, Landmark, PiggyBank, TrendingUp, Wallet, Maximize2, Plus } from 'lucide-react-native';
+import { Maximize2, Plus, Wallet } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/store/theme-store';
 import { Account } from '@/types/transaction';
+import { getAccountTypeIcon } from '@/constants/account-types';
 import { AppBottomSheet, AppBottomSheetAction } from '@/components/ui/AppBottomSheet';
 import { useI18n } from '@/src/i18n';
 
@@ -18,14 +19,6 @@ interface AccountSelectorSheetProps {
   onExpand?: () => void;
   onCreateAccount?: () => void;
 }
-
-const ACCOUNT_TYPE_ICONS = {
-  checking: Wallet,
-  savings: PiggyBank,
-  credit: CreditCard,
-  investment: TrendingUp,
-  cash: Landmark,
-} as const;
 
 export function AccountSelectorSheet({
   visible,
@@ -100,7 +93,7 @@ export function AccountSelectorSheet({
           contentContainerStyle={styles.gridContent}
           renderItem={({ item }) => {
             const isSelected = item.id === selectedAccountId;
-            const AccountIcon = ACCOUNT_TYPE_ICONS[item.type] ?? Wallet;
+            const AccountIcon = getAccountTypeIcon(item.icon, item.type) ?? Wallet;
             const accentColor = item.color || theme.colors.primary;
 
             return (
@@ -197,3 +190,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+

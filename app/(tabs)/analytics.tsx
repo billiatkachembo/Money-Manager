@@ -34,7 +34,9 @@ import {
   computeExpenseDistribution,
   computeQuickStats,
 } from '@/src/domain/analytics';
-import { computeStarterInvestmentTarget } from '@/src/domain/financial-intelligence';
+import { buildWealthMilestoneLadder, computeStarterInvestmentTarget } from '@/src/domain/financial-intelligence';
+import { computeDebtPortfolioTotals } from '@/src/domain/debt-portfolio';
+import { getAccountTypeDefinition } from '@/constants/account-types';
 import { deriveAccountBalance } from '@/src/domain/ledger';
 import type { Transaction } from '@/types/transaction';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -65,6 +67,10 @@ const categoryPalette = [
   '#FCD34D',
 ];
 
+const expensePiePalette = ['#D96B5F', '#F1A24B', '#2F9C95', '#557CBE', '#89B35F', '#9A6AD9'];
+const APP_SHORT_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+const APP_SHORT_WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
 const VoronoiCursorContainer = createContainer('voronoi', 'cursor') as React.ComponentType<any>;
 
 type ExportableChartId =
@@ -74,13 +80,18 @@ type ExportableChartId =
   | 'spending-by-category'
   | 'net-worth-forecast';
 
-type AnalyticsRangePreset = 'monthly' | 'sixMonths' | 'annually' | 'period';
+type AnalyticsRangePreset = 'weekly' | 'monthly' | 'sixMonths' | 'annually' | 'period';
 
-const ANALYTICS_RANGE_OPTIONS: Array<{ key: AnalyticsRangePreset; label: string }> = [
-  { key: 'monthly', label: 'Weekly / Monthly' },
-  { key: 'sixMonths', label: 'Six Months Trend' },
-  { key: 'annually', label: 'Annually' },
-  { key: 'period', label: 'Period' },
+const ANALYTICS_RANGE_OPTIONS: Array<{
+  key: AnalyticsRangePreset;
+  label: string;
+  description: string;
+}> = [
+  { key: 'weekly', label: 'Weekly', description: 'This week to date' },
+  { key: 'monthly', label: 'Monthly', description: 'Current month view' },
+  { key: 'sixMonths', label: 'Six Months', description: 'Recent half-year trend' },
+  { key: 'annually', label: 'Annually', description: 'Rolling 12-month view' },
+  { key: 'period', label: 'Period', description: 'Choose a custom range' },
 ];
 
 function toMonthKey(date: Date): string {
@@ -91,9 +102,9 @@ function toDayKey(date: Date): string {
   return `${toMonthKey(date)}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function buildRecentMonths(length: number): Date[] {
-  const today = new Date();
-  return Array.from({ length }, (_, index) => new Date(today.getFullYear(), today.getMonth() - (length - 1 - index), 1));
+function buildRecentMonths(length: number, referenceDate: Date = new Date()): Date[] {
+  const anchor = referenceDate;
+  return Array.from({ length }, (_, index) => new Date(anchor.getFullYear(), anchor.getMonth() - (length - 1 - index), 1));
 }
 
 function formatPercentage(value: number): string {
@@ -130,7 +141,23 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatShortMonthLabel(date: Date): string {
-  return date.toLocaleDateString('en-US', { month: 'short' });
+  return APP_SHORT_MONTH_LABELS[date.getMonth()] ?? '';
+}
+
+function formatMonthYearLabel(date: Date): string {
+  return `${formatShortMonthLabel(date)} ${date.getFullYear()}`;
+}
+
+function formatShortWeekdayLabel(date: Date): string {
+  return APP_SHORT_WEEKDAY_LABELS[date.getDay()] ?? '';
+}
+
+function formatMonthYearShortLabel(date: Date, includeYear: boolean): string {
+  if (!includeYear) {
+    return formatShortMonthLabel(date);
+  }
+
+  return `${formatShortMonthLabel(date)} ${String(date.getFullYear()).slice(-2)}`;
 }
 
 function truncateLabel(label: string, maxLength = 10): string {
@@ -161,6 +188,20 @@ function endOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
 }
 
+function startOfWeek(date: Date): Date {
+  const normalized = startOfDay(date);
+  const day = normalized.getDay();
+  const mondayOffset = (day + 6) % 7;
+  return new Date(normalized.getFullYear(), normalized.getMonth(), normalized.getDate() - mondayOffset);
+}
+
+function buildDayBuckets(start: Date, end: Date): Date[] {
+  const totalDays = countDaysInclusive(start, end);
+  return Array.from({ length: totalDays }, (_, index) =>
+    new Date(start.getFullYear(), start.getMonth(), start.getDate() + index)
+  );
+}
+
 function countDaysInclusive(start: Date, end: Date): number {
   const startMs = startOfDay(start).getTime();
   const endMs = endOfDay(end).getTime();
@@ -172,6 +213,57 @@ function countMonthsInclusive(start: Date, end: Date): number {
   const yearDiff = end.getFullYear() - start.getFullYear();
   const monthDiff = end.getMonth() - start.getMonth();
   return Math.max(1, yearDiff * 12 + monthDiff + 1);
+}
+
+function getDaysInMonth(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+}
+
+function normalizePartialMonthTotal(total: number, bucketMonth: string, referenceDate: Date): number {
+  if (bucketMonth !== toMonthKey(referenceDate)) {
+    return total;
+  }
+
+  const daysElapsed = Math.max(1, referenceDate.getDate());
+  const daysInMonth = getDaysInMonth(referenceDate);
+  const progress = Math.min(1, daysElapsed / daysInMonth);
+  return progress >= 1 ? total : total / progress;
+}
+
+function computeRecentAverageMonthlyTotals(
+  transactions: Transaction[],
+  referenceDate: Date,
+  months = 3
+): { averageIncome: number; averageExpenses: number; averageNet: number } | null {
+  const recentMonths = buildRecentMonths(months, referenceDate);
+  if (recentMonths.length === 0) {
+    return null;
+  }
+
+  const totals = recentMonths.map((month) => {
+    const bucketMonth = toMonthKey(month);
+    const income = transactions
+      .filter((transaction) => transaction.type === 'income' && toMonthKey(transaction.date) === bucketMonth)
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+    const expenses = transactions
+      .filter((transaction) => transaction.type === 'expense' && toMonthKey(transaction.date) === bucketMonth)
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+    return {
+      income: normalizePartialMonthTotal(income, bucketMonth, referenceDate),
+      expenses: normalizePartialMonthTotal(expenses, bucketMonth, referenceDate),
+    };
+  });
+
+  const divisor = totals.length;
+  const averageIncome = totals.reduce((sum, entry) => sum + entry.income, 0) / divisor;
+  const averageExpenses = totals.reduce((sum, entry) => sum + entry.expenses, 0) / divisor;
+
+  return {
+    averageIncome: roundCurrency(averageIncome),
+    averageExpenses: roundCurrency(averageExpenses),
+    averageNet: roundCurrency(averageIncome - averageExpenses),
+  };
 }
 
 function buildMonthBuckets(start: Date, end: Date): Date[] {
@@ -208,6 +300,108 @@ function estimateMonthsToTarget(
   }
 
   return months < 600 ? months : null;
+}
+
+function roundToNiceMilestoneTarget(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  const exponent = Math.floor(Math.log10(value));
+  const magnitude = 10 ** exponent;
+  const normalized = value / magnitude;
+  const steps = [1, 1.5, 2, 2.5, 3, 5, 7.5, 10];
+  const step = steps.find((candidate) => normalized <= candidate) ?? 10;
+  return roundCurrency(step * magnitude);
+}
+
+function addMonthsToDate(referenceDate: Date, months: number): Date {
+  const safeMonths = Math.max(0, Math.ceil(months));
+  const next = new Date(referenceDate);
+  const originalDay = next.getDate();
+  next.setMonth(next.getMonth() + safeMonths);
+
+  if (next.getDate() < originalDay) {
+    next.setDate(0);
+  }
+
+  return next;
+}
+
+function estimateTargetProjection(
+  current: number,
+  target: number,
+  monthlySavings: number,
+  annualReturn: number,
+  referenceDate: Date
+): { estimatedMonths: number | null; estimatedDate: Date | null } {
+  const estimatedMonths = estimateMonthsToTarget(current, target, monthlySavings, annualReturn);
+  return {
+    estimatedMonths,
+    estimatedDate: estimatedMonths === null ? null : addMonthsToDate(referenceDate, estimatedMonths),
+  };
+}
+
+function resolveMilestoneRange(
+  currentNetWorth: number,
+  milestones: number[]
+): { previousMilestone: number; nextMilestone: number } {
+  const safeCurrent = Math.max(0, currentNetWorth);
+  const sorted = milestones
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice()
+    .sort((left, right) => left - right);
+
+  const nextMilestone = sorted.find((value) => value > safeCurrent);
+  if (nextMilestone !== undefined) {
+    const previousMilestone = sorted
+      .slice()
+      .reverse()
+      .find((value) => value <= safeCurrent) ?? 0;
+    return { previousMilestone, nextMilestone };
+  }
+
+  const previousMilestone = sorted[sorted.length - 1] ?? 0;
+  const anchor = Math.max(previousMilestone, safeCurrent, 250);
+  return {
+    previousMilestone,
+    nextMilestone: roundToNiceMilestoneTarget(Math.max(anchor * 1.25, previousMilestone * 2, 250)),
+  };
+}
+
+function calculateMilestoneProgress(current: number, previousMilestone: number, nextMilestone: number): number {
+  if (!Number.isFinite(nextMilestone) || nextMilestone <= 0) {
+    return 0;
+  }
+
+  if (current >= nextMilestone) {
+    return 1;
+  }
+
+  const span = nextMilestone - previousMilestone;
+  if (!Number.isFinite(span) || span <= 0) {
+    return clamp(Math.max(0, current) / nextMilestone);
+  }
+
+  return clamp((current - previousMilestone) / span);
+}
+
+function computeStarterInvestmentBase(
+  liquidBalance: number,
+  investmentBalance: number,
+  averageMonthlyExpenses: number
+): number {
+  const reserve = Math.max(0, averageMonthlyExpenses);
+  return roundCurrency(Math.max(0, investmentBalance) + Math.max(0, liquidBalance - reserve));
+}
+
+function computeFinancialIndependenceBase(
+  liquidBalance: number,
+  investmentBalance: number,
+  emergencyFundTarget: number
+): number {
+  const reserve = Math.max(0, emergencyFundTarget);
+  return roundCurrency(Math.max(0, investmentBalance) + Math.max(0, liquidBalance - reserve));
 }
 
 function formatDurationShort(months: number | null): string | null {
@@ -257,10 +451,19 @@ function getToAccountId(transaction: Transaction): string | undefined {
   return transaction.toAccountId ?? transaction.toAccount;
 }
 
+function isAccountInTypeGroup(accountType: string | undefined, groups: string[]): boolean {
+  const definition = getAccountTypeDefinition(accountType);
+  return groups.includes(definition.group);
+}
+
 function computeTransactionNetWorthImpact(
   transaction: Transaction,
   activeAccountIds: Set<string>
 ): number {
+  if (transaction.type === 'debt' || (transaction.type === 'expense' && transaction.debtPayment)) {
+    return 0;
+  }
+
   const fromAccountId = getFromAccountId(transaction);
   const toAccountId = getToAccountId(transaction);
   const debit = fromAccountId && activeAccountIds.has(fromAccountId) ? transaction.amount : 0;
@@ -284,6 +487,7 @@ interface MilestoneCard {
   current: number;
   progress: number;
   estimatedMonths?: number | null;
+  estimatedDate?: Date | null;
   insights?: string[];
   achieved?: boolean;
   tone?: 'positive' | 'warning';
@@ -379,7 +583,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const cashflowRunway = financialIntelligence.cashflowRunway;
   const netWorthSimulation = financialIntelligence.netWorthSimulation;
   const debtPayoffPlan = financialIntelligence.debtPayoff;
-  const milestoneProgress = financialIntelligence.milestones;
   const chartCaptureRefs = useRef<Record<ExportableChartId, ViewShot | null>>({
     'net-worth-progress': null,
     'expense-distribution': null,
@@ -397,13 +600,15 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const [customEndDate, setCustomEndDate] = useState(() => endOfDay(new Date()));
   const [showCustomStartPicker, setShowCustomStartPicker] = useState(false);
   const [showCustomEndPicker, setShowCustomEndPicker] = useState(false);
+  const analyticsReferenceDateKey = formatDateDDMMYYYY(new Date());
+  const analyticsReferenceDate = useMemo(() => endOfDay(new Date()), [analyticsReferenceDateKey]);
 
   const netWorthForecastData = useMemo(() => {
     if (!netWorthSimulation) {
       return null;
     }
 
-    const baseDate = new Date();
+    const baseDate = analyticsReferenceDate;
     const buildForecastDate = (yearOffset: number) =>
       new Date(baseDate.getFullYear() + yearOffset, baseDate.getMonth(), baseDate.getDate());
 
@@ -421,7 +626,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       tickValues,
       projectedDate: data[data.length - 1]?.x ?? buildForecastDate(netWorthSimulation.years),
     };
-  }, [netWorthSimulation]);
+  }, [analyticsReferenceDate, netWorthSimulation]);
 
   const chartWidth = Math.max(screenWidth - 32, 260);
   const gridColor = theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)';
@@ -452,15 +657,34 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const setChartCaptureRef = (chartId: ExportableChartId) => (ref: ViewShot | null) => {
     chartCaptureRefs.current[chartId] = ref;
   };
-  const today = new Date();
+  const today = analyticsReferenceDate;
   const activeRange = useMemo(() => {
     const normalizedCustomStart = startOfDay(customStartDate);
     const normalizedCustomEnd = endOfDay(customEndDate);
 
     switch (selectedRange) {
+      case 'weekly': {
+        const weekStart = startOfWeek(today);
+        return {
+          label: 'Weekly',
+          badge: 'Week to date',
+          start: weekStart,
+          end: endOfDay(today),
+          summaryTitle: 'This Week',
+          summaryCaption: 'Income, expenses, and net movement across the current week.',
+          comparisonTitle: 'Daily Income vs Expenses',
+          comparisonSummaryLabel: 'net this week',
+          distributionCaption: 'Expense mix for the current week.',
+          footerTransactionLabel: 'this week',
+          topCategoryLeadText: 'leading this week.',
+          netStatLabel: 'Net This Week',
+          monthsWindow: 6,
+          showComparison: true,
+        };
+      }
       case 'sixMonths':
         return {
-          label: 'Six Months Trend',
+          label: 'Six Months',
           badge: '6-month view',
           start: new Date(today.getFullYear(), today.getMonth() - 5, 1),
           end: endOfDay(today),
@@ -514,8 +738,8 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       case 'monthly':
       default:
         return {
-          label: 'Weekly / Monthly',
-          badge: 'Weekly / monthly view',
+          label: 'Monthly',
+          badge: 'Monthly view',
           start: new Date(today.getFullYear(), today.getMonth(), 1),
           end: endOfDay(today),
           summaryTitle: 'This Month',
@@ -531,6 +755,38 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         };
     }
   }, [customEndDate, customStartDate, selectedRange, today]);
+
+  const activeRangeDisplayTitle = useMemo(() => {
+    if (selectedRange === 'weekly') {
+      return `${formatDateDDMMYYYY(activeRange.start)} - ${formatDateDDMMYYYY(activeRange.end)}`;
+    }
+
+    if (selectedRange === 'monthly') {
+      return formatMonthYearLabel(activeRange.end);
+    }
+
+    if (selectedRange === 'period') {
+      return formatDateDDMMYYYY(activeRange.start) + ' - ' + formatDateDDMMYYYY(activeRange.end);
+    }
+
+    return formatMonthYearLabel(activeRange.start) + ' - ' + formatMonthYearLabel(activeRange.end);
+  }, [activeRange.end, activeRange.start, selectedRange]);
+
+  const activeRangeDisplaySubtitle = useMemo(() => {
+    if (selectedRange === 'weekly') {
+      return 'Week-to-date performance and expense mix';
+    }
+
+    if (selectedRange === 'monthly') {
+      return 'Expense breakdown for the selected month';
+    }
+
+    if (selectedRange === 'period') {
+      return 'Custom date range';
+    }
+
+    return activeRange.badge;
+  }, [activeRange.badge, selectedRange]);
 
   const activeRangeStartMs = activeRange.start.getTime();
   const activeRangeEndMs = activeRange.end.getTime();
@@ -593,7 +849,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       expenseDistribution.map((entry, index) => ({
         x: entry.name,
         y: entry.amount,
-        color: entry.color ?? categoryPalette[index % categoryPalette.length],
+        color: expensePiePalette[index % expensePiePalette.length],
         share: entry.share,
       })),
     [expenseDistribution]
@@ -609,12 +865,16 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       return [] as Date[];
     }
 
+    if (selectedRange === 'weekly') {
+      return buildDayBuckets(activeRange.start, activeRange.end);
+    }
+
     if (selectedRange === 'sixMonths') {
-      return buildRecentMonths(6);
+      return buildRecentMonths(6, activeRange.end);
     }
 
     if (selectedRange === 'annually') {
-      return buildRecentMonths(12);
+      return buildRecentMonths(12, activeRange.end);
     }
 
     return buildMonthBuckets(activeRange.start, activeRange.end);
@@ -631,15 +891,18 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       };
     }
 
+    const isDailyComparison = selectedRange === 'weekly';
     const firstMonth = comparisonMonths[0];
     const lastMonth = comparisonMonths[comparisonMonths.length - 1];
-    const includeYear = comparisonMonths.length > 12 || firstMonth.getFullYear() !== lastMonth.getFullYear();
-    const bucketLabels = comparisonMonths.map((month) =>
-      month.toLocaleDateString('en-US', includeYear ? { month: 'short', year: '2-digit' } : { month: 'short' })
+    const includeYear = comparisonMonths.length > 12 || firstMonth.getFullYear() != lastMonth.getFullYear();
+    const bucketLabels = comparisonMonths.map((bucketDate) =>
+      isDailyComparison
+        ? formatShortWeekdayLabel(bucketDate)
+        : formatMonthYearShortLabel(bucketDate, includeYear)
     );
-    const buckets = comparisonMonths.map((month, index) => ({
-      key: toMonthKey(month),
-      label: bucketLabels[index] ?? formatShortMonthLabel(month),
+    const buckets = comparisonMonths.map((bucketDate, index) => ({
+      key: isDailyComparison ? toDayKey(bucketDate) : toMonthKey(bucketDate),
+      label: bucketLabels[index] ?? formatShortMonthLabel(bucketDate),
       income: 0,
       expenses: 0,
     }));
@@ -650,7 +913,8 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         continue;
       }
 
-      const bucket = bucketMap.get(toMonthKey(transaction.date));
+      const bucketKey = isDailyComparison ? toDayKey(transaction.date) : toMonthKey(transaction.date);
+      const bucket = bucketMap.get(bucketKey);
       if (!bucket) {
         continue;
       }
@@ -669,11 +933,21 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       totalIncome: roundCurrency(buckets.reduce((sum, bucket) => sum + bucket.income, 0)),
       totalExpenses: roundCurrency(buckets.reduce((sum, bucket) => sum + bucket.expenses, 0)),
     };
-  }, [comparisonMonths, selectedTransactions]);
+  }, [comparisonMonths, selectedRange, selectedTransactions]);
 
   const netWorthProgress = useMemo(
     () => computeNetWorthProgress(accounts, allTransactions, activeRange.monthsWindow, activeRange.end),
     [accounts, activeRange.end, activeRange.monthsWindow, allTransactions]
+  );
+
+  const currentNetWorthProgress = useMemo(
+    () => computeNetWorthProgress(accounts, allTransactions, 6, analyticsReferenceDate),
+    [accounts, allTransactions, analyticsReferenceDate]
+  );
+
+  const debtPortfolioTotals = useMemo(
+    () => computeDebtPortfolioTotals(accounts, allTransactions),
+    [accounts, allTransactions]
   );
 
   const accountBalanceById = useMemo(() => {
@@ -686,58 +960,33 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
 
   const liquidBalance = useMemo(
     () =>
-      accounts
-        .filter(
-          (account) =>
-            account.isActive !== false && ['checking', 'savings', 'cash'].includes(account.type)
-        )
-        .reduce((sum, account) => sum + (accountBalanceById.get(account.id) ?? 0), 0),
+      roundCurrency(
+        accounts
+          .filter((account) => account.isActive !== false && isAccountInTypeGroup(account.type, ['cash_bank', 'savings']))
+          .reduce((sum, account) => sum + Math.max(0, accountBalanceById.get(account.id) ?? 0), 0)
+      ),
     [accounts, accountBalanceById]
   );
 
   const investmentBalance = useMemo(
     () =>
-      accounts
-        .filter((account) => account.isActive !== false && account.type === 'investment')
-        .reduce((sum, account) => sum + (accountBalanceById.get(account.id) ?? 0), 0),
+      roundCurrency(
+        accounts
+          .filter((account) => account.isActive !== false && isAccountInTypeGroup(account.type, ['investment']))
+          .reduce((sum, account) => sum + Math.max(0, accountBalanceById.get(account.id) ?? 0), 0)
+      ),
     [accounts, accountBalanceById]
   );
 
-  const averageMonthlyExpenses = useMemo(() => {
-    const recentMonths = buildRecentMonths(3);
-    if (recentMonths.length === 0) {
-      return 0;
-    }
+  const recentMonthlySnapshot = useMemo(
+    () => computeRecentAverageMonthlyTotals(transactions, analyticsReferenceDate, 3),
+    [analyticsReferenceDate, transactions]
+  );
 
-    const totals = recentMonths.map((month) => {
-      const key = toMonthKey(month);
-      return transactions
-        .filter((transaction) => transaction.type === 'expense' && toMonthKey(transaction.date) === key)
-        .reduce((sum, transaction) => sum + transaction.amount, 0);
-    });
+  const averageMonthlyExpenses = recentMonthlySnapshot?.averageExpenses ?? 0;
+  const averageMonthlyIncome = recentMonthlySnapshot?.averageIncome ?? 0;
 
-    return roundCurrency(totals.reduce((sum, value) => sum + value, 0) / totals.length);
-  }, [transactions]);
-
-  const averageMonthlyIncome = useMemo(() => {
-    const recentMonths = buildRecentMonths(3);
-    if (recentMonths.length === 0) {
-      return 0;
-    }
-
-    const totals = recentMonths.map((month) => {
-      const key = toMonthKey(month);
-      return transactions
-        .filter((transaction) => transaction.type === 'income' && toMonthKey(transaction.date) === key)
-        .reduce((sum, transaction) => sum + transaction.amount, 0);
-    });
-
-    return roundCurrency(totals.reduce((sum, value) => sum + value, 0) / totals.length);
-  }, [transactions]);
-
-  const monthlySavings = Math.max(0, netWorthSimulation?.monthlySavings ?? (monthlyIncome - monthlyExpenses));
-  const annualReturn = netWorthSimulation?.annualReturn ?? 0.05;
-
+  const monthlySavings = Math.max(0, netWorthSimulation?.monthlySavings ?? recentMonthlySnapshot?.averageNet ?? roundCurrency(averageMonthlyIncome - averageMonthlyExpenses));
   const emergencyFundTarget = roundCurrency(averageMonthlyExpenses * 6);
   const emergencyFundProgress = emergencyFundTarget > 0 ? clamp(liquidBalance / emergencyFundTarget) : 0;
   const emergencyFundMonths = averageMonthlyExpenses > 0
@@ -747,50 +996,65 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     ? estimateMonthsToTarget(liquidBalance, emergencyFundTarget, monthlySavings, 0)
     : null;
 
-  const debtBalance = useMemo(
-    () =>
-      debtAccounts
-        .filter((account) => account.direction === 'borrowed')
-        .reduce((sum, account) => sum + account.balance, 0),
-    [debtAccounts]
-  );
-
-  const debtPayments = useMemo(
-    () =>
-      transactions
-        .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
-        .reduce((sum, transaction) => sum + transaction.amount, 0),
-    [transactions]
-  );
-
-  const originalDebt = Math.max(debtBalance + debtPayments, debtBalance);
+  const debtBalance = debtPortfolioTotals.borrowedOutstanding;
+  const originalDebt = debtPortfolioTotals.borrowedPrincipal;
   const debtProgress = originalDebt > 0 ? clamp(1 - debtBalance / originalDebt) : 1;
   const debtEtaMonths = debtPayoffPlan ? debtPayoffPlan[debtPayoffPlan.recommendedStrategy].months : null;
 
-  const investmentTarget = useMemo(
-    () => computeStarterInvestmentTarget(netWorthProgress.currentNetWorth, averageMonthlyIncome, averageMonthlyExpenses),
-    [averageMonthlyExpenses, averageMonthlyIncome, netWorthProgress.currentNetWorth]
+  const starterInvestmentBase = useMemo(
+    () => computeStarterInvestmentBase(liquidBalance, investmentBalance, averageMonthlyExpenses),
+    [averageMonthlyExpenses, investmentBalance, liquidBalance]
   );
-  const investmentProgress = investmentTarget > 0 ? clamp(investmentBalance / investmentTarget) : 0;
-  const investmentEtaMonths = investmentTarget > 0
-    ? estimateMonthsToTarget(investmentBalance, investmentTarget, monthlySavings, annualReturn)
-    : null;
+  const investmentTarget = useMemo(
+    () => computeStarterInvestmentTarget(currentNetWorthProgress.currentNetWorth, averageMonthlyIncome, averageMonthlyExpenses),
+    [averageMonthlyExpenses, averageMonthlyIncome, currentNetWorthProgress.currentNetWorth]
+  );
+  const investmentProgress = investmentTarget > 0 ? clamp(starterInvestmentBase / investmentTarget) : 0;
+  const investmentProjection = useMemo(
+    () => estimateTargetProjection(starterInvestmentBase, investmentTarget, monthlySavings, 0, analyticsReferenceDate),
+    [investmentTarget, analyticsReferenceDate, monthlySavings, starterInvestmentBase]
+  );
+  const investmentEtaMonths = investmentProjection.estimatedMonths;
+  const investmentEtaDate = investmentProjection.estimatedDate;
 
-  const netWorthTarget = milestoneProgress?.nextMilestone ?? null;
-  const netWorthMilestoneProgress = netWorthTarget
-    ? clamp(netWorthProgress.currentNetWorth / netWorthTarget)
-    : 1;
-  const netWorthEtaMonths = netWorthTarget
-    ? estimateMonthsToTarget(netWorthProgress.currentNetWorth, netWorthTarget, monthlySavings, annualReturn)
-    : null;
+  const milestoneLadder = useMemo(
+    () => buildWealthMilestoneLadder(currentNetWorthProgress.currentNetWorth, averageMonthlyIncome, averageMonthlyExpenses),
+    [averageMonthlyExpenses, averageMonthlyIncome, currentNetWorthProgress.currentNetWorth]
+  );
+  const { previousMilestone: previousNetWorthMilestone, nextMilestone: netWorthTarget } = useMemo(
+    () => resolveMilestoneRange(currentNetWorthProgress.currentNetWorth, milestoneLadder),
+    [currentNetWorthProgress.currentNetWorth, milestoneLadder]
+  );
+  const netWorthMilestoneProgress = netWorthTarget > 0
+    ? calculateMilestoneProgress(currentNetWorthProgress.currentNetWorth, previousNetWorthMilestone, netWorthTarget)
+    : 0;
+  const netWorthProjection = useMemo(
+    () => estimateTargetProjection(currentNetWorthProgress.currentNetWorth, netWorthTarget, monthlySavings, 0, analyticsReferenceDate),
+    [currentNetWorthProgress.currentNetWorth, analyticsReferenceDate, monthlySavings, netWorthTarget]
+  );
+  const netWorthEtaMonths = netWorthProjection.estimatedMonths;
+  const netWorthEtaDate = netWorthProjection.estimatedDate;
 
   const financialIndependenceTarget = roundCurrency(averageMonthlyExpenses * 12 * 25);
+  const financialIndependenceBase = useMemo(
+    () => computeFinancialIndependenceBase(liquidBalance, investmentBalance, emergencyFundTarget),
+    [emergencyFundTarget, investmentBalance, liquidBalance]
+  );
   const financialIndependenceProgress = financialIndependenceTarget > 0
-    ? clamp(investmentBalance / financialIndependenceTarget)
+    ? clamp(financialIndependenceBase / financialIndependenceTarget)
     : 0;
-  const financialIndependenceEtaMonths = financialIndependenceTarget > 0
-    ? estimateMonthsToTarget(investmentBalance, financialIndependenceTarget, monthlySavings, annualReturn)
-    : null;
+  const financialIndependenceProjection = useMemo(
+    () => estimateTargetProjection(
+      financialIndependenceBase,
+      financialIndependenceTarget,
+      monthlySavings,
+      0,
+      analyticsReferenceDate
+    ),
+    [financialIndependenceBase, financialIndependenceTarget, analyticsReferenceDate, monthlySavings]
+  );
+  const financialIndependenceEtaMonths = financialIndependenceProjection.estimatedMonths;
+  const financialIndependenceEtaDate = financialIndependenceProjection.estimatedDate;
 
   const milestoneCards = useMemo(() => {
     const cards: MilestoneCard[] = [];
@@ -859,29 +1123,38 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     });
 
     const investmentInsights: string[] = [];
-    if (investmentBalance < investmentTarget) {
-      investmentInsights.push(`Reaching ${formatCurrency(investmentTarget)} gives you a practical base for long-term investing.`);
+    if (starterInvestmentBase >= investmentTarget) {
+      investmentInsights.push(`You already have enough available capital to fund a starter investment base above ${formatCurrency(investmentTarget)}.`);
     } else {
-      investmentInsights.push(`You have already built a starter investment base above ${formatCurrency(investmentTarget)}.`);
+      investmentInsights.push(`Reaching ${formatCurrency(investmentTarget)} gives you a practical base for long-term investing.`);
+    }
+
+    if (investmentBalance <= 0 && starterInvestmentBase > 0) {
+      investmentInsights.push(`You could move ${formatCurrency(starterInvestmentBase)} from available cash into an investment account when you are ready.`);
     }
 
     cards.push({
       id: 'first-investment',
       title: 'Starter Investment',
       targetLabel: 'Target',
-      currentLabel: 'Invested',
+      currentLabel: 'Available to invest',
       target: investmentTarget,
-      current: investmentBalance,
+      current: starterInvestmentBase,
       progress: investmentProgress,
       estimatedMonths: investmentEtaMonths,
+      estimatedDate: investmentEtaDate,
       insights: investmentInsights,
       achieved: investmentProgress >= 1,
       etaPrefix: 'At recent pace',
     });
 
     const netWorthInsights: string[] = [];
-    if (!netWorthTarget) {
-      netWorthInsights.push('You have cleared the current net worth milestone ladder.');
+    if (previousNetWorthMilestone > 0) {
+      netWorthInsights.push(`This milestone measures the stretch from ${formatCurrency(previousNetWorthMilestone)} to ${formatCurrency(netWorthTarget)}.`);
+    }
+
+    if (currentNetWorthProgress.currentNetWorth >= (milestoneLadder[milestoneLadder.length - 1] ?? 0)) {
+      netWorthInsights.push(`You cleared your previous ladder. The next stretch target is ${formatCurrency(netWorthTarget)}.`);
     } else if (netWorthEtaMonths !== null) {
       const etaText = formatDurationLong(netWorthEtaMonths);
       if (etaText) {
@@ -894,12 +1167,13 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       title: 'Net Worth Milestone',
       targetLabel: 'Next Milestone',
       currentLabel: 'Current Net Worth',
-      target: netWorthTarget ?? netWorthProgress.currentNetWorth,
-      current: netWorthProgress.currentNetWorth,
+      target: netWorthTarget,
+      current: currentNetWorthProgress.currentNetWorth,
       progress: netWorthMilestoneProgress,
       estimatedMonths: netWorthEtaMonths,
+      estimatedDate: netWorthEtaDate,
       insights: netWorthInsights,
-      achieved: !netWorthTarget,
+      achieved: false,
       etaPrefix: 'At recent pace',
     });
 
@@ -909,23 +1183,23 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     } else if (financialIndependenceEtaMonths !== null) {
       const etaText = formatDurationLong(financialIndependenceEtaMonths);
       if (etaText) {
-        fiInsights.push(`Your investments could support annual expenses in about ${etaText}.`);
+        fiInsights.push(`At your recent saving pace, your investable assets could cover annual expenses in about ${etaText}.`);
       }
     }
 
     if (financialIndependenceTarget > 0 && monthlySavings > 0) {
       const baseMonths = financialIndependenceEtaMonths;
       const boostedMonths = estimateMonthsToTarget(
-        investmentBalance,
+        financialIndependenceBase,
         financialIndependenceTarget,
         monthlySavings + 100,
-        annualReturn
+        0
       );
       if (baseMonths !== null && boostedMonths !== null && baseMonths > boostedMonths) {
         const diff = baseMonths - boostedMonths;
         const diffText = formatDurationLong(diff);
         if (diffText) {
-          fiInsights.push(`Investing ${formatCurrency(100)} more per month could reach financial independence ${diffText} earlier.`);
+          fiInsights.push(`Saving ${formatCurrency(100)} more per month could reach financial independence ${diffText} earlier.`);
         }
       }
     }
@@ -934,11 +1208,12 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       id: 'financial-independence',
       title: 'Financial Independence',
       targetLabel: 'Target',
-      currentLabel: 'Invested',
+      currentLabel: 'Investable Assets',
       target: financialIndependenceTarget,
-      current: investmentBalance,
+      current: financialIndependenceBase,
       progress: financialIndependenceProgress,
       estimatedMonths: financialIndependenceEtaMonths,
+      estimatedDate: financialIndependenceEtaDate,
       insights: fiInsights,
       achieved: financialIndependenceProgress >= 1 && financialIndependenceTarget > 0,
       etaPrefix: 'At recent pace',
@@ -946,27 +1221,32 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
 
     return cards;
   }, [
-    annualReturn,
     debtBalance,
     debtEtaMonths,
     emergencyFundEtaMonths,
     emergencyFundMonths,
     emergencyFundProgress,
     emergencyFundTarget,
+    financialIndependenceBase,
+    financialIndependenceEtaDate,
     financialIndependenceEtaMonths,
     financialIndependenceProgress,
     financialIndependenceTarget,
     formatCurrency,
     investmentBalance,
+    investmentEtaDate,
     investmentEtaMonths,
     investmentProgress,
     investmentTarget,
+    starterInvestmentBase,
     liquidBalance,
-    milestoneProgress,
+    milestoneLadder,
+    previousNetWorthMilestone,
     monthlySavings,
+    netWorthEtaDate,
     netWorthEtaMonths,
     netWorthMilestoneProgress,
-    netWorthProgress.currentNetWorth,
+    currentNetWorthProgress.currentNetWorth,
     netWorthTarget,
     originalDebt,
   ]);
@@ -1044,6 +1324,8 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     () => accounts.some((account) => account.isActive !== false),
     [accounts]
   );
+
+  const hasTrackedNetWorthData = hasActiveAccounts || debtPortfolioTotals.borrowedPrincipal > 0 || debtPortfolioTotals.lentOutstanding > 0;
 
   const safeSelectedMonthIndex = Math.min(
     selectedMonthIndex,
@@ -1136,6 +1418,14 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const hasCategoryBreakdownData = categoryBarData.length > 0;
   const hasSpendingTrendCharts =
     hasExpenseDistributionData || hasComparisonData || hasCategoryBreakdownData;
+  const hasNetWorthProgressChart =
+    hasTrackedNetWorthData &&
+    netWorthProgress.points.some((point) => point.netWorth !== 0 || point.assets !== 0 || point.liabilities !== 0);
+  const hasNetWorthForecastChart = Boolean(
+    netWorthSimulation &&
+    netWorthForecastData &&
+    netWorthForecastData.data.some((point) => point.y !== 0)
+  );
 
   const handleExportChart = async (chartId: ExportableChartId, title: string) => {
     if (exportingChartId) {
@@ -1280,20 +1570,18 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         showsVerticalScrollIndicator={false}
         onScrollBeginDrag={() => setShowRangeMenu(false)}
       >
-        <View style={[styles.analyticsHero, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
-          <View style={[styles.analyticsHeroOrb, { backgroundColor: theme.colors.primary + '14' }]} />
+        <View style={[styles.analyticsHero, { backgroundColor: cardBackground, borderColor: softBorderColor }]}> 
+          <View style={[styles.analyticsHeroOrb, { backgroundColor: theme.colors.primary + '10' }]} />
           <View style={styles.analyticsHeroContent}>
             <View style={styles.analyticsHeroTopRow}>
               <View style={styles.analyticsHeroHeading}>
-                <View
-                  style={[
-                    styles.analyticsHeroBadge,
-                    { backgroundColor: secondarySurface, borderColor: softBorderColor },
-                  ]}
-                >
-                  <Text style={[styles.analyticsHeroBadgeText, { color: theme.colors.primary }]}>{activeRange.badge}</Text>
-                </View>
-                <Text style={[styles.analyticsHeroTitle, { color: theme.colors.text }]}>Analytics</Text>
+                <Text style={[styles.analyticsHeroEyebrow, { color: theme.colors.primary }]}>Analytics</Text>
+                <Text style={[styles.analyticsRangeHeading, { color: theme.colors.text }]} numberOfLines={1}>
+                  {activeRangeDisplayTitle}
+                </Text>
+                <Text style={[styles.analyticsRangeHeadingMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+                  {activeRangeDisplaySubtitle}
+                </Text>
               </View>
               <TouchableOpacity
                 accessibilityRole="button"
@@ -1304,39 +1592,13 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 ]}
                 onPress={() => setShowRangeMenu((current) => !current)}
               >
-                <Text style={[styles.analyticsRangeButtonText, { color: theme.colors.text }]}>{activeRange.label}</Text>
+                <View style={styles.analyticsRangeButtonTextWrap}>
+                  <Text style={[styles.analyticsRangeButtonLabel, { color: theme.colors.textSecondary }]}>View</Text>
+                  <Text style={[styles.analyticsRangeButtonText, { color: theme.colors.text }]}>{activeRange.label}</Text>
+                </View>
                 <ChevronDown size={16} color={theme.colors.textSecondary} />
               </TouchableOpacity>
             </View>
-            <Text style={[styles.analyticsHeroSubtitle, { color: theme.colors.textSecondary }]}>Choose a timeframe to focus the charts, summaries, and insights.</Text>
-            {showRangeMenu ? (
-              <View style={[styles.analyticsRangeMenu, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
-                {ANALYTICS_RANGE_OPTIONS.map((option) => {
-                  const isActive = option.key === selectedRange;
-                  return (
-                    <TouchableOpacity
-                      key={option.key}
-                      accessibilityRole="button"
-                      style={[
-                        styles.analyticsRangeMenuItem,
-                        isActive && { backgroundColor: theme.colors.primary + '12' },
-                      ]}
-                      onPress={() => handleRangeSelect(option.key)}
-                    >
-                      <Text
-                        style={[
-                          styles.analyticsRangeMenuText,
-                          { color: isActive ? theme.colors.primary : theme.colors.text },
-                        ]}
-                      >
-                        {option.label}
-                      </Text>
-                      {isActive ? <Check size={15} color={theme.colors.primary} /> : null}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ) : null}
             {selectedRange === 'period' ? (
               <View style={styles.analyticsPeriodRow}>
                 <TouchableOpacity
@@ -1364,145 +1626,48 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
               </View>
             ) : null}
             <View style={styles.analyticsHeroStats}>
-              <View
-                style={[
-                  styles.analyticsHeroStat,
-                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
-                ]}
-              >
-                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Net Worth</Text>
-                <AdaptiveAmountText
-                  style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}
-                  minFontSize={14}
-                  value={formatCurrency(netWorthProgress.currentNetWorth)}
-                />
+              <View style={[styles.analyticsHeroStat, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+                <AdaptiveAmountText style={[styles.analyticsHeroStatValue, styles.incomeText]} minFontSize={12} value={formatCurrency(monthlyIncome)} />
               </View>
-              <View
-                style={[
-                  styles.analyticsHeroStat,
-                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
-                ]}
-              >
-                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>{activeRange.netStatLabel}</Text>
+              <View style={[styles.analyticsHeroStat, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                <AdaptiveAmountText style={[styles.analyticsHeroStatValue, styles.expenseText]} minFontSize={12} value={formatCurrency(monthlyExpenses)} />
+              </View>
+              <View style={[styles.analyticsHeroStat, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Net</Text>
                 <AdaptiveAmountText
-                  style={[
-                    styles.analyticsHeroStatValue,
-                    quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText,
-                  ]}
-                  minFontSize={14}
+                  style={[styles.analyticsHeroStatValue, quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText]}
+                  minFontSize={12}
                   value={formatSignedCurrency(formatCurrency, quickStats.netAmount)}
                 />
               </View>
-              <View
-                style={[
-                  styles.analyticsHeroStat,
-                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
-                ]}
-              >
-                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Savings Rate</Text>
-                <Text style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}>
-                  {formatPercentage(savingsRate)}
-                </Text>
+              <View style={[styles.analyticsHeroStat, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Transactions</Text>
+                <Text style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
               </View>
             </View>
             <View style={styles.analyticsHeroFooter}>
               <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
-                {quickStats.transactionCount} transaction{quickStats.transactionCount === 1 ? '' : 's'} {activeRange.footerTransactionLabel}
+                {activeRange.summaryCaption}
               </Text>
-              <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                {topCategory ? `${topCategory.categoryName} is ${activeRange.topCategoryLeadText}` : 'Add more activity to unlock deeper patterns.'}
+              <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
+                {monthlyIncome > 0
+                  ? `${formatPercentage(savingsRate)} of income remained after expenses.`
+                  : monthlyExpenses > 0
+                    ? 'Expenses are recorded, but no income has been added for this range yet.'
+                    : 'No income or expense activity has been recorded for this range yet.'}
               </Text>
             </View>
           </View>
         </View>
+      {hasNetWorthProgressChart ? (
       <AnalyticsCategoryBlock
         eyebrow="Snapshot"
-        title="Overview"
-        subtitle="Core balances and high-level performance for the current period."
+        title="Net Worth"
+        subtitle="Track assets, liabilities, and cumulative progress across your active accounts."
       >
-      <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.summaryCardHeader}>
-          <View style={styles.summaryCardTitleWrap}>
-            <Text style={[styles.cardTitle, styles.summaryCardTitle, { color: theme.colors.text }]}>{activeRange.summaryTitle}</Text>
-            <Text style={[styles.summaryCardCaption, { color: theme.colors.textSecondary }]}>
-              {activeRange.summaryCaption}
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.summaryCardBadge,
-              {
-                backgroundColor: secondarySurface,
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.summaryCardBadgeText, { color: theme.colors.textSecondary }]}>
-              {quickStats.transactionCount} txn{quickStats.transactionCount === 1 ? '' : 's'}
-            </Text>
-          </View>
-        </View>
-        <View
-          style={[
-            styles.summaryHero,
-            {
-              backgroundColor: secondarySurface,
-              borderColor: theme.colors.border,
-            },
-          ]}
-        >
-          <Text style={[styles.summaryHeroLabel, { color: theme.colors.textSecondary }]}>Net Income</Text>
-          <AdaptiveAmountText
-            style={[
-              styles.summaryHeroValue,
-              quickStats.netAmount >= 0 ? styles.incomeText : styles.expenseText,
-            ]}
-            minFontSize={18}
-            value={formatSignedCurrency(formatCurrency, quickStats.netAmount)}
-          />
-          <Text style={[styles.summaryHeroHint, { color: theme.colors.textSecondary }]}>
-            {monthlyIncome > 0
-              ? `${formatPercentage(savingsRate)} of income remained after expenses.`
-              : monthlyExpenses > 0
-                ? 'Expenses are recorded, but no income has been added yet this month.'
-                : 'No income or expense activity has been recorded yet this month.'}
-          </Text>
-        </View>
-        <View style={styles.summaryMetricGrid}>
-          <View
-            style={[
-              styles.summaryMetricCard,
-              {
-                backgroundColor: secondarySurface,
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <AdaptiveAmountText style={[styles.summaryMetricValue, styles.incomeText]} minFontSize={12} value={formatCurrency(monthlyIncome)} />
-          </View>
-          <View
-            style={[
-              styles.summaryMetricCard,
-              {
-                backgroundColor: secondarySurface,
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <AdaptiveAmountText style={[styles.summaryMetricValue, styles.expenseText]} minFontSize={12} value={formatCurrency(monthlyExpenses)} />
-          </View>
-        </View>
-        <View style={[styles.summaryFooter, { borderTopColor: theme.colors.border }]}>
-          <Text style={[styles.summaryFooterLabel, { color: theme.colors.textSecondary }]}>Savings Rate</Text>
-          <Text style={[styles.summaryFooterValue, { color: theme.colors.text }]}>
-            {formatPercentage(savingsRate)}
-          </Text>
-        </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeading}>
             <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Net Worth Progress</Text>
@@ -1795,6 +1960,7 @@ ${formatCurrency(datum.y)}`
       </View>
 
       </AnalyticsCategoryBlock>
+      ) : null}
       {visibleStage >= 2 ? (
 
       <AnalyticsCategoryBlock
@@ -1805,91 +1971,65 @@ ${formatCurrency(datum.y)}`
       {hasSpendingTrendCharts ? (
         <>
           {hasExpenseDistributionData ? (
-            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeading}>
                   <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
                   <Text style={[styles.cardHeaderMetaText, { color: theme.colors.textSecondary }]}>
-                    {topCategory ? `${topCategory.categoryName} is ${activeRange.topCategoryLeadText}` : activeRange.distributionCaption}
+                    {topCategory ? topCategory.categoryName + ' is ' + activeRange.topCategoryLeadText : activeRange.distributionCaption}
                   </Text>
                 </View>
                 {renderChartExportAction('expense-distribution', 'Expense Distribution')}
               </View>
               <ViewShot ref={setChartCaptureRef('expense-distribution')} options={chartCaptureOptions}>
                 <View collapsable={false}>
-                  <View style={styles.chartSummary}>
-                    <AdaptiveAmountText
-                      style={[styles.chartSummaryValue, { color: theme.colors.text }]}
-                      minFontSize={14}
-                      value={formatCurrency(monthlyExpenses)}
+                  <View style={[styles.pieChartWrap, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
+                    <VictoryPie
+                      data={expenseDonutData}
+                      colorScale={expenseDonutColors}
+                      width={Math.min(chartWidth, 352)}
+                      height={268}
+                      padding={{ top: 24, bottom: 44, left: 42, right: 42 }}
+                      radius={90}
+                      padAngle={1.2}
+                      labelRadius={118}
+                      animate={chartAnimation}
+                      labels={({ datum }) => truncateLabel(String(datum.x), 11) + '\n' + formatPercentage(datum.share)}
+                      style={{
+                        labels: {
+                          fill: ({ datum }: any) => datum.color,
+                          fontSize: 10,
+                          fontWeight: '700',
+                        },
+                        data: {
+                          stroke: theme.colors.surface,
+                          strokeWidth: 1.2,
+                        },
+                      }}
                     />
-                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
-                      {expenseDistribution.length === 1
-                        ? selectedRange === 'monthly' ? '1 category contributing this month' : '1 category in view'
-                        : selectedRange === 'monthly' ? `${expenseDistribution.length} categories contributing this month` : `${expenseDistribution.length} categories in view`}
-                    </Text>
                   </View>
-                  <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
-                    <View style={styles.donutWrapper}>
-                      <VictoryPie
-                        data={expenseDonutData}
-                        colorScale={expenseDonutColors}
-                        width={chartWidth}
-                        height={220}
-                        innerRadius={60}
-                        radius={90}
-                        padAngle={1.5}
-                        animate={chartAnimation}
-                        labels={() => ''}
-                        style={{
-                          data: {
-                            stroke: theme.colors.surface,
-                            strokeWidth: 2,
-                          },
-                        }}
-                      />
-                      <View style={[styles.donutCenter, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
-                        <Text style={[styles.donutLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
-                        <AdaptiveAmountText
-                          style={[styles.donutValue, { color: theme.colors.text }]}
-                          minFontSize={14}
-                          value={formatCurrency(monthlyExpenses)}
-                        />
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.categoriesList}>
+                  <View style={styles.expenseList}>
                     {expenseDistribution.map((entry, index) => {
                       const accentColor = entry.color ?? categoryPalette[index % categoryPalette.length];
                       return (
-                        <View key={`${entry.name}-${index}`} style={styles.categoryRow}>
-                          <View style={styles.categoryInfo}>
-                            <View style={[styles.categoryDot, { backgroundColor: accentColor }]} />
-                            <Text style={[styles.categoryName, { color: theme.colors.text }]} numberOfLines={1}>
-                              {entry.name}
-                            </Text>
+                        <View
+                          key={entry.name + '-' + index}
+                          style={[
+                            styles.expenseListRow,
+                            index < expenseDistribution.length - 1 && { borderBottomColor: theme.colors.border },
+                          ]}
+                        >
+                          <View style={[styles.expensePercentBadge, { backgroundColor: accentColor }]}>
+                            <Text style={styles.expensePercentBadgeText}>{formatPercentage(entry.share)}</Text>
                           </View>
-                          <View style={styles.categoryAmount}>
-                            <View style={styles.categoryMeta}>
-                              <Text style={[styles.categoryAmountText, { color: theme.colors.text }]} numberOfLines={1}>
-                                {formatCurrency(entry.amount)}
-                              </Text>
-                              <Text style={[styles.categoryShareText, { color: theme.colors.textSecondary }]}>
-                                {formatPercentage(entry.share)}
-                              </Text>
-                            </View>
-                            <View style={[styles.progressBarContainer, { backgroundColor: theme.colors.border }]}>
-                              <View
-                                style={[
-                                  styles.progressBar,
-                                  {
-                                    width: `${Math.max(entry.share * 100, 6)}%`,
-                                    backgroundColor: accentColor,
-                                  },
-                                ]}
-                              />
-                            </View>
-                          </View>
+                          <Text style={[styles.expenseListName, { color: theme.colors.text }]} numberOfLines={1}>
+                            {entry.name}
+                          </Text>
+                          <AdaptiveAmountText
+                            style={[styles.expenseListAmount, { color: theme.colors.text }]}
+                            minFontSize={11}
+                            value={formatCurrency(entry.amount)}
+                          />
                         </View>
                       );
                     })}
@@ -2039,17 +2179,7 @@ ${formatCurrency(datum.y)}`
             </View>
           ) : null}
         </>
-      ) : (
-        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending Charts</Text>
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
-              <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
-            </View>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>Add transactions to unlock your spending charts.</Text>
-          </View>
-        </View>
-      )}
+      ) : null}
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
         <View style={styles.statsGrid}>
@@ -2202,9 +2332,14 @@ ${formatCurrency(datum.y)}`
               {cashflowRunway.daysUntilEmpty === null ? 'Stable'
                 : `${Math.max(0, Math.floor(cashflowRunway.daysUntilEmpty))} days`}
             </Text>
-            <Text style={[styles.runwaySubtext, { color: theme.colors.textSecondary }]}>
+            <Text style={[styles.runwaySubtext, { color: theme.colors.textSecondary }]}> 
               Daily burn {formatCurrency(cashflowRunway.dailyBurnRate)} - {cashflowRunway.remainingDaysInMonth} days left
             </Text>
+            {cashflowRunway.projectedRunOutDate ? (
+              <Text style={[styles.runwaySubtext, { color: theme.colors.textSecondary }]}> 
+                Projected runout {formatDateWithWeekday(cashflowRunway.projectedRunOutDate)}
+              </Text>
+            ) : null}
             {cashflowRunway.willRunOut ? (
               <Text style={[styles.runwayAlert, { color: theme.colors.warning }]}>Funds may run out before month end.</Text>
             ) : null}
@@ -2229,6 +2364,7 @@ ${formatCurrency(datum.y)}`
         title="Forecasts & Goals"
         subtitle="See where your finances may be heading and how current progress compares to long-term targets."
       >
+      {hasNetWorthForecastChart ? (
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Forecast</Text>
@@ -2347,6 +2483,7 @@ ${formatCurrency(datum.y)}`
           </View>
         </ViewShot>
       </View>
+      ) : null}
 
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Debt Payoff Optimizer</Text>
@@ -2394,6 +2531,7 @@ ${formatCurrency(datum.y)}`
             const progressPercent = Math.min(100, Math.round(clamp(milestone.progress) * 100));
             const achieved = milestone.achieved ?? milestone.progress >= 1;
             const etaText = achieved ? null : formatDurationShort(milestone.estimatedMonths ?? null);
+            const projectedDateText = !achieved && milestone.estimatedDate ? formatDateWithWeekday(milestone.estimatedDate) : null;
             const toneColor = milestone.tone === 'warning'
               ? theme.colors.warning
               : achieved
@@ -2458,6 +2596,9 @@ ${formatCurrency(datum.y)}`
                 <Text style={[styles.milestoneMeta, { color: theme.colors.textSecondary }]}>
                   Progress {progressPercent}%{etaText ? ` - ${milestone.etaPrefix ?? 'At current pace'} ${etaText}` : ''}
                 </Text>
+                {projectedDateText ? (
+                  <Text style={[styles.milestoneEta, { color: theme.colors.textSecondary }]}>Projected {projectedDateText}</Text>
+                ) : null}
                 {milestone.insights?.map((insight, index) => (
                   <Text
                     key={`${milestone.id}-insight-${index}`}
@@ -2482,6 +2623,60 @@ ${formatCurrency(datum.y)}`
         />
       )}
       </ScrollView>
+      <Modal
+        visible={showRangeMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowRangeMenu(false)}
+      >
+        <View style={styles.analyticsMenuModalRoot}>
+          <TouchableOpacity
+            style={styles.analyticsMenuBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowRangeMenu(false)}
+          />
+          <View
+            style={[
+              styles.analyticsMenuSheet,
+              { backgroundColor: cardBackground, borderColor: softBorderColor },
+            ]}
+          >
+            <Text style={[styles.analyticsMenuTitle, { color: theme.colors.text }]}>Visualize</Text>
+            <Text style={[styles.analyticsMenuSubtitle, { color: theme.colors.textSecondary }]}>Choose the range that matches the story you want to review.</Text>
+            <View style={styles.analyticsRangeMenu}>
+              {ANALYTICS_RANGE_OPTIONS.map((option) => {
+                const isActive = option.key === selectedRange;
+                return (
+                  <TouchableOpacity
+                    key={option.key}
+                    accessibilityRole="button"
+                    style={[
+                      styles.analyticsRangeMenuItem,
+                      isActive && { backgroundColor: theme.colors.primary + '12' },
+                    ]}
+                    onPress={() => handleRangeSelect(option.key)}
+                  >
+                    <View style={styles.analyticsRangeMenuCopy}>
+                      <Text
+                        style={[
+                          styles.analyticsRangeMenuText,
+                          { color: isActive ? theme.colors.primary : theme.colors.text },
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      <Text style={[styles.analyticsRangeMenuHint, { color: theme.colors.textSecondary }]}>
+                        {option.description}
+                      </Text>
+                    </View>
+                    {isActive ? <Check size={15} color={theme.colors.primary} /> : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+      </Modal>
       <Modal
         visible={showMonthDrillDown}
         transparent
@@ -2609,11 +2804,27 @@ const AnalyticsLoadingState = React.memo(function AnalyticsLoadingState() {
   return (
     <View style={[styles.loadingContainer, { backgroundColor: theme.colors.background }]}> 
       <View style={[styles.loadingHero, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <View style={styles.loadingHeroRow}>
-          <ActivityIndicator size="small" color={theme.colors.primary} />
-          <Text style={[styles.loadingTitle, { color: theme.colors.text }]}>Preparing analytics</Text>
+        <View style={styles.loadingBadgeRow}>
+          <View style={[styles.loadingStatusBadge, { backgroundColor: theme.colors.primary + '10', borderColor: theme.colors.primary + '22' }]}>
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+            <Text style={[styles.loadingStatusText, { color: theme.colors.primary }]}>Loading analytics</Text>
+          </View>
+          <View style={[styles.loadingRangePill, { backgroundColor: theme.colors.border }]} />
         </View>
-        <Text style={[styles.loadingSubtitle, { color: theme.colors.textSecondary }]}>Opening charts and insights without blocking the tab switch.</Text>
+        <View style={[styles.loadingLineLong, { backgroundColor: theme.colors.border }]} />
+        <View style={[styles.loadingLineMedium, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.loadingMetricGrid}>
+          {Array.from({ length: 4 }).map((_, index) => (
+            <View
+              key={`loading-metric-${index}`}
+              style={[styles.loadingMetricTile, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+            >
+              <View style={[styles.loadingMetricValueBar, { backgroundColor: theme.colors.border }]} />
+              <View style={[styles.loadingMetricLabelBar, { backgroundColor: theme.colors.border }]} />
+            </View>
+          ))}
+        </View>
+        <View style={[styles.loadingFooterBar, { backgroundColor: theme.colors.border }]} />
       </View>
 
       <View style={[styles.loadingCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
@@ -2674,7 +2885,7 @@ const AnalyticsScreen = React.memo(function AnalyticsScreen() {
         startTransition(() => {
           setVisibleStage(stage);
         });
-      }, 160 + index * 180)
+      }, 110 + index * 140)
     );
 
     return () => {
@@ -2702,26 +2913,70 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   loadingHero: {
-    borderRadius: 18,
+    borderRadius: 22,
     borderWidth: 1,
     padding: 18,
+    overflow: 'hidden',
   },
-  loadingHeroRow: {
+  loadingBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    gap: 12,
   },
-  loadingTitle: {
-    fontSize: 18,
+  loadingStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  loadingStatusText: {
+    fontSize: 12,
     fontWeight: '700',
   },
-  loadingSubtitle: {
-    marginTop: 10,
-    fontSize: 14,
-    lineHeight: 20,
+  loadingRangePill: {
+    width: 88,
+    height: 34,
+    borderRadius: 999,
+    opacity: 0.4,
+  },
+  loadingMetricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginTop: 18,
+  },
+  loadingMetricTile: {
+    width: '47%',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  loadingMetricValueBar: {
+    width: '78%',
+    height: 18,
+    borderRadius: 999,
+    opacity: 0.35,
+  },
+  loadingMetricLabelBar: {
+    width: '46%',
+    height: 10,
+    borderRadius: 999,
+    opacity: 0.3,
+  },
+  loadingFooterBar: {
+    width: '84%',
+    height: 12,
+    borderRadius: 999,
+    marginTop: 18,
+    opacity: 0.28,
   },
   loadingCard: {
-    borderRadius: 18,
+    borderRadius: 22,
     borderWidth: 1,
     padding: 18,
   },
@@ -2766,18 +3021,17 @@ const styles = StyleSheet.create({
   },
   analyticsHero: {
     marginHorizontal: 16,
-    marginTop: 18,
+    marginTop: 14,
     marginBottom: 10,
-    padding: 22,
-    borderRadius: 28,
+    padding: 18,
+    borderRadius: 24,
     borderWidth: 1,
-    overflow: 'hidden',
     shadowColor: '#020617',
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 5,
-    position: 'relative',
+    shadowOpacity: 0.05,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
+    overflow: 'hidden',
   },
   analyticsHeroOrb: {
     position: 'absolute',
@@ -2788,7 +3042,7 @@ const styles = StyleSheet.create({
     borderRadius: 70,
   },
   analyticsHeroContent: {
-    gap: 14,
+    gap: 16,
   },
   analyticsHeroTopRow: {
     flexDirection: 'row',
@@ -2799,25 +3053,69 @@ const styles = StyleSheet.create({
   analyticsHeroHeading: {
     flex: 1,
     minWidth: 0,
-    gap: 10,
+    gap: 8,
   },
   analyticsRangeButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 8,
+  },
+  analyticsRangeButtonTextWrap: {
+    alignItems: 'flex-start',
+    gap: 2,
+  },
+  analyticsRangeButtonLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
   },
   analyticsRangeButtonText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
-  analyticsRangeMenu: {
-    marginTop: 12,
+  analyticsMenuModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingTop: 78,
+    paddingHorizontal: 16,
+    alignItems: 'flex-end',
+  },
+  analyticsMenuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.12)',
+  },
+  analyticsMenuSheet: {
+    width: 244,
     borderRadius: 18,
     borderWidth: 1,
+    padding: 10,
+    shadowColor: '#020617',
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 10,
+  },
+  analyticsMenuTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    paddingHorizontal: 8,
+    paddingTop: 6,
+  },
+  analyticsMenuSubtitle: {
+    fontSize: 12,
+    lineHeight: 17,
+    paddingHorizontal: 8,
+    paddingTop: 4,
+    paddingBottom: 8,
+  },
+  analyticsRangeMenu: {
+    minWidth: 170,
+    borderRadius: 14,
     overflow: 'hidden',
   },
   analyticsRangeMenuItem: {
@@ -2825,12 +3123,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
-    paddingHorizontal: 14,
+    borderRadius: 12,
+    paddingHorizontal: 12,
     paddingVertical: 12,
+  },
+  analyticsRangeMenuCopy: {
+    flex: 1,
+    gap: 3,
   },
   analyticsRangeMenuText: {
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  analyticsRangeMenuHint: {
+    fontSize: 11,
+    lineHeight: 15,
   },
   analyticsPeriodRow: {
     flexDirection: 'row',
@@ -2854,6 +3161,44 @@ const styles = StyleSheet.create({
   analyticsPeriodValue: {
     fontSize: 13,
     fontWeight: '700',
+  },
+  analyticsHeroEyebrow: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+  },
+  analyticsRangeHeading: {
+    fontSize: 23,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  analyticsRangeHeadingMeta: {
+    fontSize: 12,
+    lineHeight: 18,
+    maxWidth: '92%',
+  },
+  analyticsSnapshotRow: {
+    flexDirection: 'row',
+    gap: 16,
+    borderBottomWidth: 1,
+    paddingBottom: 6,
+  },
+  analyticsSnapshotItem: {
+    flex: 1,
+    gap: 4,
+    paddingBottom: 8,
+  },
+  analyticsSnapshotItemActive: {
+    borderBottomWidth: 2,
+  },
+  analyticsSnapshotLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  analyticsSnapshotValue: {
+    fontSize: 16,
+    fontWeight: '800',
   },
   analyticsHeroBadge: {
     alignSelf: 'flex-start',
@@ -2884,9 +3229,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   analyticsHeroStat: {
-    minWidth: '30%',
+    minWidth: '47%',
     flex: 1,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     paddingHorizontal: 14,
     paddingVertical: 14,
@@ -2899,12 +3244,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   analyticsHeroStatValue: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
   },
   analyticsHeroFooter: {
-    paddingTop: 4,
-    gap: 4,
+    paddingTop: 2,
+    gap: 5,
   },
   analyticsHeroFooterText: {
     fontSize: 12,
@@ -3266,6 +3611,50 @@ const styles = StyleSheet.create({
   chartSummaryLabel: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  pieChartWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 22,
+    paddingTop: 6,
+    paddingBottom: 12,
+    paddingHorizontal: 6,
+    marginBottom: 14,
+  },
+  expenseList: {
+    gap: 0,
+  },
+  expenseListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+  },
+  expensePercentBadge: {
+    minWidth: 46,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  expensePercentBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  expenseListName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  expenseListAmount: {
+    width: 110,
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'right',
   },
   donutWrapper: {
     alignItems: 'center',
@@ -3737,6 +4126,9 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+
+
+
 
 
 

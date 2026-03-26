@@ -13,7 +13,7 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ChevronDown, ChevronRight, Search } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, Search, X } from 'lucide-react-native';
 import { TransactionItem } from '@/components/TransactionItem';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
 import { useTransactionStore } from '@/store/transaction-store';
@@ -270,13 +270,20 @@ export default function TransactionsScreen() {
       debt: searchedTransactions
         .filter((transaction) => transaction.type === 'debt')
         .reduce((sum, transaction) => {
-          // Lent money = asset (-), Borrowed = liability (+)
           const direction = transaction.debtDirection === 'lent' ? -1 : 1;
           return sum + Math.abs(transaction.amount) * direction;
         }, 0),
     }),
     [searchedTransactions]
   );
+
+  const netFlow = totals.income - totals.expenses;
+  const activeFilterLabel = FILTER_OPTIONS.find((option) => option.key === filter)?.label ?? 'All';
+  const headerSubtitle = isSearching
+    ? 'Showing matches for "' + searchQuery.trim() + '"'
+    : filter === 'all'
+      ? 'Browse and manage every recorded transaction'
+      : activeFilterLabel + ' transactions only';
 
   const confirmDeleteTransaction = (transaction: Transaction) => {
     Alert.alert('Delete transaction', `Delete "${transaction.description}"?`, [
@@ -337,35 +344,45 @@ export default function TransactionsScreen() {
       const isExpanded = expandedMonths.has(section.key);
       const netColor = section.net >= 0 ? theme.colors.success : theme.colors.error;
       const netPrefix = section.net >= 0 ? '+' : '-';
+      const transactionCountLabel = section.data.length + ' item' + (section.data.length === 1 ? '' : 's');
 
       return (
         <TouchableOpacity
-          activeOpacity={0.7}
+          activeOpacity={0.78}
           onPress={() => toggleMonth(section.key)}
           style={[
             styles.sectionHeader,
             { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
           ]}
         >
-          <View style={styles.sectionTitleRow}>
-            {isExpanded ? (
-              <ChevronDown size={18} color={theme.colors.textSecondary} />
-            ) : (
-              <ChevronRight size={18} color={theme.colors.textSecondary} />
-            )}
-            <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>{section.title}</Text>
+          <View style={styles.sectionHeaderTopRow}>
+            <View style={styles.sectionTitleRow}>
+              {isExpanded ? (
+                <ChevronDown size={18} color={theme.colors.textSecondary} />
+              ) : (
+                <ChevronRight size={18} color={theme.colors.textSecondary} />
+              )}
+              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>{section.title}</Text>
+            </View>
+            <View style={[styles.sectionCountBadge, { backgroundColor: theme.colors.primary + '14' }]}>
+              <Text style={[styles.sectionCountText, { color: theme.colors.primary }]}>{transactionCountLabel}</Text>
+            </View>
           </View>
           <View style={styles.sectionSummaryRow}>
-            <Text style={[styles.sectionSummaryText, { color: theme.colors.success }]}>
-              Income {formatCurrency(section.income)}
-            </Text>
-            <Text style={[styles.sectionSummaryText, { color: theme.colors.error }]}>
-              Expenses {formatCurrency(section.expenses)}
-            </Text>
-            <Text style={[styles.sectionSummaryText, { color: netColor }]}>
-              Net {netPrefix}
-              {formatCurrency(Math.abs(section.net))}
-            </Text>
+            <View style={styles.sectionMetricItem}>
+              <Text style={[styles.sectionMetricLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+              <Text style={[styles.sectionSummaryText, { color: theme.colors.success }]}>{formatCurrency(section.income)}</Text>
+            </View>
+            <View style={styles.sectionMetricItem}>
+              <Text style={[styles.sectionMetricLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+              <Text style={[styles.sectionSummaryText, { color: theme.colors.error }]}>{formatCurrency(section.expenses)}</Text>
+            </View>
+            <View style={styles.sectionMetricItem}>
+              <Text style={[styles.sectionMetricLabel, { color: theme.colors.textSecondary }]}>Net</Text>
+              <Text style={[styles.sectionSummaryText, { color: netColor }]}>
+                {netPrefix}{formatCurrency(Math.abs(section.net))}
+              </Text>
+            </View>
           </View>
         </TouchableOpacity>
       );
@@ -385,26 +402,42 @@ export default function TransactionsScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: theme.colors.surface, borderBottomColor: theme.colors.border },
+          { backgroundColor: theme.colors.background, borderBottomColor: theme.colors.border },
         ]}
       >
+        <View style={styles.headerTopRow}>
+          <View style={styles.headerCopy}>
+            <Text style={[styles.headerTitle, { color: theme.colors.text }]}>Transactions</Text>
+            <Text style={[styles.headerSubtitle, { color: theme.colors.textSecondary }]}>{headerSubtitle}</Text>
+          </View>
+          <View style={[styles.shownPill, { backgroundColor: theme.colors.primary + '12', borderColor: theme.colors.primary + '26' }]}>
+            <Text style={[styles.shownPillLabel, { color: theme.colors.primary }]}>Shown</Text>
+            <Text style={[styles.shownPillValue, { color: theme.colors.primary }]}>{sortedTransactions.length}</Text>
+          </View>
+        </View>
+
         <View
           style={[
             styles.searchContainer,
-            { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+            { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
           ]}
         >
           <Search size={16} color={theme.colors.textSecondary} />
           <TextInput
             ref={searchInputRef}
             style={[styles.searchInput, { color: theme.colors.text }]}
-            placeholder="Search transactions"
+            placeholder="Search transactions, categories, amounts"
             placeholderTextColor={theme.colors.textSecondary}
             value={searchQuery}
             onChangeText={setSearchQuery}
             returnKeyType="search"
             autoCorrect={false}
           />
+          {searchQuery ? (
+            <TouchableOpacity style={styles.searchClearButton} onPress={() => setSearchQuery('')}>
+              <X size={14} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <View style={styles.filterContainer}>
@@ -413,12 +446,12 @@ export default function TransactionsScreen() {
             return (
               <TouchableOpacity
                 key={option.key}
-                activeOpacity={0.7}
+                activeOpacity={0.8}
                 style={[
                   styles.filterButton,
                   {
-                    backgroundColor: isActive ? theme.colors.primary : theme.colors.background,
-                    borderColor: isActive ? theme.colors.primary : theme.colors.border,
+                    backgroundColor: isActive ? theme.colors.primary + '12' : theme.colors.surface,
+                    borderColor: isActive ? theme.colors.primary + '2A' : theme.colors.border,
                   },
                 ]}
                 onPress={() => setFilter(option.key)}
@@ -427,7 +460,7 @@ export default function TransactionsScreen() {
                   numberOfLines={1}
                   adjustsFontSizeToFit
                   minimumFontScale={0.8}
-                  style={[styles.filterText, { color: isActive ? 'white' : theme.colors.textSecondary }]}
+                  style={[styles.filterText, { color: isActive ? theme.colors.primary : theme.colors.textSecondary }]}
                 >
                   {option.label}
                 </Text>
@@ -436,42 +469,41 @@ export default function TransactionsScreen() {
           })}
         </View>
 
-        <View style={styles.summaryContainer}>
-          <View
-            style={[
-              styles.summaryItem,
-              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-            ]}
-          >
+        <View style={styles.summaryGrid}>
+          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <Text style={[styles.summaryValue, styles.incomeText]}>{formatCurrency(totals.income)}</Text>
+            <Text style={[styles.summaryValue, styles.incomeText]} numberOfLines={1}>{formatCurrency(totals.income)}</Text>
           </View>
-          <View
-            style={[
-              styles.summaryItem,
-              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-            ]}
-          >
+          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
             <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <Text style={[styles.summaryValue, styles.expenseText]}>{formatCurrency(totals.expenses)}</Text>
+            <Text style={[styles.summaryValue, styles.expenseText]} numberOfLines={1}>{formatCurrency(totals.expenses)}</Text>
           </View>
-          <View
-            style={[
-              styles.summaryItem,
-              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-            ]}
-          >
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
-            <Text style={[styles.summaryValue, { color: theme.colors.primary }]}>{formatCurrency(totals.transfers)}</Text>
+          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Flow</Text>
+            <Text
+              style={[
+                styles.summaryValue,
+                { color: netFlow >= 0 ? theme.colors.success : theme.colors.error },
+              ]}
+              numberOfLines={1}
+            >
+              {netFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(netFlow))}
+            </Text>
           </View>
-          <View
-            style={[
-              styles.summaryItem,
-              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-            ]}
-          >
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
-            <Text style={[styles.summaryValue, styles.debtText]}>{formatCurrency(totals.debt)}</Text>
+          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Filter</Text>
+            <Text style={[styles.summaryValue, { color: theme.colors.text }]} numberOfLines={1}>{activeFilterLabel}</Text>
+          </View>
+        </View>
+
+        <View style={styles.auxSummaryRow}>
+          <View style={[styles.auxSummaryChip, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <Text style={[styles.auxSummaryLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
+            <Text style={[styles.auxSummaryValue, { color: theme.colors.primary }]}>{formatCurrency(totals.transfers)}</Text>
+          </View>
+          <View style={[styles.auxSummaryChip, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <Text style={[styles.auxSummaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+            <Text style={[styles.auxSummaryValue, styles.debtText]}>{formatCurrency(totals.debt)}</Text>
           </View>
         </View>
       </View>
@@ -536,9 +568,50 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingTop: 16,
-    paddingBottom: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
     borderBottomWidth: 1,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 14,
+    gap: 12,
+  },
+  headerCopy: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  shownPill: {
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    minWidth: 76,
+    alignItems: 'center',
+  },
+  shownPillLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  shownPillValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 2,
   },
   searchContainer: {
     flexDirection: 'row',
@@ -551,6 +624,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 8,
   },
+  searchClearButton: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   searchInput: {
     flex: 1,
     fontSize: 14,
@@ -560,34 +639,59 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    marginBottom: 16,
-    gap: 6,
+    marginBottom: 14,
+    gap: 8,
   },
   filterButton: {
     flex: 1,
     minWidth: 0,
-    borderRadius: 999,
+    borderRadius: 12,
     borderWidth: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 6,
-    paddingVertical: 8,
+    paddingVertical: 9,
   },
   filterText: {
     fontSize: 11,
     fontWeight: '700',
   },
-  summaryContainer: {
+  summaryGrid: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    gap: 12,
     flexWrap: 'wrap',
+    paddingHorizontal: 16,
+    gap: 10,
   },
-  summaryItem: {
-    flex: 1,
+  summaryCard: {
+    width: '48%',
     borderRadius: 14,
     borderWidth: 1,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  auxSummaryRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    gap: 10,
+    marginTop: 10,
+  },
+  auxSummaryChip: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  auxSummaryLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.45,
+    marginBottom: 4,
+  },
+  auxSummaryValue: {
+    fontSize: 14,
+    fontWeight: '700',
   },
   summaryLabel: {
     fontSize: 12,
@@ -596,7 +700,7 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   incomeText: {
     color: '#16A34A',
@@ -610,7 +714,7 @@ const styles = StyleSheet.create({
   resultsInfo: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 2,
+    paddingBottom: 4,
   },
   resultsText: {
     fontSize: 12,
@@ -625,31 +729,58 @@ const styles = StyleSheet.create({
     marginTop: 12,
     borderRadius: 14,
     borderWidth: 1,
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  sectionHeaderTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   sectionTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flex: 1,
   },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
   },
+  sectionCountBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  sectionCountText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   sectionSummaryRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 8,
+    gap: 10,
+    marginTop: 10,
+  },
+  sectionMetricItem: {
+    flex: 1,
+  },
+  sectionMetricLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.45,
+    marginBottom: 4,
   },
   sectionSummaryText: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '700',
   },
   emptyState: {
     alignItems: 'center',
     padding: 32,
     marginHorizontal: 16,
+    marginTop: 10,
     borderRadius: 16,
     borderWidth: 1,
   },

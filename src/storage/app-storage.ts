@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Account,
   Budget,
+  CustomAccountType,
   BudgetAlert,
   FinancialGoal,
   MerchantProfile,
@@ -52,6 +53,7 @@ export interface PersistedState {
   merchantProfiles: MerchantProfile[];
   customExpenseCategories: TransactionCategory[];
   customIncomeCategories: TransactionCategory[];
+  customAccountTypes: CustomAccountType[];
 }
 
 export interface StorageAdapter {
@@ -75,6 +77,7 @@ export const STORAGE_KEYS = {
   merchantProfiles: 'merchantProfiles',
   customExpenseCategories: 'customExpenseCategories',
   customIncomeCategories: 'customIncomeCategories',
+  customAccountTypes: 'customAccountTypes',
 } as const;
 
 const ALL_KEYS = Object.values(STORAGE_KEYS);
@@ -458,6 +461,52 @@ function deserializeTransactionCategories(raw: unknown): TransactionCategory[] {
     .filter((item): item is TransactionCategory => !!item);
 }
 
+function serializeCustomAccountTypes(accountTypes: CustomAccountType[]): unknown[] {
+  return accountTypes
+    .filter((accountType) => accountType?.type && accountType?.label)
+    .map((accountType) => ({
+      type: accountType.type,
+      label: accountType.label,
+      description: accountType.description,
+      group: accountType.group,
+      icon: accountType.icon,
+      color: accountType.color,
+      createdAt: accountType.createdAt.toISOString(),
+    }));
+}
+
+function deserializeCustomAccountTypes(raw: unknown): CustomAccountType[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+
+      const candidate = item as Record<string, unknown>;
+      const type = typeof candidate.type === 'string' ? candidate.type.trim() : '';
+      const label = typeof candidate.label === 'string' ? candidate.label.trim() : '';
+      const createdAt = parseDate(candidate.createdAt as string);
+      if (!type || !label || !createdAt) {
+        return null;
+      }
+
+      return {
+        type,
+        label,
+        description: typeof candidate.description === 'string' ? candidate.description : 'Custom account type',
+        group: typeof candidate.group === 'string' ? candidate.group : 'other',
+        icon: typeof candidate.icon === 'string' ? candidate.icon : 'wallet',
+        color: typeof candidate.color === 'string' ? candidate.color : '#2563EB',
+        createdAt,
+      } as CustomAccountType;
+    })
+    .filter((item): item is CustomAccountType => !!item);
+}
+
 function parseJson<T>(value: string | null, fallback: T): T {
   if (!value) {
     return fallback;
@@ -489,6 +538,7 @@ export async function loadPersistedState(
   const rawMerchants = parseJson<unknown>(map.get(STORAGE_KEYS.merchantProfiles) ?? null, []);
   const rawCustomExpenseCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customExpenseCategories) ?? null, []);
   const rawCustomIncomeCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customIncomeCategories) ?? null, []);
+  const rawCustomAccountTypes = parseJson<unknown>(map.get(STORAGE_KEYS.customAccountTypes) ?? null, []);
 
   return {
     transactions: deserializeTransactions(rawTransactions),
@@ -503,6 +553,7 @@ export async function loadPersistedState(
     merchantProfiles: deserializeMerchantProfiles(rawMerchants),
     customExpenseCategories: deserializeTransactionCategories(rawCustomExpenseCategories),
     customIncomeCategories: deserializeTransactionCategories(rawCustomIncomeCategories),
+    customAccountTypes: deserializeCustomAccountTypes(rawCustomAccountTypes),
   };
 }
 

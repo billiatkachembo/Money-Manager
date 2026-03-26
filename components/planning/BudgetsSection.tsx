@@ -126,6 +126,42 @@ export function BudgetsSection() {
 
   const categoryChipBackground = useMemo(() => theme.colors.primary + '14', [theme.colors.primary]);
 
+  const budgetTips = useMemo(() => {
+    if (budgets.length === 0) {
+      return [
+        'Start budgets with essential categories first, like food, transport, utilities, and debt payments.',
+        'Use a weekly budget for categories that change quickly so it is easier to catch overspending early.',
+        'Leave a small buffer in your monthly plan for price changes, emergencies, or irregular expenses.',
+      ];
+    }
+
+    const budgetSnapshots = budgets
+      .map((budget) => {
+        const spent = getBudgetSpending(budget.id);
+        const percentage = budget.amount ? (spent / budget.amount) * 100 : 0;
+        return { budget, spent, percentage };
+      })
+      .sort((left, right) => right.percentage - left.percentage);
+
+    const overBudget = budgetSnapshots.find((entry) => entry.percentage > 100);
+    const nearLimit = budgetSnapshots.find((entry) => entry.percentage >= 80 && entry.percentage <= 100);
+    const lowUsage = budgetSnapshots.find((entry) => entry.percentage > 0 && entry.percentage < 40);
+
+    return [
+      overBudget
+        ? `${overBudget.budget.category?.name || 'This category'} is over budget by ${formatCurrency(overBudget.spent - overBudget.budget.amount)}. Cut back there or rebalance the budget before month-end.`
+        : nearLimit
+          ? `${nearLimit.budget.category?.name || 'This category'} is already at ${nearLimit.percentage.toFixed(0)}% of budget. Slow spending there to protect essentials.`
+          : 'Review your budgets once a week so you can adjust spending before a category becomes a problem.',
+      lowUsage
+        ? `${lowUsage.budget.category?.name || 'One category'} still has plenty of room. If needed, part of that buffer can support a category under pressure.`
+        : 'Keep a small flexible category or buffer budget so one surprise expense does not break the whole plan.',
+      budgets.some((budget) => budget.period === 'monthly')
+        ? 'For fast-moving spending like food or transport, consider weekly check-ins even when the budget itself is monthly.'
+        : 'Shorter budget periods help you spot problem spending sooner and make corrections while the month is still in progress.',
+    ];
+  }, [budgets, formatCurrency, getBudgetSpending]);
+
   return (
     <View style={styles.section}>
       <View style={styles.sectionHeader}>
@@ -321,6 +357,18 @@ export function BudgetsSection() {
           );
         })
       )}
+
+      <View style={[styles.tipsCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>Budget Tips</Text>
+        {budgetTips.map((tip, index) => (
+          <View key={`budget-tip-${index}`} style={styles.tipRow}>
+            <View style={[styles.tipBadge, { backgroundColor: theme.colors.primary + '18' }]}>
+              <Text style={[styles.tipBadgeText, { color: theme.colors.primary }]}>{index + 1}</Text>
+            </View>
+            <Text style={[styles.tipText, { color: theme.colors.textSecondary }]}>{tip}</Text>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -492,5 +540,39 @@ const styles = StyleSheet.create({
   budgetRemaining: {
     fontSize: 12,
     fontWeight: '500',
+  },
+  tipsCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    marginTop: 4,
+  },
+  tipsTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 10,
+  },
+  tipBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  tipBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tipText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
   },
 });

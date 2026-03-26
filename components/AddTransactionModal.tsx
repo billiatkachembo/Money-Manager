@@ -43,6 +43,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Icons from 'lucide-react-native';
 import { Transaction, TransactionCategory } from '@/types/transaction';
 import { createCustomCategory, mergeCategories } from '@/constants/categories';
+import { ACCOUNT_TYPE_GROUPS, getAccountTypeDefinition } from '@/constants/account-types';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { formatDateDDMMYYYY, formatDateTimeWithWeekday } from '@/utils/date';
@@ -332,6 +333,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     addAccount,
     addTransaction,
     accounts,
+    accountTypeDefinitions,
     expenseCategories,
     formatCurrency,
     incomeCategories,
@@ -382,18 +384,65 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   }, [accountLabel, accountSheetTarget, t, type]);
   const accountSheetHeader = accountSheetTitle === accountLabel ? t('common.accounts') : accountSheetTitle;
 
+  const accountGroupOrder = useMemo(
+    () => new Map(ACCOUNT_TYPE_GROUPS.map((group, index) => [group.key, index])),
+    []
+  );
+
+  const orderedTransactionAccounts = useMemo(() => {
+    const selectedAccountIds = new Set([fromAccount, toAccount].filter(Boolean));
+
+    return [...accounts]
+      .filter((account) => account.isActive || selectedAccountIds.has(account.id))
+      .sort((left, right) => {
+        const activityDelta = Number(right.isActive) - Number(left.isActive);
+        if (activityDelta !== 0) {
+          return activityDelta;
+        }
+
+        const leftGroup = getAccountTypeDefinition(left.type, accountTypeDefinitions).group;
+        const rightGroup = getAccountTypeDefinition(right.type, accountTypeDefinitions).group;
+        const groupDelta = (accountGroupOrder.get(leftGroup) ?? 99) - (accountGroupOrder.get(rightGroup) ?? 99);
+        if (groupDelta !== 0) {
+          return groupDelta;
+        }
+
+        return left.name.localeCompare(right.name);
+      });
+  }, [accountGroupOrder, accountTypeDefinitions, accounts, fromAccount, toAccount]);
+
   const accountSheetAccounts = useMemo(() => {
     if (!accountSheetTarget) {
-      return accounts;
+      return orderedTransactionAccounts;
     }
 
     if (type !== 'transfer') {
-      return accounts;
+      return orderedTransactionAccounts;
     }
 
     const excludeId = accountSheetTarget === 'from' ? toAccount : fromAccount;
-    return accounts.filter((account) => account.id !== excludeId);
-  }, [accounts, accountSheetTarget, fromAccount, toAccount, type]);
+    return orderedTransactionAccounts.filter((account) => account.id !== excludeId);
+  }, [accountSheetTarget, fromAccount, orderedTransactionAccounts, toAccount, type]);
+
+  const quickAccountInitialType = useMemo(() => {
+    if (type === 'debt') {
+      return debtDirection === 'borrowed' ? 'loan' : 'accounts_receivable';
+    }
+
+    if (type === 'expense') {
+      return 'cash';
+    }
+
+    if (type === 'income') {
+      return 'checking';
+    }
+
+    if (accountSheetTarget === 'to') {
+      return 'savings';
+    }
+
+    return 'checking';
+  }, [accountSheetTarget, debtDirection, type]);
 
   const aiCategoryName = useMemo(() => {
     if (!aiSuggestion) return null;
@@ -1578,6 +1627,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
         <QuickAccountCreateModal
           visible={showQuickAccountModal}
           currency={settings.currency || 'ZMW'}
+          initialType={quickAccountInitialType}
           onClose={handleCloseQuickAccountModal}
           onSubmit={handleQuickAccountSubmit}
         />

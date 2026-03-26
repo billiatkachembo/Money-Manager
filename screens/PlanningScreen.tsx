@@ -4,7 +4,6 @@ import { Calculator, PiggyBank, Target } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useFinancialCalculators } from '@/hooks/useFinancialCalculators';
-import { PlanningOverviewCard } from '@/components/planning/PlanningOverviewCard';
 import { GoalsSection } from '@/components/planning/GoalsSection';
 import { BudgetsSection } from '@/components/planning/BudgetsSection';
 import { CalculatorsSection } from '@/components/planning/CalculatorsSection';
@@ -115,7 +114,6 @@ export default function PlanningScreen() {
         contentContainerStyle={styles.contentContainer}
         showsVerticalScrollIndicator={false}
       >
-        <PlanningOverviewCard />
         {activeSection === 'goals' && <GoalsSection />}
         {activeSection === 'budgets' && <BudgetsSection />}
         {activeSection === 'calculator' && (
@@ -173,6 +171,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contentContainer: {
+    paddingTop: 4,
     paddingBottom: 24,
   },
 });

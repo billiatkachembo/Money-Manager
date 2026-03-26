@@ -6,6 +6,7 @@ import {
   Account,
   Budget,
   BudgetAlert,
+  CustomAccountType,
   DebtAccount,
   FinancialGoal,
   FinancialHealthMetrics,
@@ -19,6 +20,11 @@ import {
   UserProfile,
 } from '@/types/transaction';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, findMatchingCategory, mergeCategories, resolveCanonicalCategory } from '@/constants/categories';
+import {
+  createCustomAccountTypeDefinition,
+  getAccountTypeDefinition,
+  mergeAccountTypeDefinitions,
+} from '@/constants/account-types';
 import { findCurrencyOption } from '@/constants/currencies';
 import { resolveLanguageLocale } from '@/constants/languages';
 import { parseDateValue } from '@/utils/date';
@@ -471,6 +477,7 @@ function buildDefaults(): PersistedState {
     merchantProfiles: [],
     customExpenseCategories: [],
     customIncomeCategories: [],
+    customAccountTypes: [],
   };
 }
 
@@ -487,6 +494,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [merchantProfiles, setMerchantProfiles] = useState<MerchantProfile[]>([]);
   const [customExpenseCategories, setCustomExpenseCategories] = useState<TransactionCategory[]>([]);
   const [customIncomeCategories, setCustomIncomeCategories] = useState<TransactionCategory[]>([]);
+  const [customAccountTypes, setCustomAccountTypes] = useState<CustomAccountType[]>([]);
   const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
   const autoBackupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -522,6 +530,11 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   }, [customIncomeCategories, visibleTransactions]);
 
   const budgetCategories = useMemo(() => expenseCategories, [expenseCategories]);
+
+  const accountTypeDefinitions = useMemo(
+    () => mergeAccountTypeDefinitions(customAccountTypes),
+    [customAccountTypes]
+  );
 
   const lifetimeNetCashFlow = useMemo(
     () => computeNetBalance(ledgerTransactions),
@@ -893,6 +906,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         setMerchantProfiles(loaded.merchantProfiles);
         setCustomExpenseCategories(loaded.customExpenseCategories);
         setCustomIncomeCategories(loaded.customIncomeCategories);
+        setCustomAccountTypes(loaded.customAccountTypes);
         setLedgerIssues(integrity.issues);
         setIsHydrated(true);
 
@@ -1349,6 +1363,37 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     [customExpenseCategories, customIncomeCategories, expenseCategories, incomeCategories, persistPatch]
   );
 
+
+  const saveCustomAccountType = useCallback(
+    (input: {
+      label: string;
+      description?: string;
+      group?: CustomAccountType['group'];
+      icon?: string;
+      color?: string;
+    }) => {
+      const createdType = createCustomAccountTypeDefinition(input);
+      const existingDefinition = accountTypeDefinitions.find(
+        (definition) =>
+          definition.type === createdType.type ||
+          definition.label.trim().toLowerCase() === createdType.label.trim().toLowerCase()
+      );
+      if (existingDefinition) {
+        return existingDefinition;
+      }
+
+      const nextCustomTypes = [...customAccountTypes, createdType].sort((left, right) =>
+        left.label.localeCompare(right.label)
+      );
+
+      setCustomAccountTypes(nextCustomTypes);
+      void persistPatch({ customAccountTypes: nextCustomTypes });
+
+      return getAccountTypeDefinition(createdType.type, mergeAccountTypeDefinitions(nextCustomTypes));
+    },
+    [accountTypeDefinitions, customAccountTypes, persistPatch]
+  );
+
   const addAccountsBatch = useCallback(
     (accountDataList: NewAccountInput[]) => {
       if (accountDataList.length === 0) {
@@ -1649,6 +1694,33 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           ? snapshot.customIncomeCategories
           : defaults.customIncomeCategories
       );
+      const nextCustomAccountTypes = Array.isArray(snapshot.customAccountTypes)
+        ? snapshot.customAccountTypes
+            .map((entry) => {
+              if (!entry || typeof entry !== 'object') {
+                return null;
+              }
+
+              const candidate = entry as Partial<CustomAccountType> & { createdAt?: string | Date };
+              const normalized = createCustomAccountTypeDefinition({
+                label: typeof candidate.label === 'string' ? candidate.label : '',
+                description: typeof candidate.description === 'string' ? candidate.description : undefined,
+                group: candidate.group,
+                icon: typeof candidate.icon === 'string' ? candidate.icon : undefined,
+                color: typeof candidate.color === 'string' ? candidate.color : undefined,
+              });
+
+              if (!normalized.label) {
+                return null;
+              }
+
+              return {
+                ...normalized,
+                createdAt: parseDateValue(candidate.createdAt) ?? normalized.createdAt,
+              };
+            })
+            .filter((entry): entry is CustomAccountType => !!entry)
+        : defaults.customAccountTypes;
       const integrity = validateLedgerIntegrity(nextTransactions);
 
       setLedgerTransactions(nextTransactions);
@@ -1662,6 +1734,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setMerchantProfiles(nextMerchantProfiles);
       setCustomExpenseCategories(nextCustomExpenseCategories);
       setCustomIncomeCategories(nextCustomIncomeCategories);
+      setCustomAccountTypes(nextCustomAccountTypes);
       setRecurringRules(nextRecurringRules);
       setLedgerIssues(integrity.issues);
       setIsHydrated(true);
@@ -1679,6 +1752,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         merchantProfiles: nextMerchantProfiles,
         customExpenseCategories: nextCustomExpenseCategories,
         customIncomeCategories: nextCustomIncomeCategories,
+        customAccountTypes: nextCustomAccountTypes,
       });
     },
     []
@@ -1708,6 +1782,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       merchantProfiles,
       customExpenseCategories,
       customIncomeCategories,
+      customAccountTypes,
       exportDate: exportedAt.toISOString(),
       totalTransactions: ledgerTransactions.length,
       appVersion: '2.0.0',
@@ -1721,6 +1796,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       ledgerTransactions,
       customExpenseCategories,
       customIncomeCategories,
+      customAccountTypes,
       merchantProfiles,
       notes,
       recurringRules,
@@ -1792,13 +1868,15 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       financialGoals.length === 0 &&
       recurringRules.length === 0 &&
       customExpenseCategories.length === 0 &&
-      customIncomeCategories.length === 0,
+      customIncomeCategories.length === 0 &&
+      customAccountTypes.length === 0,
     [
       accounts.length,
       budgetAlerts.length,
       budgets.length,
       customExpenseCategories.length,
       customIncomeCategories.length,
+      customAccountTypes.length,
       financialGoals.length,
       ledgerTransactions.length,
       notes.length,
@@ -1937,6 +2015,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setMerchantProfiles(defaults.merchantProfiles);
       setCustomExpenseCategories(defaults.customExpenseCategories);
       setCustomIncomeCategories(defaults.customIncomeCategories);
+      setCustomAccountTypes(defaults.customAccountTypes);
       setLedgerIssues([]);
       setIsHydrated(true);
     } catch (error) {
@@ -2012,6 +2091,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     () =>
       computeFinancialIntelligence({
         transactions: visibleTransactions,
+        accounts,
         budgets,
         debtAccounts,
         netBalance,
@@ -2023,6 +2103,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         referenceDate: new Date(),
       }),
     [
+      accounts,
       behaviorMetrics.currentMonth.expenses,
       behaviorMetrics.currentMonth.income,
       behaviorMetrics.currentMonth.net,
@@ -2088,7 +2169,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     budgets,
     expenseCategories,
     incomeCategories,
+    accountTypeDefinitions,
     saveCustomCategory,
+    saveCustomAccountType,
     budgetAlerts,
     financialGoals,
     userProfile,

@@ -15,13 +15,13 @@ import {
   Platform,
   Modal,
 } from 'react-native';
-import { 
+import {
   User,
   Settings,
-  HelpCircle, 
-  Shield, 
-  Trash2, 
-  Download, 
+  HelpCircle,
+  Shield,
+  Trash2,
+  Download,
   Edit3,
   Bell,
   Moon,
@@ -63,6 +63,7 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { BlurView } from 'expo-blur';
 import { Transaction, Budget } from '@/types/transaction';
+import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import {
   ProfileHeader,
   ProfileStats,
@@ -191,8 +192,8 @@ interface GoogleDriveFile {
 }
 
 export default function ProfileScreen() {
-  const { 
-    transactions, 
+  const {
+    transactions,
     allTransactions,
     accounts,
     notes,
@@ -202,17 +203,17 @@ export default function ProfileScreen() {
     financialGoals,
     userProfile,
     recurringRules,
-    updateSettings, 
+    updateSettings,
     updateUserProfile,
     attemptAutoRestoreFromDrive,
     restoreBackupSnapshot,
     importTransactionsBatch,
-    formatCurrency, 
-    clearAllData 
+    formatCurrency,
+    clearAllData
   } = useTransactionStore();
-  const { theme, toggleTheme } = useTheme();
+  const { theme, toggleTheme, themeMode, systemTheme, setThemeMode } = useTheme();
   const insets = useSafeAreaInsets();
-  
+
   const [showEditProfile, setShowEditProfile] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showHelpSupport, setShowHelpSupport] = useState<boolean>(false);
@@ -394,7 +395,74 @@ export default function ProfileScreen() {
       ? `Last backup ${formatDateTimeWithWeekday(lastBackupDate)}`
       : undefined;
 
+  const activeGoalCount = useMemo(
+    () =>
+      financialGoals.filter(
+        (goal) => Number.isFinite(goal.targetAmount) && goal.targetAmount > 0 && goal.currentAmount < goal.targetAmount
+      ).length,
+    [financialGoals]
+  );
+  const activeAccountCount = useMemo(() => accounts.filter((account) => account.isActive).length, [accounts]);
+  const currentCurrency = useMemo(
+    () => currencies.find((currency) => currency.code === settings.currency) ?? currencies[0],
+    [currencies, settings.currency]
+  );
+  const currentLanguage = useMemo(
+    () => languages.find((language) => language.code === settings.language) ?? languages[0],
+    [languages, settings.language]
+  );
   const driveConnected = Boolean(driveAuth?.accessToken || driveAuth?.refreshToken);
+  const overviewStats = useMemo(
+    () => [
+      { label: 'Transactions', value: `${transactions.length}` },
+      { label: 'Accounts', value: `${activeAccountCount}` },
+      { label: 'Notes', value: `${notes.length}` },
+      { label: 'Active Goals', value: `${activeGoalCount}` },
+    ],
+    [activeAccountCount, activeGoalCount, notes.length, transactions.length]
+  );
+  const profileInfoRows = useMemo(
+    () => [
+      {
+        label: 'Currency',
+        helper: currentCurrency.name,
+        value: currentCurrency.code,
+        icon: DollarSign,
+        tint: '#0F766E',
+      },
+      {
+        label: 'Language',
+        helper: currentLanguage.englishName,
+        value: currentLanguage.name,
+        icon: Globe,
+        tint: '#7C3AED',
+      },
+      {
+        label: 'Daily Reminder',
+        helper: settings.dailyReminderEnabled ? 'Scheduled reminder' : 'Reminders are off',
+        value: settings.dailyReminderEnabled ? reminderTimeLabel : 'Off',
+        icon: Bell,
+        tint: '#EA580C',
+      },
+      {
+        label: 'Backups',
+        helper: lastBackupText ?? 'No backup history yet',
+        value: driveConnected ? 'Drive' : 'Local',
+        icon: Database,
+        tint: '#2563EB',
+      },
+    ],
+    [
+      currentCurrency.code,
+      currentCurrency.name,
+      currentLanguage.englishName,
+      currentLanguage.name,
+      driveConnected,
+      lastBackupText,
+      reminderTimeLabel,
+      settings.dailyReminderEnabled,
+    ]
+  );
   const driveAccountLabel = driveConnected ? (userProfile.email?.trim() || 'Connected') : undefined;
 
   const resetBackupStatus = () => {
@@ -1278,7 +1346,7 @@ export default function ProfileScreen() {
       ]
     );
   };
-  
+
   const handleSaveProfile = () => {
     updateUserProfile(editForm);
     setShowEditProfile(false);
@@ -1330,77 +1398,198 @@ export default function ProfileScreen() {
     .reduce((sum: number, t: any) => sum + t.amount, 0);
 
   return (
-    <ScrollView style={[styles.container, { paddingTop: insets.top, backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      {/* Header Section */}
-      <View style={[styles.header, { backgroundColor: theme.colors.surface }]}>
-        <View style={styles.headerActions}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 8 }]}
+      showsVerticalScrollIndicator={false}
+    >
+      <View
+        style={[
+          styles.profileHero,
+          {
+            backgroundColor: theme.colors.surface,
+            borderColor: theme.colors.border,
+            shadowColor: theme.isDark ? '#000000' : theme.colors.primary,
+          },
+        ]}
+      >
+        <View style={styles.heroTopBar}>
+          <View
+            style={[
+              styles.heroBadge,
+              { backgroundColor: theme.colors.primary + '12', borderColor: theme.colors.primary + '28' },
+            ]}
+          >
+            <Text style={[styles.heroBadgeText, { color: theme.colors.primary }]}>Profile</Text>
+          </View>
           <TouchableOpacity
-            style={[styles.headerActionButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+            style={[
+              styles.headerActionButton,
+              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+            ]}
             onPress={() => setShowSettings(true)}
             activeOpacity={0.85}
           >
             <Settings size={18} color={theme.colors.text} />
           </TouchableOpacity>
         </View>
-        <View style={styles.avatarContainer}>
-          {userProfile.avatar && userProfile.avatar.startsWith('http') && !avatarError ? (
-            <Image
-              source={{ uri: userProfile.avatar }}
-              style={styles.avatarImage}
-              resizeMode="cover"
-              onError={() => setAvatarError(true)}
-            />
-          ) : (
-            <User size={32} color="#667eea" />
-          )}
+
+        <View style={styles.identityRow}>
+          <View style={[styles.avatarContainer, { backgroundColor: theme.colors.primary + '16' }]}>
+            {userProfile.avatar && userProfile.avatar.startsWith('http') && !avatarError ? (
+              <Image
+                source={{ uri: userProfile.avatar }}
+                style={styles.avatarImage}
+                resizeMode="cover"
+                onError={() => setAvatarError(true)}
+              />
+            ) : (
+              <User size={34} color={theme.colors.primary} />
+            )}
+          </View>
+
+          <View style={styles.identityCopy}>
+            <Text style={[styles.name, { color: theme.colors.text }]} numberOfLines={1}>
+              {userProfile.name || 'Your Profile'}
+            </Text>
+            <Text style={[styles.email, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+              {userProfile.email || 'Add an email in Settings'}
+            </Text>
+            <View style={styles.identityChips}>
+              {userProfile.occupation ? (
+                <View style={[styles.metaChip, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
+                  <Briefcase size={12} color={theme.colors.textSecondary} />
+                  <Text style={[styles.metaChipText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                    {userProfile.occupation}
+                  </Text>
+                </View>
+              ) : null}
+              {userProfile.location ? (
+                <View style={[styles.metaChip, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
+                  <MapPin size={12} color={theme.colors.textSecondary} />
+                  <Text style={[styles.metaChipText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                    {userProfile.location}
+                  </Text>
+                </View>
+              ) : null}
+              {!userProfile.occupation && !userProfile.location ? (
+                <View style={[styles.metaChip, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}>
+                  <Info size={12} color={theme.colors.textSecondary} />
+                  <Text style={[styles.metaChipText, { color: theme.colors.textSecondary }]}>Complete your profile</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
         </View>
-        <Text style={[styles.name, { color: theme.colors.text }]}>{userProfile.name}</Text>
-        <Text style={[styles.email, { color: theme.colors.textSecondary }]}>{userProfile.email}</Text>
-        <View style={styles.profileDetails}>
-          <View style={styles.profileDetailItem}>
-            <MapPin size={12} color="#666" />
-            <Text style={[styles.profileDetailText, { color: theme.colors.textSecondary }]}>{userProfile.location}</Text>
-          </View>
-          <View style={styles.profileDetailItem}>
-            <Briefcase size={12} color="#666" />
-            <Text style={[styles.profileDetailText, { color: theme.colors.textSecondary }]}>{userProfile.occupation}</Text>
-          </View>
-          <View style={styles.profileDetailItem}>
-            <Calendar size={12} color="#666" />
-            <Text style={[styles.profileDetailText, { color: theme.colors.textSecondary }]}>
+
+        <View style={[styles.memberRow, { borderTopColor: theme.colors.border }]}>
+          <View style={styles.memberMeta}>
+            <Calendar size={14} color={theme.colors.textSecondary} />
+            <Text style={[styles.memberText, { color: theme.colors.textSecondary }]}>
               Member since {formatDateWithWeekday(memberSinceDate)}
             </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.editProfileButton, { backgroundColor: theme.colors.primary }]}
+            onPress={openEditProfile}
+            activeOpacity={0.88}
+          >
+            <Edit3 size={14} color="#FFFFFF" />
+            <Text style={styles.editProfileButtonText}>Edit</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <View style={[styles.profileSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <View style={styles.profileSectionHeader}>
+          <View>
+            <Text style={[styles.profileSectionTitle, { color: theme.colors.text }]}>Overview</Text>
+            <Text style={[styles.profileSectionSubtitle, { color: theme.colors.textSecondary }]}>
+              {budgets.length} budgets | {recurringRules.length} recurring rules
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.overviewGrid}>
+          {overviewStats.map((item) => (
+            <View
+              key={item.label}
+              style={[
+                styles.overviewTile,
+                { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+              ]}
+            >
+              <Text style={[styles.overviewTileLabel, { color: theme.colors.textSecondary }]}>{item.label}</Text>
+              <Text style={[styles.overviewTileValue, { color: theme.colors.text }]}>{item.value}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={[styles.moneyRow, { borderTopColor: theme.colors.border }]}>
+          <View style={styles.moneyMetric}>
+            <Text style={[styles.moneyMetricLabel, { color: theme.colors.textSecondary }]}>Total Income</Text>
+            <AdaptiveAmountText
+              style={[styles.moneyMetricValue, { color: theme.colors.success }]}
+              value={settings.privacy?.hideAmounts ? '***' : formatCurrency(totalIncome)}
+            />
+          </View>
+          <View style={[styles.moneyDivider, { backgroundColor: theme.colors.border }]} />
+          <View style={styles.moneyMetric}>
+            <Text style={[styles.moneyMetricLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
+            <AdaptiveAmountText
+              style={[styles.moneyMetricValue, { color: theme.colors.error }]}
+              value={settings.privacy?.hideAmounts ? '***' : formatCurrency(totalExpenses)}
+            />
           </View>
         </View>
       </View>
 
-      {/* Stats Card */}
-      <View style={[styles.statsCard, { backgroundColor: theme.colors.surface }]}>
-        <Text style={[styles.statsTitle, { color: theme.colors.text }]}>Your Statistics</Text>
-        <View style={styles.statsRow}>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: theme.colors.text }]}>{transactions.length}</Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Transactions</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, styles.incomeText]}>
-              {settings.privacy?.hideAmounts ? '***' : formatCurrency(totalIncome)}
+      <View style={[styles.profileSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+        <View style={styles.profileSectionHeader}>
+          <View>
+            <Text style={[styles.profileSectionTitle, { color: theme.colors.text }]}>At a Glance</Text>
+            <Text style={[styles.profileSectionSubtitle, { color: theme.colors.textSecondary }]}>
+              {theme.isDark ? 'Dark mode active' : 'Light mode active'}
             </Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Total Income</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, styles.expenseText]}>
-              {settings.privacy?.hideAmounts ? '***' : formatCurrency(totalExpenses)}
-            </Text>
-            <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
           </View>
         </View>
+
+        <View style={styles.metaList}>
+          {profileInfoRows.map((item, index) => {
+            const Icon = item.icon;
+            return (
+              <View
+                key={item.label}
+                style={[
+                  styles.metaListRow,
+                  index < profileInfoRows.length - 1 && {
+                    borderBottomWidth: 1,
+                    borderBottomColor: theme.colors.border,
+                  },
+                ]}
+              >
+                <View style={[styles.metaListIconWrap, { backgroundColor: item.tint + '14' }]}>
+                  <Icon size={16} color={item.tint} />
+                </View>
+                <View style={styles.metaListLabelGroup}>
+                  <Text style={[styles.metaListLabel, { color: theme.colors.text }]}>{item.label}</Text>
+                  <Text style={[styles.metaListHelper, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                    {item.helper}
+                  </Text>
+                </View>
+                <Text style={[styles.metaListValue, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                  {item.value}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
       </View>
+
       <View style={styles.footer}>
         <Text style={[styles.version, { color: theme.colors.textSecondary }]}>Money Manager v1.0.0</Text>
         <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Designed and developed by Billiat</Text>
       </View>
-      
 {/* App Settings Modal */}
 <SettingsModal
         visible={showSettings}
@@ -1409,7 +1598,9 @@ export default function ProfileScreen() {
         settings={settings}
         updateSettings={updateSettings}
         openEditProfile={() => openSettingsDestination(openEditProfile)}
-        toggleTheme={toggleTheme}
+        themeMode={themeMode}
+        systemTheme={systemTheme === 'dark' ? 'dark' : 'light'}
+        setThemeMode={setThemeMode}
         onClearData={handleClearData}
         onBackupRestore={() => openSettingsDestination(() => setShowBackupRestore(true))}
         onPrivacySecurity={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
@@ -1557,7 +1748,7 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
               ))}
             </ScrollView>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.pickerCancel, { backgroundColor: theme.colors.surface }]}
               onPress={() => setShowAutoLockPicker(false)}
             >
@@ -1645,11 +1836,11 @@ export default function ProfileScreen() {
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Privacy & Security</Text>
             <View style={styles.spacer} />
           </View>
-          
+
           <ScrollView style={styles.modalContent}>
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Privacy</Text>
-              
+
               <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
                 <View style={styles.settingInfo}>
                   <Eye size={20} color="#667eea" />
@@ -1713,7 +1904,7 @@ export default function ProfileScreen() {
 
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Security</Text>
-              
+
               <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
                 <View style={styles.settingInfo}>
                   <Smartphone size={20} color="#667eea" />
@@ -1744,7 +1935,7 @@ export default function ProfileScreen() {
                 />
               </View>
 
-              
+
 
 <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
   <View style={styles.settingInfo}>
@@ -1822,7 +2013,7 @@ export default function ProfileScreen() {
               <Text style={[styles.saveButton, { color: theme.colors.primary }]}>Save</Text>
             </TouchableOpacity>
           </View>
-          
+
           <ScrollView style={styles.modalContent}>
             <View style={styles.formGroup}>
               <Text style={[styles.formLabel, { color: theme.colors.text }]}>Full Name</Text>
@@ -1834,7 +2025,7 @@ export default function ProfileScreen() {
                 placeholderTextColor={theme.colors.textSecondary}
               />
             </View>
-            
+
             <View style={styles.formGroup}>
               <Text style={[styles.formLabel, { color: theme.colors.text }]}>Email</Text>
               <TextInput
@@ -1847,7 +2038,7 @@ export default function ProfileScreen() {
                 autoCapitalize="none"
               />
             </View>
-            
+
             <View style={styles.formGroup}>
               <Text style={[styles.formLabel, { color: theme.colors.text }]}>Phone</Text>
               <TextInput
@@ -1859,7 +2050,7 @@ export default function ProfileScreen() {
                 keyboardType="phone-pad"
               />
             </View>
-            
+
             <View style={styles.formGroup}>
               <Text style={[styles.formLabel, { color: theme.colors.text }]}>Location</Text>
               <TextInput
@@ -1870,7 +2061,7 @@ export default function ProfileScreen() {
                 placeholderTextColor={theme.colors.textSecondary}
               />
             </View>
-            
+
             <View style={styles.formGroup}>
               <Text style={[styles.formLabel, { color: theme.colors.text }]}>Occupation</Text>
               <TextInput
@@ -1895,12 +2086,12 @@ export default function ProfileScreen() {
             <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Help & Support</Text>
             <View style={styles.spacer} />
           </View>
-          
+
           <ScrollView style={styles.modalContent}>
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Get Help</Text>
-              
-              <TouchableOpacity 
+
+              <TouchableOpacity
                 style={[styles.helpItem, { borderBottomColor: theme.colors.border }]}
                 onPress={openFAQ}
               >
@@ -1915,8 +2106,8 @@ export default function ProfileScreen() {
                 </View>
                 <ExternalLink size={20} color={theme.colors.textSecondary} />
               </TouchableOpacity>
-              
-              <TouchableOpacity 
+
+              <TouchableOpacity
                 style={[styles.helpItem, { borderBottomColor: theme.colors.border }]}
                 onPress={openContactForm}
               >
@@ -1931,8 +2122,8 @@ export default function ProfileScreen() {
                 </View>
                 <ExternalLink size={20} color={theme.colors.textSecondary} />
               </TouchableOpacity>
-              
-              <TouchableOpacity 
+
+              <TouchableOpacity
                 style={[styles.helpItem, { borderBottomColor: theme.colors.border }]}
                 onPress={openEmailSupport}
               >
@@ -1951,17 +2142,17 @@ export default function ProfileScreen() {
 
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>App Information</Text>
-              
+
               <View style={[styles.infoItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.infoLabel, { color: theme.colors.text }]}>Version</Text>
                 <Text style={[styles.infoValue, { color: theme.colors.textSecondary }]}>1.0.0</Text>
               </View>
-              
+
               <View style={[styles.infoItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.infoLabel, { color: theme.colors.text }]}>Build Number</Text>
                 <Text style={[styles.infoValue, { color: theme.colors.textSecondary }]}>2024.1.0</Text>
               </View>
-              
+
               <View style={[styles.infoItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.infoLabel, { color: theme.colors.text }]}>Last Updated</Text>
                 <Text style={[styles.infoValue, { color: theme.colors.textSecondary }]}>January 2024</Text>
@@ -1970,17 +2161,17 @@ export default function ProfileScreen() {
 
             <View style={styles.settingsSection}>
               <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Legal</Text>
-              
+
               <TouchableOpacity style={[styles.legalItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.legalText, { color: theme.colors.text }]}>Privacy Policy</Text>
                 <ExternalLink size={16} color={theme.colors.textSecondary} />
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={[styles.legalItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.legalText, { color: theme.colors.text }]}>Terms of Service</Text>
                 <ExternalLink size={16} color={theme.colors.textSecondary} />
               </TouchableOpacity>
-              
+
               <TouchableOpacity style={[styles.legalItem, { borderBottomColor: theme.colors.border }]}>
                 <Text style={[styles.legalText, { color: theme.colors.text }]}>Open Source Licenses</Text>
                 <ExternalLink size={16} color={theme.colors.textSecondary} />
@@ -1996,126 +2187,248 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
   },
-  header: {
+  scrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 28,
+    gap: 14,
+  },
+  profileHero: {
+    borderWidth: 1,
+    borderRadius: 24,
+    padding: 20,
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3,
+  },
+  heroTopBar: {
+    flexDirection: 'row',
     alignItems: 'center',
-    padding: 24,
-    backgroundColor: 'white',
-    marginBottom: 16,
+    justifyContent: 'space-between',
+    marginBottom: 18,
   },
-  headerActions: {
-    width: '100%',
-    alignItems: 'flex-end',
-    marginBottom: 12,
+  heroBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  heroBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   headerActionButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  identityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
   avatarContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#667eea20',
+    width: 86,
+    height: 86,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
     overflow: 'hidden',
+    flexShrink: 0,
   },
   avatarImage: {
     width: '100%',
     height: '100%',
   },
+  identityCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
   name: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 4,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.4,
   },
   email: {
     fontSize: 14,
-    color: '#666',
+    fontWeight: '500',
+    marginTop: 4,
   },
-  statsCard: {
-    backgroundColor: 'white',
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 20,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  statsTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 16,
-  },
-  statsRow: {
+  identityChips: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
   },
-  statItem: {
+  metaChip: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: '100%',
+  },
+  metaChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  memberRow: {
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  memberMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     flex: 1,
   },
-  statValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1a1a1a',
-    marginBottom: 4,
+  memberText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
-  statLabel: {
+  editProfileButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 14,
+  },
+  editProfileButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  profileSection: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 18,
+    gap: 16,
+  },
+  profileSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  profileSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  profileSectionSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  overviewGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  overviewTile: {
+    width: '48%',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 13,
+    gap: 6,
+  },
+  overviewTileLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  overviewTileValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  moneyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingTop: 16,
+    borderTopWidth: 1,
+  },
+  moneyMetric: {
+    flex: 1,
+  },
+  moneyMetricLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  moneyMetricValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  moneyDivider: {
+    width: 1,
+    alignSelf: 'stretch',
+  },
+  metaList: {
+    gap: 0,
+  },
+  metaListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 13,
+  },
+  metaListIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metaListLabelGroup: {
+    flex: 1,
+    minWidth: 0,
+  },
+  metaListLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  metaListHelper: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#666',
-    textAlign: 'center',
+    marginTop: 2,
   },
-  incomeText: {
-    color: '#4CAF50',
-  },
-  expenseText: {
-    color: '#F44336',
+  metaListValue: {
+    maxWidth: 96,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'right',
   },
   footer: {
     alignItems: 'center',
-    padding: 24,
-    marginTop: 16,
+    paddingTop: 6,
+    paddingBottom: 4,
   },
   version: {
     fontSize: 12,
-    color: '#999',
+    fontWeight: '600',
     marginBottom: 4,
   },
   copyright: {
     fontSize: 12,
-    color: '#999',
-  },
-  profileDetails: {
-    marginTop: 12,
-    gap: 6,
-  },
-  profileDetailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  profileDetailText: {
-    fontSize: 12,
-    color: '#666',
-  },
-  modalContainer: {
+  },  modalContainer: {
     flex: 1,
     backgroundColor: 'white',
   },

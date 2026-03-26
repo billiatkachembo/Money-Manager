@@ -15,6 +15,7 @@ interface TransactionItemProps {
   onDelete?: () => void;
   showActions?: boolean;
   compact?: boolean;
+  variant?: 'default' | 'activity';
 }
 
 export function TransactionItem({
@@ -24,6 +25,7 @@ export function TransactionItem({
   onDelete,
   showActions = false,
   compact = false,
+  variant = 'default',
 }: TransactionItemProps) {
   const { theme } = useTheme();
   const { formatCurrency } = useTransactionStore();
@@ -47,6 +49,7 @@ export function TransactionItem({
         ? styles.expenseAmount
         : { color: theme.colors.primary };
   const hasActions = showActions && (onEdit || onDelete);
+  const isActivityVariant = compact && variant === 'activity';
 
   return (
     <View
@@ -59,45 +62,90 @@ export function TransactionItem({
           shadowOpacity: theme.isDark ? 0 : 0.08,
           elevation: theme.isDark ? 0 : 2,
         },
-        compact && styles.compactContainer,
+        compact && !isActivityVariant && styles.compactContainer,
+        isActivityVariant && styles.activityContainer,
       ]}
     >
       <TouchableOpacity
         activeOpacity={onPress ? 0.82 : 1}
         disabled={!onPress}
         onPress={onPress}
-        style={[styles.mainRow, compact && styles.compactMainRow]}
+        style={[styles.mainRow, compact && styles.compactMainRow, isActivityVariant && styles.activityMainRow]}
       >
-        <View style={[styles.iconContainer, compact && styles.compactIconContainer, { backgroundColor: transaction.category.color + '20' }]}>
+        <View
+          style={[
+            styles.iconContainer,
+            compact && styles.compactIconContainer,
+            isActivityVariant && styles.activityIconContainer,
+            { backgroundColor: transaction.category.color + '20' },
+          ]}
+        >
           <IconComponent size={compact ? 18 : 20} color={transaction.category.color} />
         </View>
 
         <View style={styles.content}>
-          <Text style={[styles.description, compact && styles.compactDescription, { color: theme.colors.text }]} numberOfLines={1}>
+          <Text
+            style={[
+              styles.description,
+              compact && styles.compactDescription,
+              isActivityVariant && styles.activityDescription,
+              { color: theme.colors.text },
+            ]}
+            numberOfLines={1}
+          >
             {transaction.description}
           </Text>
-          <Text style={[styles.category, compact && styles.compactMeta, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+          <Text
+            style={[
+              styles.category,
+              compact && styles.compactMeta,
+              isActivityVariant && styles.activityCategory,
+              { color: theme.colors.textSecondary },
+            ]}
+            numberOfLines={1}
+          >
             {transaction.category.name}
           </Text>
         </View>
 
-        <View style={[styles.rightContent, compact && styles.compactRightContent]}>
+        <View style={[styles.rightContent, compact && styles.compactRightContent, isActivityVariant && styles.activityRightContent]}>
           <AdaptiveAmountText
-            style={[styles.amount, compact && styles.compactAmount, amountColor]}
+            style={[styles.amount, compact && styles.compactAmount, isActivityVariant && styles.activityAmount, amountColor]}
             minFontSize={11}
             value={`${amountPrefix}${formatCurrency(transaction.amount)}`}
           />
-          <Text style={[styles.date, compact && styles.compactMeta, { color: theme.colors.textSecondary }]}>{formatDate(transaction.date)}</Text>
+          <Text
+            style={[
+              styles.date,
+              compact && styles.compactMeta,
+              isActivityVariant && styles.activityDate,
+              { color: theme.colors.textSecondary },
+            ]}
+          >
+            {formatDate(transaction.date)}
+          </Text>
         </View>
       </TouchableOpacity>
 
       {hasActions ? (
-        <View style={[styles.actionsRow, compact && styles.compactActionsRow, { borderTopColor: theme.colors.border }]}> 
+        <View
+          style={[
+            styles.actionsRow,
+            compact && styles.compactActionsRow,
+            isActivityVariant && styles.activityActionsRow,
+            { borderTopColor: theme.colors.border },
+          ]}
+        >
           {onEdit ? (
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onEdit}
-              style={[styles.actionButton, compact && styles.compactActionButton, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}
+              style={[
+                styles.actionButton,
+                compact && styles.compactActionButton,
+                isActivityVariant && styles.activityActionButton,
+                { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+              ]}
             >
               <Pencil size={compact ? 13 : 14} color={theme.colors.primary} />
               <Text style={[styles.actionText, compact && styles.compactActionText, { color: theme.colors.primary }]}>Edit</Text>
@@ -107,7 +155,12 @@ export function TransactionItem({
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={onDelete}
-              style={[styles.actionButton, compact && styles.compactActionButton, { backgroundColor: '#FEE2E2', borderColor: '#FECACA' }]}
+              style={[
+                styles.actionButton,
+                compact && styles.compactActionButton,
+                isActivityVariant && styles.activityActionButton,
+                { backgroundColor: '#FEE2E2', borderColor: '#FECACA' },
+              ]}
             >
               <Trash2 size={compact ? 13 : 14} color="#DC2626" />
               <Text style={[styles.actionText, compact && styles.compactActionText, { color: '#DC2626' }]}>Delete</Text>
@@ -140,6 +193,15 @@ const styles = StyleSheet.create({
     shadowRadius: 0,
     elevation: 0,
   },
+  activityContainer: {
+    marginHorizontal: 0,
+    marginVertical: 0,
+    borderRadius: 0,
+    borderWidth: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
   mainRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -148,6 +210,12 @@ const styles = StyleSheet.create({
   compactMainRow: {
     paddingHorizontal: 12,
     paddingVertical: 12,
+  },
+  activityMainRow: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+    alignItems: 'flex-start',
   },
   iconContainer: {
     width: 40,
@@ -163,6 +231,12 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     marginRight: 10,
   },
+  activityIconContainer: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    marginRight: 12,
+  },
   content: {
     flex: 1,
   },
@@ -174,12 +248,21 @@ const styles = StyleSheet.create({
   compactDescription: {
     fontSize: 14,
   },
+  activityDescription: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
   category: {
     fontSize: 12,
     fontWeight: '500',
   },
   compactMeta: {
     fontSize: 11,
+  },
+  activityCategory: {
+    fontSize: 11,
+    fontWeight: '600',
   },
   rightContent: {
     alignItems: 'flex-end',
@@ -190,6 +273,10 @@ const styles = StyleSheet.create({
   compactRightContent: {
     marginLeft: 10,
   },
+  activityRightContent: {
+    marginLeft: 12,
+    maxWidth: '42%',
+  },
   amount: {
     fontSize: 16,
     fontWeight: '700',
@@ -198,6 +285,10 @@ const styles = StyleSheet.create({
   },
   compactAmount: {
     fontSize: 14,
+  },
+  activityAmount: {
+    fontSize: 15,
+    fontWeight: '800',
   },
   incomeAmount: {
     color: '#16A34A',
@@ -208,6 +299,11 @@ const styles = StyleSheet.create({
   date: {
     fontSize: 12,
     fontWeight: '500',
+  },
+  activityDate: {
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 4,
   },
   actionsRow: {
     flexDirection: 'row',
@@ -222,6 +318,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingBottom: 12,
     paddingTop: 10,
+  },
+  activityActionsRow: {
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 0,
+    borderTopWidth: 0,
+    justifyContent: 'flex-end',
   },
   actionButton: {
     flexDirection: 'row',
@@ -238,6 +342,11 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingHorizontal: 10,
     paddingVertical: 6,
+  },
+  activityActionButton: {
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
   },
   actionText: {
     fontSize: 12,

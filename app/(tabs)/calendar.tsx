@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
-import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, Landmark } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction } from '@/types/transaction';
@@ -50,12 +50,20 @@ export default function CalendarScreen() {
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
 
+  const today = new Date();
+  const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const softSurface = theme.isDark ? 'rgba(15,23,42,0.72)' : '#F8FAFC';
+  const positiveTint = theme.isDark ? 'rgba(34,197,94,0.16)' : '#ECFDF5';
+  const negativeTint = theme.isDark ? 'rgba(239,68,68,0.16)' : '#FEF2F2';
+  const primaryTint = theme.colors.primary + '14';
+
   const transactionsByDate = useMemo(() => {
-    const map = new Map<string, { transactions: Transaction[]; income: number; expenses: number; net: number }>();
+    const map = new Map<string, { transactions: Transaction[]; income: number; expenses: number; debt: number; net: number }>();
 
     for (const transaction of transactions) {
-      const key = toDateKey(new Date(transaction.date));
-      const bucket = map.get(key) ?? { transactions: [], income: 0, expenses: 0, net: 0 };
+      const normalizedDate = new Date(transaction.date);
+      const key = toDateKey(normalizedDate);
+      const bucket = map.get(key) ?? { transactions: [], income: 0, expenses: 0, debt: 0, net: 0 };
 
       bucket.transactions.push(transaction);
       if (transaction.type === 'income') {
@@ -64,16 +72,23 @@ export default function CalendarScreen() {
       } else if (transaction.type === 'expense') {
         bucket.expenses += transaction.amount;
         bucket.net -= transaction.amount;
+      } else if (transaction.type === 'debt') {
+        const debtDirection = transaction.debtDirection === 'lent' ? -1 : 1;
+        bucket.debt += Math.abs(transaction.amount) * debtDirection;
       }
 
       map.set(key, bucket);
     }
 
+    for (const bucket of map.values()) {
+      bucket.transactions.sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
+    }
+
     return map;
   }, [transactions]);
 
-  const selectedDateTransactions = useMemo(
-    () => transactionsByDate.get(toDateKey(selectedDate))?.transactions ?? [],
+  const selectedDaySummary = useMemo(
+    () => transactionsByDate.get(toDateKey(selectedDate)) ?? { transactions: [], income: 0, expenses: 0, debt: 0, net: 0 },
     [selectedDate, transactionsByDate]
   );
 
@@ -82,21 +97,40 @@ export default function CalendarScreen() {
     [currentMonth, transactions]
   );
 
-  const monthSummary = useMemo(
-    () => ({
-      income: currentMonthTransactions
-        .filter((transaction) => transaction.type === 'income')
-        .reduce((sum, transaction) => sum + transaction.amount, 0),
-      expenses: currentMonthTransactions
-        .filter((transaction) => transaction.type === 'expense')
-        .reduce((sum, transaction) => sum + transaction.amount, 0),
+  const monthSummary = useMemo(() => {
+    const activeDays = new Set<string>();
+    let income = 0;
+    let expenses = 0;
+    let debt = 0;
+
+    for (const transaction of currentMonthTransactions) {
+      const normalizedDate = new Date(transaction.date);
+      activeDays.add(toDateKey(normalizedDate));
+      if (transaction.type === 'income') {
+        income += transaction.amount;
+      } else if (transaction.type === 'expense') {
+        expenses += transaction.amount;
+      } else if (transaction.type === 'debt') {
+        const debtDirection = transaction.debtDirection === 'lent' ? -1 : 1;
+        debt += Math.abs(transaction.amount) * debtDirection;
+      }
+    }
+
+    return {
+      income,
+      expenses,
+      debt,
+      net: income - expenses,
       count: currentMonthTransactions.length,
-    }),
-    [currentMonthTransactions]
-  );
+      activeDays: activeDays.size,
+    };
+  }, [currentMonthTransactions]);
 
   const calendarDays = useMemo(() => buildCalendarDays(currentMonth), [currentMonth]);
-  const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const currentMonthLabel = useMemo(
+    () => currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+    [currentMonth]
+  );
 
   const navigateMonth = (direction: 'prev' | 'next') => {
     const nextMonth = new Date(currentMonth);
@@ -116,8 +150,14 @@ export default function CalendarScreen() {
     }
   };
 
+  const jumpToToday = () => {
+    const normalizedToday = new Date(today.getFullYear(), today.getMonth(), 1);
+    setCurrentMonth(normalizedToday);
+    setSelectedDate(today);
+  };
+
   const confirmDeleteTransaction = (transaction: Transaction) => {
-    Alert.alert('Delete transaction', `Delete "${transaction.description}"?`, [
+    Alert.alert('Delete transaction', 'Delete "' + transaction.description + '"?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -127,44 +167,75 @@ export default function CalendarScreen() {
     ]);
   };
 
-  const isToday = (date: Date) => isSameDay(date, new Date());
   const getDayEntry = (date: Date) => transactionsByDate.get(toDateKey(date));
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} showsVerticalScrollIndicator={false}>
-      <View style={[styles.header, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <TouchableOpacity style={[styles.navButton, { backgroundColor: theme.colors.background }]} onPress={() => navigateMonth('prev')}>
-          <ChevronLeft size={22} color={theme.colors.primary} />
-        </TouchableOpacity>
-
-        <View style={styles.headerCenter}>
-          <Text style={[styles.monthTitle, { color: theme.colors.text }]}> 
-            {currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-          </Text>
-          <Text style={[styles.monthSubtitle, { color: theme.colors.textSecondary }]}> 
-            {monthSummary.count} transaction{monthSummary.count === 1 ? '' : 's'} this month
+    <ScrollView
+      style={[styles.container, { backgroundColor: theme.colors.background }]}
+      contentContainerStyle={styles.contentContainer}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.topBar}>
+        <View>
+          <Text style={[styles.topBarEyebrow, { color: theme.colors.textSecondary }]}>Calendar</Text>
+          <Text style={[styles.topBarTitle, { color: theme.colors.text }]}>{currentMonthLabel}</Text>
+          <Text style={[styles.topBarMeta, { color: theme.colors.textSecondary }]}> 
+            {monthSummary.count} transaction{monthSummary.count === 1 ? '' : 's'} across {monthSummary.activeDays} active day{monthSummary.activeDays === 1 ? '' : 's'}
           </Text>
         </View>
-
-        <TouchableOpacity style={[styles.navButton, { backgroundColor: theme.colors.background }]} onPress={() => navigateMonth('next')}>
-          <ChevronRight size={22} color={theme.colors.primary} />
+        <TouchableOpacity
+          style={[styles.todayButton, { backgroundColor: primaryTint, borderColor: theme.colors.primary + '26' }]}
+          onPress={jumpToToday}
+          activeOpacity={0.85}
+        >
+          <Text style={[styles.todayButtonText, { color: theme.colors.primary }]}>Today</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={[styles.monthStats, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <View style={[styles.monthStatCard, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
-          <TrendingUp size={16} color="#16A34A" />
-          <Text style={[styles.monthStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-          <Text style={[styles.monthStatValue, { color: '#16A34A' }]}>{formatCurrency(monthSummary.income)}</Text>
+      <View style={[styles.monthSwitcher, { backgroundColor: softSurface, borderColor: theme.colors.border }]}> 
+        <TouchableOpacity style={styles.monthNavButton} onPress={() => navigateMonth('prev')} activeOpacity={0.8}>
+          <ChevronLeft size={18} color={theme.colors.text} />
+        </TouchableOpacity>
+        <View style={styles.monthSwitcherCenter}>
+          <Text style={[styles.monthSwitcherTitle, { color: theme.colors.text }]}>{currentMonthLabel}</Text>
+          <Text style={[styles.monthSwitcherSubtitle, { color: theme.colors.textSecondary }]}>Tap a day to inspect activity</Text>
         </View>
-        <View style={[styles.monthStatCard, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
-          <TrendingDown size={16} color="#DC2626" />
-          <Text style={[styles.monthStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-          <Text style={[styles.monthStatValue, { color: '#DC2626' }]}>{formatCurrency(monthSummary.expenses)}</Text>
+        <TouchableOpacity style={styles.monthNavButton} onPress={() => navigateMonth('next')} activeOpacity={0.8}>
+          <ChevronRight size={18} color={theme.colors.text} />
+        </TouchableOpacity>
+      </View>
+
+      <View style={[styles.monthSummaryStrip, { borderColor: theme.colors.border }]}> 
+        <View style={styles.monthSummaryItem}>
+          <Text style={[styles.monthSummaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+          <Text style={[styles.monthSummaryValue, { color: '#16A34A' }]} numberOfLines={1}>{formatCurrency(monthSummary.income)}</Text>
+        </View>
+        <View style={[styles.monthSummaryDivider, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.monthSummaryItem}>
+          <Text style={[styles.monthSummaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+          <Text style={[styles.monthSummaryValue, { color: '#DC2626' }]} numberOfLines={1}>{formatCurrency(monthSummary.expenses)}</Text>
+        </View>
+        <View style={[styles.monthSummaryDivider, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.monthSummaryItem}>
+          <Text style={[styles.monthSummaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+          <Text style={[styles.monthSummaryValue, { color: '#9333EA' }]} numberOfLines={1}>{formatCurrency(monthSummary.debt)}</Text>
+        </View>
+        <View style={[styles.monthSummaryDivider, { backgroundColor: theme.colors.border }]} />
+        <View style={styles.monthSummaryItem}>
+          <Text style={[styles.monthSummaryLabel, { color: theme.colors.textSecondary }]}>Net</Text>
+          <Text
+            style={[
+              styles.monthSummaryValue,
+              { color: monthSummary.net >= 0 ? '#2563EB' : '#DC2626' },
+            ]}
+            numberOfLines={1}
+          >
+            {formatCurrency(monthSummary.net)}
+          </Text>
         </View>
       </View>
 
-      <View style={[styles.calendar, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={[styles.calendarSurface, { backgroundColor: softSurface, borderColor: theme.colors.border }]}> 
         <View style={styles.weekHeader}>
           {weekDays.map((day) => (
             <View key={day} style={styles.weekDayCell}>
@@ -177,8 +248,11 @@ export default function CalendarScreen() {
           {calendarDays.map((date) => {
             const entry = getDayEntry(date);
             const isCurrentMonth = isSameMonth(date, currentMonth);
-            const selected = isSameDay(date, selectedDate);
-            const dots = Math.min(entry?.transactions.length ?? 0, 3);
+            const isSelected = isSameDay(date, selectedDate);
+            const currentDay = isSameDay(date, today);
+            const txCount = entry?.transactions.length ?? 0;
+            const net = entry?.net ?? 0;
+            const showPreview = isCurrentMonth && txCount > 0;
 
             return (
               <TouchableOpacity
@@ -191,49 +265,63 @@ export default function CalendarScreen() {
                   style={[
                     styles.dayInner,
                     {
-                      backgroundColor: selected
+                      backgroundColor: isSelected ? theme.colors.primary : theme.colors.background,
+                      borderColor: isSelected
                         ? theme.colors.primary
-                        : isToday(date)
-                          ? theme.colors.primary + '18'
-                          : 'transparent',
-                      borderColor: selected ? theme.colors.primary : theme.colors.border,
+                        : currentDay
+                          ? theme.colors.primary + '55'
+                          : theme.colors.border,
+                      opacity: isCurrentMonth ? 1 : 0.54,
                     },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.dayText,
-                      {
-                        color: selected
-                          ? '#FFFFFF'
-                          : isCurrentMonth
-                            ? theme.colors.text
-                            : theme.colors.textSecondary,
-                        opacity: isCurrentMonth ? 1 : 0.65,
-                      },
-                    ]}
-                  >
-                    {date.getDate()}
-                  </Text>
-                  {dots > 0 ? (
-                    <View style={styles.dotRow}>
-                      {Array.from({ length: dots }).map((_, index) => (
-                        <View
-                          key={`${toDateKey(date)}-${index}`}
+                  <View style={styles.dayTopRow}>
+                    <Text
+                      style={[
+                        styles.dayText,
+                        { color: isSelected ? '#FFFFFF' : theme.colors.text },
+                      ]}
+                    >
+                      {date.getDate()}
+                    </Text>
+                    {txCount > 0 ? (
+                      <View
+                        style={[
+                          styles.dayCountBadge,
+                          {
+                            backgroundColor: isSelected
+                              ? 'rgba(255,255,255,0.18)'
+                              : net >= 0
+                                ? positiveTint
+                                : negativeTint,
+                          },
+                        ]}
+                      >
+                        <Text
                           style={[
-                            styles.dot,
-                            {
-                              backgroundColor: selected
-                                ? '#FFFFFF'
-                                : (entry?.net ?? 0) >= 0
-                                  ? '#16A34A'
-                                  : '#DC2626',
-                            },
+                            styles.dayCountText,
+                            { color: isSelected ? '#FFFFFF' : net >= 0 ? '#16A34A' : '#DC2626' },
                           ]}
-                        />
-                      ))}
-                    </View>
-                  ) : null}
+                        >
+                          {txCount}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+
+                  {showPreview ? (
+                    <Text
+                      style={[
+                        styles.dayNetPreview,
+                        { color: isSelected ? '#FFFFFF' : net >= 0 ? '#16A34A' : '#DC2626' },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {formatCurrency(Math.abs(net))}
+                    </Text>
+                  ) : (
+                    <View style={styles.dayPlaceholder} />
+                  )}
                 </View>
               </TouchableOpacity>
             );
@@ -241,61 +329,81 @@ export default function CalendarScreen() {
         </View>
       </View>
 
-      <View style={[styles.selectedDateSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+      <View style={styles.selectedSection}>
         <View style={styles.selectedHeader}>
-          <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}> 
-            {formatDateWithWeekday(selectedDate)}
-          </Text>
-          <TouchableOpacity onPress={() => selectDate(new Date())}>
-            <Text style={[styles.todayLink, { color: theme.colors.primary }]}>Today</Text>
-          </TouchableOpacity>
+          <View style={styles.selectedHeaderText}>
+            <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}>{formatDateWithWeekday(selectedDate)}</Text>
+            <Text style={[styles.selectedDateMeta, { color: theme.colors.textSecondary }]}> 
+              {selectedDaySummary.transactions.length} item{selectedDaySummary.transactions.length === 1 ? '' : 's'} on this date
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.selectedNetChip,
+              { backgroundColor: selectedDaySummary.net >= 0 ? positiveTint : negativeTint },
+            ]}
+          >
+            <Text
+              style={[
+                styles.selectedNetChipText,
+                { color: selectedDaySummary.net >= 0 ? '#16A34A' : '#DC2626' },
+              ]}
+            >
+              {selectedDaySummary.net >= 0 ? 'Net In' : 'Net Out'}
+            </Text>
+          </View>
         </View>
 
-        {selectedDateTransactions.length > 0 ? (
+        {selectedDaySummary.transactions.length > 0 ? (
           <>
-            <View style={styles.dayStats}>
-              <View style={[styles.statCard, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
-                <TrendingUp size={16} color="#16A34A" />
-                <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                <Text style={[styles.statValue, { color: '#16A34A' }]}>
-                  {formatCurrency(
-                    selectedDateTransactions
-                      .filter((transaction) => transaction.type === 'income')
-                      .reduce((sum, transaction) => sum + transaction.amount, 0)
-                  )}
+            <View style={styles.selectedSummaryRow}>
+              <View style={[styles.selectedSummaryItem, { backgroundColor: positiveTint }]}> 
+                <TrendingUp size={15} color="#16A34A" />
+                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+                <Text style={[styles.selectedSummaryValue, { color: '#16A34A' }]} numberOfLines={1}>
+                  {formatCurrency(selectedDaySummary.income)}
                 </Text>
               </View>
-              <View style={[styles.statCard, { backgroundColor: theme.colors.background, borderColor: theme.colors.border }]}> 
-                <TrendingDown size={16} color="#DC2626" />
-                <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                <Text style={[styles.statValue, { color: '#DC2626' }]}>
-                  {formatCurrency(
-                    selectedDateTransactions
-                      .filter((transaction) => transaction.type === 'expense')
-                      .reduce((sum, transaction) => sum + transaction.amount, 0)
-                  )}
+              <View style={[styles.selectedSummaryItem, { backgroundColor: negativeTint }]}> 
+                <TrendingDown size={15} color="#DC2626" />
+                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                <Text style={[styles.selectedSummaryValue, { color: '#DC2626' }]} numberOfLines={1}>
+                  {formatCurrency(selectedDaySummary.expenses)}
+                </Text>
+              </View>
+              <View style={[styles.selectedSummaryItem, { backgroundColor: theme.isDark ? 'rgba(147,51,234,0.18)' : '#F5F3FF' }]}> 
+                <Landmark size={15} color="#9333EA" />
+                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+                <Text style={[styles.selectedSummaryValue, { color: '#9333EA' }]} numberOfLines={1}>
+                  {formatCurrency(selectedDaySummary.debt)}
                 </Text>
               </View>
             </View>
 
             <View style={styles.transactionsList}>
-              <Text style={[styles.transactionsTitle, { color: theme.colors.text }]}>Transactions</Text>
-              {selectedDateTransactions.map((transaction) => (
-                <TransactionItem
+              {selectedDaySummary.transactions.map((transaction, index) => (
+                <View
                   key={transaction.id}
-                  transaction={transaction}
-                  showActions
-                  onEdit={() => setEditingTransaction(transaction)}
-                  onDelete={() => confirmDeleteTransaction(transaction)}
-                />
+                  style={[
+                    styles.transactionRow,
+                    index < selectedDaySummary.transactions.length - 1 && { borderBottomColor: theme.colors.border },
+                  ]}
+                >
+                  <TransactionItem
+                    transaction={transaction}
+                    showActions
+                    compact
+                    onEdit={() => setEditingTransaction(transaction)}
+                    onDelete={() => confirmDeleteTransaction(transaction)}
+                  />
+                </View>
               ))}
             </View>
           </>
         ) : (
-          <View style={styles.noTransactions}>
-            <Text style={[styles.noTransactionsText, { color: theme.colors.textSecondary }]}> 
-              No transactions on this date
-            </Text>
+          <View style={[styles.emptyState, { backgroundColor: softSurface, borderColor: theme.colors.border }]}> 
+            <Text style={[styles.emptyStateTitle, { color: theme.colors.text }]}>No activity for this day</Text>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>Pick another date or add a transaction to start building your calendar history.</Text>
           </View>
         )}
       </View>
@@ -316,69 +424,109 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    margin: 16,
-    marginBottom: 12,
+  contentContainer: {
     padding: 16,
-    borderRadius: 18,
-    borderWidth: 1,
+    paddingBottom: 32,
   },
-  headerCenter: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  navButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  monthTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  monthSubtitle: {
-    fontSize: 12,
-    marginTop: 4,
-  },
-  monthStats: {
+  topBar: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 14,
     gap: 12,
-    marginHorizontal: 16,
-    marginBottom: 12,
-    padding: 12,
-    borderRadius: 18,
-    borderWidth: 1,
   },
-  monthStatCard: {
-    flex: 1,
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 12,
-  },
-  monthStatLabel: {
+  topBarEyebrow: {
     fontSize: 12,
-    fontWeight: '600',
-    marginTop: 6,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
     marginBottom: 4,
   },
-  monthStatValue: {
+  topBarTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.6,
+  },
+  topBarMeta: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  todayButton: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginTop: 2,
+  },
+  todayButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  monthSwitcher: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  monthSwitcherCenter: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  monthSwitcherTitle: {
     fontSize: 16,
     fontWeight: '700',
   },
-  calendar: {
-    marginHorizontal: 16,
-    borderRadius: 18,
-    padding: 14,
+  monthSwitcherSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 3,
+  },
+  monthNavButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+  monthSummaryStrip: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
     borderWidth: 1,
+    borderRadius: 12,
+    marginBottom: 14,
+    overflow: 'hidden',
+  },
+  monthSummaryItem: {
+    flex: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+  },
+  monthSummaryDivider: {
+    width: 1,
+  },
+  monthSummaryLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.35,
+    marginBottom: 6,
+  },
+  monthSummaryValue: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  calendarSurface: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
   },
   weekHeader: {
     flexDirection: 'row',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   weekDayCell: {
     width: '14.2857%',
@@ -386,8 +534,10 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   weekDayText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   daysGrid: {
     flexDirection: 'row',
@@ -395,89 +545,123 @@ const styles = StyleSheet.create({
   },
   dayCell: {
     width: '14.2857%',
-    padding: 3,
+    padding: 4,
   },
   dayInner: {
-    aspectRatio: 1,
-    borderRadius: 14,
+    minHeight: 72,
+    borderRadius: 10,
     borderWidth: 1,
+    paddingHorizontal: 7,
+    paddingTop: 7,
+    paddingBottom: 8,
+    justifyContent: 'space-between',
+  },
+  dayTopRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 8,
-    paddingBottom: 6,
+    justifyContent: 'space-between',
   },
   dayText: {
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  dotRow: {
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: 6,
-  },
-  dot: {
-    width: 5,
-    height: 5,
+  dayCountBadge: {
+    minWidth: 18,
+    height: 18,
     borderRadius: 999,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  selectedDateSection: {
-    margin: 16,
-    marginTop: 12,
-    borderRadius: 18,
-    padding: 16,
-    borderWidth: 1,
+  dayCountText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  dayNetPreview: {
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
+  },
+  dayPlaceholder: {
+    height: 12,
+  },
+  selectedSection: {
+    marginTop: 16,
   },
   selectedHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+  selectedHeaderText: {
+    flex: 1,
   },
   selectedDateTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    flex: 1,
-    marginRight: 12,
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.3,
   },
-  todayLink: {
+  selectedDateMeta: {
     fontSize: 13,
-    fontWeight: '700',
-  },
-  dayStats: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
-  },
-  statCard: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 14,
-    alignItems: 'center',
-    borderWidth: 1,
-  },
-  statLabel: {
-    fontSize: 12,
+    fontWeight: '500',
     marginTop: 4,
-    marginBottom: 4,
-    fontWeight: '600',
   },
-  statValue: {
-    fontSize: 16,
+  selectedNetChip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  selectedNetChipText: {
+    fontSize: 12,
     fontWeight: '700',
+  },
+  selectedSummaryRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  selectedSummaryItem: {
+    flex: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  selectedSummaryLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.35,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  selectedSummaryValue: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   transactionsList: {
-    gap: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  transactionsTitle: {
+  transactionRow: {
+    borderBottomWidth: 1,
+    paddingVertical: 2,
+  },
+  emptyState: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  emptyStateTitle: {
     fontSize: 16,
     fontWeight: '700',
-    marginBottom: 8,
+    marginBottom: 6,
   },
-  noTransactions: {
-    alignItems: 'center',
-    paddingVertical: 32,
-  },
-  noTransactionsText: {
-    fontSize: 14,
+  emptyStateText: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
   },
 });

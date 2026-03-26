@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -15,9 +15,17 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Plus, PiggyBank, Pencil, Trash2, Wallet, CreditCard, TrendingUp, Landmark, ChevronRight, Shield, Download } from 'lucide-react-native';
+import { ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Account, Transaction } from '@/types/transaction';
+import { Account, AccountTypeDefinition, AccountTypeGroup, Transaction } from '@/types/transaction';
+import {
+  ACCOUNT_TYPE_GROUPS,
+  getAccountTypeDefinition,
+  getAccountTypeIcon,
+  getDefaultAccountColorForGroup,
+  getDefaultAccountColorForType,
+  getDefaultAccountIconForGroup,
+} from '@/constants/account-types';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTabNavigationStore } from '@/store/tab-navigation-store';
@@ -25,29 +33,11 @@ import { exportAccountsToCsv } from '@/lib/account-csv';
 import { formatDateTimeWithWeekday, formatDateWithWeekday } from '@/utils/date';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
-const ACCOUNT_TYPE_OPTIONS: Array<{
-  type: Account['type'];
-  label: string;
-  description: string;
-  icon: typeof Wallet;
-}> = [
-  { type: 'checking', label: 'Checking', description: 'Daily income and spending', icon: Wallet },
-  { type: 'savings', label: 'Savings', description: 'Emergency funds and goals', icon: PiggyBank },
-  { type: 'credit', label: 'Credit', description: 'Cards and short-term debt', icon: CreditCard },
-  { type: 'investment', label: 'Investment', description: 'Long-term growth accounts', icon: TrendingUp },
-  { type: 'cash', label: 'Cash', description: 'Wallet and petty cash', icon: Landmark },
-];
-
-const ACCOUNT_GROUPS: Array<{ key: string; label: string; types: Array<Account['type']> }> = [
-  { key: 'cash_bank', label: 'Cash & Bank', types: ['checking', 'cash'] },
-  { key: 'savings', label: 'Savings', types: ['savings'] },
-  { key: 'credit', label: 'Credit', types: ['credit'] },
-  { key: 'investment', label: 'Investments', types: ['investment'] },
-];
-type AccountSortMode = 'name' | 'balance' | 'newest';
+type AccountSortMode = 'name' | 'type' | 'balance' | 'newest';
 
 const ACCOUNT_SORT_OPTIONS: Array<{ key: AccountSortMode; label: string }> = [
   { key: 'name', label: 'A-Z' },
+  { key: 'type', label: 'Type' },
   { key: 'balance', label: 'Balance' },
   { key: 'newest', label: 'Newest' },
 ];
@@ -65,18 +55,33 @@ const ACCOUNT_COLOR_OPTIONS = [
   '#111827',
 ];
 
-const DEFAULT_ACCOUNT_COLORS: Record<Account['type'], string> = {
-  checking: '#2563EB',
-  savings: '#16A34A',
-  credit: '#EF4444',
-  investment: '#8B5CF6',
-  cash: '#F59E0B',
-};
+function getSortedAccountTypeOptions(definitions: AccountTypeDefinition[]): AccountTypeDefinition[] {
+  const groupOrder = new Map(ACCOUNT_TYPE_GROUPS.map((group, index) => [group.key, index]));
+  return [...definitions].sort((left, right) => {
+    const groupDelta = (groupOrder.get(left.group) ?? 99) - (groupOrder.get(right.group) ?? 99);
+    if (groupDelta !== 0) {
+      return groupDelta;
+    }
 
-function getDefaultAccountColor(type: Account['type']): string {
-  return DEFAULT_ACCOUNT_COLORS[type] ?? '#2563EB';
+    if (left.isCustom !== right.isCustom) {
+      return Number(left.isCustom) - Number(right.isCustom);
+    }
+
+    return left.label.localeCompare(right.label);
+  });
 }
 
+function isLiabilityGroup(group: AccountTypeGroup): boolean {
+  return group === 'credit';
+}
+
+function isLiabilityAccount(type: Account['type'], definitions: AccountTypeDefinition[]): boolean {
+  return isLiabilityGroup(getAccountTypeDefinition(type, definitions).group);
+}
+
+function getDisplayAccountBalance(balance: number, isLiability: boolean): number {
+  return isLiability ? -Math.abs(balance) : balance;
+}
 function withAlphaColor(color: string, alphaHex: string): string {
   if (color.startsWith('#') && color.length === 7) {
     return color + alphaHex;
@@ -136,6 +141,10 @@ function computeTransactionNetWorthImpact(
   transaction: Transaction,
   activeAccountIds: Set<string>
 ): number {
+  if (transaction.type === 'debt' || (transaction.type === 'expense' && transaction.debtPayment)) {
+    return 0;
+  }
+
   const fromAccountId = getFromAccountId(transaction);
   const toAccountId = getToAccountId(transaction);
   const debit = fromAccountId && activeAccountIds.has(fromAccountId) ? transaction.amount : 0;
@@ -152,6 +161,9 @@ interface AccountActivitySummary {
   expenses: number;
   transfersIn: number;
   transfersOut: number;
+  debtIn: number;
+  debtOut: number;
+  debtPayments: number;
   transactions: AccountActivityEntry[];
 }
 
@@ -160,6 +172,9 @@ const EMPTY_ACCOUNT_ACTIVITY: AccountActivitySummary = {
   expenses: 0,
   transfersIn: 0,
   transfersOut: 0,
+  debtIn: 0,
+  debtOut: 0,
+  debtPayments: 0,
   transactions: [],
 };
 
@@ -170,12 +185,14 @@ export default function AccountsScreen() {
   const {
     accounts,
     transactions,
-    lifetimeNetCashFlow,
-    settings,
+    lifetimeNetCashFlow,    settings,
     formatCurrency,
     addAccount,
     updateAccount,
     deleteAccount,
+    debtAccounts,
+    accountTypeDefinitions,
+    saveCustomAccountType,
   } = useTransactionStore();
 
   const [showModal, setShowModal] = useState(false);
@@ -183,16 +200,52 @@ export default function AccountsScreen() {
   const [name, setName] = useState('');
   const [type, setType] = useState<Account['type']>('checking');
   const [balance, setBalance] = useState('0');
-  const [color, setColor] = useState<string>(getDefaultAccountColor('checking'));
+  const [color, setColor] = useState<string>(() => getDefaultAccountColorForType('checking', accountTypeDefinitions));
   const [isActive, setIsActive] = useState(true);
   const [sortMode, setSortMode] = useState<AccountSortMode>('name');
+  const [selectedTypeGroup, setSelectedTypeGroup] = useState<AccountTypeGroup>('cash_bank');
+  const [customTypeDraft, setCustomTypeDraft] = useState('');
   const [openingBalanceDate, setOpeningBalanceDate] = useState<Date>(() => new Date());
   const [showOpeningBalanceDatePicker, setShowOpeningBalanceDatePicker] = useState(false);
   const [detailAccount, setDetailAccount] = useState<Account | null>(null);
   const [isExportingAccounts, setIsExportingAccounts] = useState(false);
 
+  const sortedAccountTypeOptions = useMemo(
+    () => getSortedAccountTypeOptions(accountTypeDefinitions),
+    [accountTypeDefinitions]
+  );
+
+  const builtInAccountTypeCount = useMemo(
+    () => sortedAccountTypeOptions.filter((definition) => !definition.isCustom).length,
+    [sortedAccountTypeOptions]
+  );
+
+  const customAccountTypeCount = useMemo(
+    () => sortedAccountTypeOptions.filter((definition) => definition.isCustom).length,
+    [sortedAccountTypeOptions]
+  );
+
+  const getDefaultAccountColor = useCallback(
+    (accountType: Account['type']) => getDefaultAccountColorForType(accountType, accountTypeDefinitions),
+    [accountTypeDefinitions]
+  );
+
+  const selectedTypeDefinition = useMemo(
+    () => getAccountTypeDefinition(type, accountTypeDefinitions),
+    [accountTypeDefinitions, type]
+  );
+
+  const typeOptionsForSelectedGroup = useMemo(
+    () => sortedAccountTypeOptions.filter((definition) => definition.group === selectedTypeGroup),
+    [selectedTypeGroup, sortedAccountTypeOptions]
+  );
+
   const orderedAccounts = useMemo(() => {
     const compareNames = (left: Account, right: Account) => left.name.localeCompare(right.name);
+    const compareTypeLabels = (left: Account, right: Account) =>
+      getAccountTypeDefinition(left.type, accountTypeDefinitions).label.localeCompare(
+        getAccountTypeDefinition(right.type, accountTypeDefinitions).label
+      );
 
     return [...accounts].sort((left, right) => {
       const activeDelta = Number(right.isActive) - Number(left.isActive);
@@ -200,8 +253,21 @@ export default function AccountsScreen() {
         return activeDelta;
       }
 
+      if (sortMode === 'type') {
+        const typeDelta = compareTypeLabels(left, right);
+        if (typeDelta !== 0) {
+          return typeDelta;
+        }
+      }
+
       if (sortMode === 'balance') {
-        const balanceDelta = right.balance - left.balance;
+        const leftBalance = Math.abs(
+          getDisplayAccountBalance(left.balance, isLiabilityAccount(left.type, accountTypeDefinitions))
+        );
+        const rightBalance = Math.abs(
+          getDisplayAccountBalance(right.balance, isLiabilityAccount(right.type, accountTypeDefinitions))
+        );
+        const balanceDelta = rightBalance - leftBalance;
         if (balanceDelta !== 0) {
           return balanceDelta;
         }
@@ -214,21 +280,82 @@ export default function AccountsScreen() {
         }
       }
 
-      return compareNames(left, right);
+      const nameDelta = compareNames(left, right);
+      if (nameDelta !== 0) {
+        return nameDelta;
+      }
+
+      const typeDelta = compareTypeLabels(left, right);
+      if (typeDelta !== 0) {
+        return typeDelta;
+      }
+
+      return right.createdAt.getTime() - left.createdAt.getTime();
     });
-  }, [accounts, sortMode]);
+  }, [accountTypeDefinitions, accounts, sortMode]);
 
   const activeAccounts = useMemo(
     () => orderedAccounts.filter((account) => account.isActive),
     [orderedAccounts]
   );
 
+  const accountTypeGroupById = useMemo(
+    () =>
+      new Map(
+        accounts.map((account) => [account.id, getAccountTypeDefinition(account.type, accountTypeDefinitions).group])
+      ),
+    [accountTypeDefinitions, accounts]
+  );
+
+  const debtRepaymentTotal = useMemo(
+    () =>
+      roundCurrency(
+        transactions
+          .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
+          .reduce((sum, transaction) => sum + transaction.amount, 0)
+      ),
+    [transactions]
+  );
+
+  const debtPortfolioSummary = useMemo(() => {
+    let borrowedOutstanding = 0;
+    let lentOutstanding = 0;
+
+    for (const transaction of transactions) {
+      if (transaction.type !== 'debt' || !Number.isFinite(transaction.amount) || transaction.amount <= 0) {
+        continue;
+      }
+
+      if (transaction.debtDirection === 'borrowed') {
+        const targetAccountId = getToAccountId(transaction);
+        const targetGroup = targetAccountId ? accountTypeGroupById.get(targetAccountId) : undefined;
+        const trackedInsideLiabilityAccount = targetGroup ? isLiabilityGroup(targetGroup) : false;
+        if (!trackedInsideLiabilityAccount) {
+          borrowedOutstanding += transaction.amount;
+        }
+        continue;
+      }
+
+      if (transaction.debtDirection === 'lent') {
+        lentOutstanding += transaction.amount;
+      }
+    }
+
+    return {
+      borrowedOutstanding: roundCurrency(Math.max(0, borrowedOutstanding - debtRepaymentTotal)),
+      lentOutstanding: roundCurrency(lentOutstanding),
+      trackedPositions: debtAccounts.length,
+      borrowedPositions: debtAccounts.filter((entry) => entry.direction === 'borrowed').length,
+      lentPositions: debtAccounts.filter((entry) => entry.direction === 'lent').length,
+    };
+  }, [accountTypeGroupById, debtAccounts, debtRepaymentTotal, transactions]);
+
   const { netWorthTotal, liabilitiesTotal, netTotal } = useMemo(() => {
     let netWorth = 0;
-    let liabilities = 0;
+    let liabilities = debtPortfolioSummary.borrowedOutstanding;
 
     for (const account of activeAccounts) {
-      if (account.type === 'credit') {
+      if (isLiabilityAccount(account.type, accountTypeDefinitions)) {
         liabilities += Math.abs(account.balance);
         continue;
       }
@@ -240,6 +367,8 @@ export default function AccountsScreen() {
       }
     }
 
+    netWorth += debtPortfolioSummary.lentOutstanding;
+
     const roundedNetWorth = roundCurrency(netWorth);
     const roundedLiabilities = roundCurrency(liabilities);
 
@@ -248,11 +377,14 @@ export default function AccountsScreen() {
       liabilitiesTotal: roundedLiabilities,
       netTotal: roundCurrency(roundedNetWorth - roundedLiabilities),
     };
-  }, [activeAccounts]);
+  }, [accountTypeDefinitions, activeAccounts, debtPortfolioSummary.borrowedOutstanding, debtPortfolioSummary.lentOutstanding]);
 
   const savingsAccounts = useMemo(
-    () => activeAccounts.filter((account) => account.type === 'savings'),
-    [activeAccounts]
+    () =>
+      activeAccounts.filter(
+        (account) => getAccountTypeDefinition(account.type, accountTypeDefinitions).group === 'savings'
+      ),
+    [accountTypeDefinitions, activeAccounts]
   );
 
   const activeAccountIds = useMemo(
@@ -281,6 +413,7 @@ export default function AccountsScreen() {
     }, 0);
     return roundCurrency(change);
   }, [activeAccountIds, transactions]);
+
   const savingsReserveTotal = useMemo(
     () => roundCurrency(savingsAccounts.reduce((sum, account) => sum + Math.max(account.balance, 0), 0)),
     [savingsAccounts]
@@ -296,43 +429,103 @@ export default function AccountsScreen() {
     [theme.colors.primary, theme.isDark]
   );
 
-  const groupedAccounts = useMemo(() => {
-    const usedTypes = new Set<Account['type']>();
-    const groups = ACCOUNT_GROUPS.map((group) => {
-      const accountsForGroup = orderedAccounts.filter((account) => group.types.includes(account.type));
-      group.types.forEach((type) => usedTypes.add(type));
-      const total = roundCurrency(accountsForGroup.reduce((sum, account) => sum + account.balance, 0));
-      return { ...group, accounts: accountsForGroup, total };
-    });
+  const groupedAccounts = useMemo(
+    () =>
+      ACCOUNT_TYPE_GROUPS.map((group) => {
+        const groupIsLiability = isLiabilityGroup(group.key);
+        const accountsForGroup = orderedAccounts.filter(
+          (account) => getAccountTypeDefinition(account.type, accountTypeDefinitions).group === group.key
+        );
+        const displayTotal = roundCurrency(
+          accountsForGroup.reduce(
+            (sum, account) => sum + getDisplayAccountBalance(account.balance, groupIsLiability),
+            0
+          )
+        );
+        return {
+          ...group,
+          accounts: accountsForGroup,
+          total: displayTotal,
+          isLiability: groupIsLiability,
+        };
+      }).filter((group) => group.accounts.length > 0),
+    [accountTypeDefinitions, orderedAccounts]
+  );
 
-    const otherAccounts = orderedAccounts.filter((account) => !usedTypes.has(account.type));
-    if (otherAccounts.length > 0) {
-      const total = roundCurrency(otherAccounts.reduce((sum, account) => sum + account.balance, 0));
-      groups.push({ key: 'other', label: 'Other', types: [], accounts: otherAccounts, total });
+  const sortModeDescription = useMemo(() => {
+    switch (sortMode) {
+      case 'type':
+        return 'Grouped by family first, then arranged by account type and name.';
+      case 'balance':
+        return 'Largest balances and debt positions rise to the top inside each family.';
+      case 'newest':
+        return 'Most recently created accounts appear first inside each family.';
+      case 'name':
+      default:
+        return 'Accounts are organized alphabetically inside each family.';
     }
-
-    return groups.filter((group) => group.accounts.length > 0);
-  }, [orderedAccounts]);
+  }, [sortMode]);
 
   const resetForm = () => {
+    const initialDefinition = getAccountTypeDefinition('checking', accountTypeDefinitions);
     setName('');
-    setType('checking');
-    setBalance('0');
-    setColor(getDefaultAccountColor('checking'));
+    setType(initialDefinition.type);
+    setColor(getDefaultAccountColor(initialDefinition.type));
     setIsActive(true);
+    setSelectedTypeGroup(initialDefinition.group);
+    setCustomTypeDraft('');
+    setBalance('0');
     setOpeningBalanceDate(new Date());
     setShowOpeningBalanceDatePicker(false);
     setEditing(null);
     setShowModal(false);
   };
 
+  const handleSelectType = (nextType: Account['type']) => {
+    const definition = getAccountTypeDefinition(nextType, accountTypeDefinitions);
+    setType(definition.type);
+    setSelectedTypeGroup(definition.group);
+    setColor(definition.color || getDefaultAccountColor(definition.type));
+  };
+
+  const handleSelectTypeGroup = (group: AccountTypeGroup) => {
+    setSelectedTypeGroup(group);
+    const nextOption = sortedAccountTypeOptions.find((definition) => definition.group === group);
+    if (nextOption && nextOption.type !== type) {
+      handleSelectType(nextOption.type);
+    }
+  };
+
+  const handleSaveCustomType = () => {
+    const label = customTypeDraft.trim();
+    if (!label) {
+      Alert.alert('Validation', 'Enter the account type name first.');
+      return;
+    }
+
+    const definition = saveCustomAccountType({
+      label,
+      group: selectedTypeGroup,
+      icon: getDefaultAccountIconForGroup(selectedTypeGroup),
+      color: getDefaultAccountColorForGroup(selectedTypeGroup),
+    });
+
+    setCustomTypeDraft('');
+    setType(definition.type);
+    setSelectedTypeGroup(definition.group);
+    setColor(definition.color || getDefaultAccountColor(definition.type));
+  };
+
   const openCreateAccount = (initialType: Account['type'] = 'checking') => {
+    const initialDefinition = getAccountTypeDefinition(initialType, accountTypeDefinitions);
     setEditing(null);
     setName('');
-    setType(initialType);
-    setBalance('0');
-    setColor(getDefaultAccountColor(initialType));
+    setType(initialDefinition.type);
+    setColor(getDefaultAccountColor(initialDefinition.type));
     setIsActive(true);
+    setSelectedTypeGroup(initialDefinition.group);
+    setCustomTypeDraft('');
+    setBalance('0');
     setOpeningBalanceDate(new Date());
     setShowOpeningBalanceDatePicker(false);
     setShowModal(true);
@@ -348,12 +541,15 @@ export default function AccountsScreen() {
   }, [consumeAccountsComposer, openAccountComposerAt]);
 
   const openEdit = (account: Account) => {
+    const definition = getAccountTypeDefinition(account.type, accountTypeDefinitions);
     setEditing(account);
     setName(account.name);
-    setType(account.type);
+    setType(definition.type);
     setBalance(String(account.balance));
-    setColor(account.color ?? getDefaultAccountColor(account.type));
+    setColor(account.color ?? getDefaultAccountColor(definition.type));
     setIsActive(account.isActive);
+    setSelectedTypeGroup(definition.group);
+    setCustomTypeDraft('');
     setOpeningBalanceDate(new Date(account.createdAt));
     setShowOpeningBalanceDatePicker(false);
     setShowModal(true);
@@ -369,9 +565,9 @@ export default function AccountsScreen() {
       updateAccount({
         ...editing,
         name: name.trim(),
-        type,
-        color: color || getDefaultAccountColor(type),
-        icon: editing.icon,
+        type: selectedTypeDefinition.type,
+        color: color || getDefaultAccountColor(selectedTypeDefinition.type),
+        icon: selectedTypeDefinition.icon,
         isActive,
       });
       resetForm();
@@ -386,11 +582,11 @@ export default function AccountsScreen() {
 
     addAccount({
       name: name.trim(),
-      type,
+      type: selectedTypeDefinition.type,
       balance: parsed,
       currency: settings.currency || 'ZMW',
-      color: color || getDefaultAccountColor(type),
-      icon: type,
+      color: color || getDefaultAccountColor(selectedTypeDefinition.type),
+      icon: selectedTypeDefinition.icon,
       isActive,
       initialBalanceDate: openingBalanceDate,
     });
@@ -488,6 +684,9 @@ export default function AccountsScreen() {
         expenses: 0,
         transfersIn: 0,
         transfersOut: 0,
+        debtIn: 0,
+        debtOut: 0,
+        debtPayments: 0,
         transactions: [],
       };
       map.set(accountId, next);
@@ -507,8 +706,27 @@ export default function AccountsScreen() {
 
       if (transaction.type === 'expense' && fromAccountId) {
         const summary = ensureSummary(fromAccountId);
-        summary.expenses += transaction.amount;
+        if (transaction.debtPayment) {
+          summary.debtPayments += transaction.amount;
+        } else {
+          summary.expenses += transaction.amount;
+        }
         summary.transactions.push({ transaction, direction: 'outgoing' });
+        continue;
+      }
+
+      if (transaction.type === 'debt') {
+        if (transaction.debtDirection === 'borrowed' && toAccountId) {
+          const summary = ensureSummary(toAccountId);
+          summary.debtIn += transaction.amount;
+          summary.transactions.push({ transaction, direction: 'incoming' });
+        }
+
+        if (transaction.debtDirection === 'lent' && fromAccountId) {
+          const summary = ensureSummary(fromAccountId);
+          summary.debtOut += transaction.amount;
+          summary.transactions.push({ transaction, direction: 'outgoing' });
+        }
         continue;
       }
 
@@ -541,10 +759,14 @@ export default function AccountsScreen() {
   };
 
   const detailFlow = detailAccount ? getAccountFlow(detailAccount.id) : EMPTY_ACCOUNT_ACTIVITY;
-  const detailNetTransfers = detailFlow.transfersIn - detailFlow.transfersOut;
+  const detailNetTransfers = roundCurrency(detailFlow.transfersIn - detailFlow.transfersOut);
+  const detailDebtNet = roundCurrency(detailFlow.debtIn - detailFlow.debtOut - detailFlow.debtPayments);
   const detailTypeMeta = detailAccount
-    ? ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === detailAccount.type)
+    ? getAccountTypeDefinition(detailAccount.type, accountTypeDefinitions)
     : undefined;
+  const detailIsLiability = detailAccount
+    ? isLiabilityAccount(detailAccount.type, accountTypeDefinitions)
+    : false;
 
   const formatTimestamp = (date: Date) => {
     const safeDate = date instanceof Date ? date : new Date(date);
@@ -556,6 +778,22 @@ export default function AccountsScreen() {
   };
 
   const getActivityTitle = (accountId: string, entry: AccountActivityEntry) => {
+    if (entry.transaction.type === 'debt') {
+      const counterparty =
+        entry.transaction.counterparty ??
+        entry.transaction.merchant ??
+        entry.transaction.description.trim() ??
+        'Unknown';
+      return entry.transaction.debtDirection === 'borrowed'
+        ? `Borrowed from ${counterparty}`
+        : `Lent to ${counterparty}`;
+    }
+
+    if (entry.transaction.type === 'expense' && entry.transaction.debtPayment) {
+      const label = entry.transaction.description.trim();
+      return label ? `Debt payment: ${label}` : 'Debt payment';
+    }
+
     if (entry.transaction.type !== 'transfer') {
       return entry.transaction.description.trim() || entry.transaction.category.name;
     }
@@ -577,8 +815,12 @@ export default function AccountsScreen() {
       return theme.colors.success;
     }
 
+    if (entry.transaction.type === 'debt') {
+      return entry.direction === 'incoming' ? theme.colors.warning : theme.colors.error;
+    }
+
     if (entry.transaction.type === 'expense') {
-      return theme.colors.error;
+      return entry.transaction.debtPayment ? theme.colors.warning : theme.colors.error;
     }
 
     return entry.direction === 'incoming' ? theme.colors.success : theme.colors.warning;
@@ -708,30 +950,31 @@ export default function AccountsScreen() {
       </LinearGradient>
 
       <View style={[styles.actionPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
-        <Text style={[styles.actionPanelEyebrow, { color: theme.colors.primary }]}>Manage</Text>
-        <Text style={[styles.actionPanelTitle, { color: theme.colors.text }]}>Create and export accounts</Text>
+        <View style={styles.actionPanelHeader}>
+          <View style={styles.actionPanelTitleWrap}>
+            <Text style={[styles.actionPanelEyebrow, { color: theme.colors.primary }]}>Workspace</Text>
+            <Text style={[styles.actionPanelTitle, { color: theme.colors.text }]}>Manage accounts</Text>
+            <Text style={[styles.actionPanelMeta, { color: theme.colors.textSecondary }]}>Open new accounts, keep your account types organized, and export the full list when needed.</Text>
+          </View>
+          <View
+            style={[
+              styles.actionPanelBadge,
+              {
+                backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                borderColor: theme.colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.actionPanelBadgeValue, { color: theme.colors.text }]}>{orderedAccounts.length}</Text>
+            <Text style={[styles.actionPanelBadgeLabel, { color: theme.colors.textSecondary }]}>tracked</Text>
+          </View>
+        </View>
         <View style={styles.actionButtonsRow}>
           <TouchableOpacity style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]} onPress={() => openCreateAccount()}>
             <Plus size={18} color="white" />
             <View style={styles.actionButtonTextWrap}>
               <Text style={styles.primaryButtonText}>Add Account</Text>
               <Text style={styles.primaryButtonSubtext}>Checking, cash, credit, or investment</Text>
-            </View>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.secondaryButton,
-              {
-                backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
-                borderColor: theme.colors.border,
-              },
-            ]}
-            onPress={() => openCreateAccount('savings')}
-          >
-            <PiggyBank size={18} color="#16A34A" />
-            <View style={styles.actionButtonTextWrap}>
-              <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}>Add Savings</Text>
-              <Text style={[styles.secondaryButtonSubtext, { color: theme.colors.textSecondary }]}>Emergency and goal accounts</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -769,17 +1012,31 @@ export default function AccountsScreen() {
             </Text>
           </View>
         </TouchableOpacity>
+        <View style={styles.managementStatsRow}>
+          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.managementStatValue, { color: theme.colors.text }]}>{activeAccounts.length}</Text>
+            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Visible</Text>
+          </View>
+          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.managementStatValue, { color: theme.colors.primary }]}>{customAccountTypeCount}</Text>
+            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Custom Types</Text>
+          </View>
+          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
+            <Text style={[styles.managementStatValue, { color: theme.colors.error }]}>{debtPortfolioSummary.trackedPositions}</Text>
+            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Debt Records</Text>
+          </View>
+        </View>
         <Text style={[styles.actionNote, { color: theme.colors.textSecondary }]}> 
           {hiddenAccountsCount > 0
-            ? `${hiddenAccountsCount} account${hiddenAccountsCount === 1 ? '' : 's'} hidden from totals.`
-            : 'All accounts are currently included in totals.'}
+            ? `${hiddenAccountsCount} account${hiddenAccountsCount === 1 ? '' : 's'} hidden from totals. Sort keeps visible accounts first.`
+            : 'All accounts are currently included in totals and visible accounts always stay first.'}
         </Text>
       </View>
 
       {orderedAccounts.length > 0 ? (
         <View style={[styles.sortPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
           <View style={styles.sortPanelHeader}>
-            <Text style={[styles.sortPanelTitle, { color: theme.colors.text }]}>Sort Accounts</Text>
+            <Text style={[styles.sortPanelTitle, { color: theme.colors.text }]}>Organize Accounts</Text>
             <Text style={[styles.sortPanelMeta, { color: theme.colors.textSecondary }]}>Active accounts stay first</Text>
           </View>
           <View style={styles.sortChipsRow}>
@@ -814,6 +1071,36 @@ export default function AccountsScreen() {
               );
             })}
           </View>
+          <View style={styles.sortSummaryRow}>
+            <View
+              style={[
+                styles.sortSummaryPill,
+                {
+                  backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            >
+              <Text style={[styles.sortSummaryPillLabel, { color: theme.colors.textSecondary }]}>Current sort</Text>
+              <Text style={[styles.sortSummaryPillValue, { color: theme.colors.text }]}> 
+                {ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'A-Z'}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.sortSummaryPill,
+                {
+                  backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            >
+              <Text style={[styles.sortSummaryPillLabel, { color: theme.colors.textSecondary }]}>How it works</Text>
+              <Text style={[styles.sortSummaryPillValue, { color: theme.colors.text }]} numberOfLines={2}>
+                {sortModeDescription}
+              </Text>
+            </View>
+          </View>
         </View>
       ) : null}
 
@@ -836,9 +1123,11 @@ export default function AccountsScreen() {
                     {group.accounts.length} account{group.accounts.length === 1 ? '' : 's'}
                   </Text>
                   <Text style={[styles.groupPanelMeta, { color: theme.colors.textSecondary }]}>
-                    {group.accounts.some((account) => !account.isActive)
-                      ? `${group.accounts.filter((account) => !account.isActive).length} hidden from totals`
-                      : 'All accounts visible in totals'}
+                    {group.isLiability
+                      ? 'Credit and borrowing balances are shown as liabilities.'
+                      : group.accounts.some((account) => !account.isActive)
+                        ? `${group.accounts.filter((account) => !account.isActive).length} hidden from totals`
+                        : 'All accounts visible in totals'}
                   </Text>
                 </View>
                 <View
@@ -850,7 +1139,7 @@ export default function AccountsScreen() {
                     },
                   ]}
                 >
-                  <Text style={[styles.groupPanelTotalLabel, { color: theme.colors.textSecondary }]}>Group total</Text>
+                  <Text style={[styles.groupPanelTotalLabel, { color: theme.colors.textSecondary }]}>{group.isLiability ? 'Outstanding' : 'Group total'}</Text>
                                     <AdaptiveAmountText
                     style={[
                       styles.groupPanelTotalValue,
@@ -865,12 +1154,13 @@ export default function AccountsScreen() {
               <View style={styles.accountStack}>
                 {group.accounts.map((account) => {
                   const flow = getAccountFlow(account.id);
-                  const typeMeta = ACCOUNT_TYPE_OPTIONS.find((entry) => entry.type === account.type);
-                  const TypeIcon = typeMeta?.icon ?? Wallet;
-                  const accentColor = account.color ?? getDefaultAccountColor(account.type);
+                  const typeMeta = getAccountTypeDefinition(account.type, accountTypeDefinitions);
+                  const TypeIcon = getAccountTypeIcon(typeMeta.icon, typeMeta.type);
+                  const accountIsLiability = isLiabilityGroup(typeMeta.group);
+                  const accentColor = account.color ?? typeMeta.color ?? getDefaultAccountColor(account.type);
                   const transferNet = roundCurrency(flow.transfersIn - flow.transfersOut);
-                  const inflowTotal = roundCurrency(flow.income + flow.transfersIn);
-                  const outflowTotal = roundCurrency(flow.expenses + flow.transfersOut);
+                  const debtNet = roundCurrency(flow.debtIn - flow.debtOut - flow.debtPayments);
+                  const displayBalance = getDisplayAccountBalance(account.balance, accountIsLiability);
 
                   return (
                     <TouchableOpacity
@@ -903,8 +1193,8 @@ export default function AccountsScreen() {
                             </View>
                             <View style={styles.accountMeta}>
                               <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
-                              <Text style={[styles.accountDescription, { color: theme.colors.textSecondary }]}> 
-                                {typeMeta?.description ?? 'Track this account balance over time.'}
+                              <Text style={[styles.accountDescription, { color: theme.colors.textSecondary }]}>
+                                {typeMeta.description ?? 'Track this account balance over time.'}
                               </Text>
                               <View style={styles.accountTagRow}>
                                 <View
@@ -914,9 +1204,30 @@ export default function AccountsScreen() {
                                   ]}
                                 >
                                   <Text style={[styles.accountTypeChipText, { color: accentColor }]}>
-                                    {typeMeta?.label ?? account.type}
+                                    {typeMeta.label ?? account.type}
                                   </Text>
                                 </View>
+                                <View
+                                  style={[
+                                    styles.hiddenPill,
+                                    {
+                                      backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
+                                      borderColor: theme.colors.border,
+                                      borderWidth: 1,
+                                    },
+                                  ]}
+                                >
+                                  <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}> 
+                                    {flow.transactions.length === 0
+                                      ? 'No activity'
+                                      : `${flow.transactions.length} ${flow.transactions.length === 1 ? 'entry' : 'entries'}`}
+                                  </Text>
+                                </View>
+                                {typeMeta.isCustom ? (
+                                  <View style={[styles.hiddenPill, { backgroundColor: withAlphaColor(accentColor, theme.isDark ? '20' : '10') }]}>
+                                    <Text style={[styles.hiddenPillText, { color: accentColor }]}>Custom</Text>
+                                  </View>
+                                ) : null}
                                 {!account.isActive ? (
                                   <View style={[styles.hiddenPill, { backgroundColor: theme.colors.border }]}> 
                                     <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}>Hidden</Text>
@@ -961,14 +1272,16 @@ export default function AccountsScreen() {
                         </View>
 
                         <View style={styles.accountBalanceRow}>
-                          <Text style={[styles.accountBalanceLabel, { color: theme.colors.textSecondary }]}>Available balance</Text>
-                                                    <AdaptiveAmountText
+                          <Text style={[styles.accountBalanceLabel, { color: theme.colors.textSecondary }]}>
+                            {accountIsLiability ? 'Outstanding balance' : 'Available balance'}
+                          </Text>
+                          <AdaptiveAmountText
                             style={[
                               styles.balance,
-                              { color: account.balance < 0 ? theme.colors.error : theme.colors.text },
+                              { color: accountIsLiability || displayBalance < 0 ? theme.colors.error : theme.colors.text },
                             ]}
                             minFontSize={18}
-                            value={formatCurrency(account.balance)}
+                            value={formatCurrency(displayBalance)}
                           />
                         </View>
 
@@ -982,8 +1295,8 @@ export default function AccountsScreen() {
                               },
                             ]}
                           >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Received</Text>
-                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.success }]} minFontSize={10} value={formatCurrency(inflowTotal)} />
+                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.success }]} minFontSize={10} value={formatCurrency(flow.income)} />
                           </View>
                           <View
                             style={[
@@ -994,8 +1307,8 @@ export default function AccountsScreen() {
                               },
                             ]}
                           >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Spent</Text>
-                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.error }]} minFontSize={10} value={formatCurrency(outflowTotal)} />
+                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.error }]} minFontSize={10} value={formatCurrency(flow.expenses)} />
                           </View>
                           <View
                             style={[
@@ -1006,8 +1319,8 @@ export default function AccountsScreen() {
                               },
                             ]}
                           >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Net transfers</Text>
-                                                        <AdaptiveAmountText
+                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
+                            <AdaptiveAmountText
                               style={[
                                 styles.accountStatValue,
                                 { color: transferNet >= 0 ? theme.colors.success : theme.colors.warning },
@@ -1016,11 +1329,32 @@ export default function AccountsScreen() {
                               value={formatSignedCurrency(formatCurrency, transferNet)}
                             />
                           </View>
+                          <View
+                            style={[
+                              styles.accountStatChip,
+                              {
+                                backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
+                                borderColor: theme.colors.border,
+                              },
+                            ]}
+                          >
+                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+                            <AdaptiveAmountText
+                              style={[
+                                styles.accountStatValue,
+                                { color: debtNet === 0 ? theme.colors.textSecondary : debtNet > 0 ? theme.colors.warning : theme.colors.error },
+                              ]}
+                              minFontSize={10}
+                              value={formatSignedCurrency(formatCurrency, debtNet)}
+                            />
+                          </View>
                         </View>
 
                         <View style={[styles.accountFooterRow, { borderTopColor: theme.colors.border }]}> 
                           <Text style={[styles.accountFooterText, { color: theme.colors.textSecondary }]}>
-                            {account.isActive ? 'Included in portfolio totals' : 'Hidden from portfolio totals'}
+                            {account.isActive
+                              ? `Opened ${formatDateWithWeekday(account.createdAt)}`
+                              : `Hidden from totals - Opened ${formatDateWithWeekday(account.createdAt)}`}
                           </Text>
                           <View style={styles.accountFooterLink}>
                             <Text style={[styles.accountFooterLinkText, { color: accentColor }]}>Open details</Text>
@@ -1080,37 +1414,51 @@ export default function AccountsScreen() {
                     <Text style={[styles.detailType, { color: theme.colors.textSecondary }]}>
                       {detailTypeMeta?.label ?? detailAccount.type}
                     </Text>
-                                        <AdaptiveAmountText
-                      style={[styles.detailBalance, { color: theme.colors.text }]}
+                    <AdaptiveAmountText
+                      style={[
+                        styles.detailBalance,
+                        { color: detailIsLiability ? theme.colors.error : theme.colors.text },
+                      ]}
                       minFontSize={18}
-                      value={formatCurrency(detailAccount.balance)}
+                      value={formatCurrency(getDisplayAccountBalance(detailAccount.balance, detailIsLiability))}
                     />
                     <View style={styles.detailStatsRow}>
                       <View style={styles.detailStat}>
                         <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                                                <AdaptiveAmountText
+                        <AdaptiveAmountText
                           style={[styles.detailStatValue, { color: theme.colors.success }]}
                           minFontSize={11}
                           value={'+'.concat(formatCurrency(detailFlow.income))}
                         />
                       </View>
                       <View style={styles.detailStat}>
-                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Expense</Text>
-                                                <AdaptiveAmountText
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                        <AdaptiveAmountText
                           style={[styles.detailStatValue, { color: theme.colors.error }]}
                           minFontSize={11}
                           value={'-'.concat(formatCurrency(detailFlow.expenses))}
                         />
                       </View>
                       <View style={styles.detailStat}>
-                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Net transfers</Text>
-                                                <AdaptiveAmountText
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
+                        <AdaptiveAmountText
                           style={[
                             styles.detailStatValue,
                             { color: detailNetTransfers >= 0 ? theme.colors.success : theme.colors.warning },
                           ]}
                           minFontSize={11}
                           value={formatSignedCurrency(formatCurrency, detailNetTransfers)}
+                        />
+                      </View>
+                      <View style={styles.detailStat}>
+                        <Text style={[styles.detailStatLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+                        <AdaptiveAmountText
+                          style={[
+                            styles.detailStatValue,
+                            { color: detailDebtNet === 0 ? theme.colors.textSecondary : detailDebtNet > 0 ? theme.colors.warning : theme.colors.error },
+                          ]}
+                          minFontSize={11}
+                          value={formatSignedCurrency(formatCurrency, detailDebtNet)}
                         />
                       </View>
                     </View>
@@ -1169,6 +1517,12 @@ export default function AccountsScreen() {
             </TouchableOpacity>
           </View>
 
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={styles.modalScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
           <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>Account Name</Text>
           <TextInput
             style={[styles.input, { backgroundColor: theme.colors.surface, color: theme.colors.text, borderColor: theme.colors.border }]}
@@ -1231,9 +1585,33 @@ export default function AccountsScreen() {
           )}
 
           <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>Account Type</Text>
+          <Text style={[styles.typeHelperText, { color: theme.colors.textSecondary }]}>Choose a built-in type or save one that fits your own setup.</Text>
+          <View style={styles.groupRow}>
+            {ACCOUNT_TYPE_GROUPS.map((group) => {
+              const isSelected = selectedTypeGroup === group.key;
+              return (
+                <TouchableOpacity
+                  key={group.key}
+                  activeOpacity={0.88}
+                  onPress={() => handleSelectTypeGroup(group.key)}
+                  style={[
+                    styles.groupChip,
+                    {
+                      backgroundColor: isSelected ? theme.colors.primary : theme.colors.surface,
+                      borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.groupChipText, { color: isSelected ? '#FFFFFF' : theme.colors.text }]}>
+                    {group.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
           <View style={styles.typeGrid}>
-            {ACCOUNT_TYPE_OPTIONS.map((entry) => {
-              const Icon = entry.icon;
+            {typeOptionsForSelectedGroup.map((entry) => {
+              const Icon = getAccountTypeIcon(entry.icon, entry.type);
               const isSelected = type === entry.type;
               return (
                 <TouchableOpacity
@@ -1245,16 +1623,45 @@ export default function AccountsScreen() {
                       borderColor: isSelected ? theme.colors.primary : theme.colors.border,
                     },
                   ]}
-                  onPress={() => setType(entry.type)}
+                  onPress={() => handleSelectType(entry.type)}
                 >
-                  <View style={[styles.typeIconWrap, { backgroundColor: isSelected ? theme.colors.primary + '18' : theme.colors.background }]}> 
-                    <Icon size={18} color={isSelected ? theme.colors.primary : theme.colors.textSecondary} />
+                  <View style={[styles.typeIconWrap, { backgroundColor: isSelected ? theme.colors.primary + '18' : theme.colors.background }]}>
+                    <Icon size={18} color={isSelected ? theme.colors.primary : entry.color} />
                   </View>
                   <Text style={[styles.typeCardTitle, { color: isSelected ? theme.colors.primary : theme.colors.text }]}>{entry.label}</Text>
                   <Text style={[styles.typeCardDescription, { color: theme.colors.textSecondary }]}>{entry.description}</Text>
                 </TouchableOpacity>
               );
             })}
+          </View>
+          <View style={[styles.customTypePanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+            <Text style={[styles.customTypeTitle, { color: theme.colors.text }]}>Need another type?</Text>
+            <Text style={[styles.customTypeText, { color: theme.colors.textSecondary }]}>Save your own account type once and reuse it any time.</Text>
+            <TextInput
+              style={[
+                styles.input,
+                styles.customTypeInput,
+                { backgroundColor: theme.colors.background, borderColor: theme.colors.border, color: theme.colors.text },
+              ]}
+              value={customTypeDraft}
+              onChangeText={setCustomTypeDraft}
+              placeholder="Custom account type"
+              placeholderTextColor={theme.colors.textSecondary}
+              autoCapitalize="words"
+            />
+            <TouchableOpacity
+              style={[
+                styles.customTypeButton,
+                { backgroundColor: customTypeDraft.trim() ? theme.colors.primary : theme.colors.border },
+              ]}
+              activeOpacity={0.88}
+              onPress={handleSaveCustomType}
+              disabled={!customTypeDraft.trim()}
+            >
+              <Plus size={16} color="#FFFFFF" />
+              <Text style={styles.customTypeButtonText}>Add Type</Text>
+            </TouchableOpacity>
+            <Text style={[styles.formHint, { color: theme.colors.textSecondary }]}>Saved types: {builtInAccountTypeCount} built-in, {customAccountTypeCount} custom.</Text>
           </View>
 
           <Text style={[styles.sectionLabel, { color: theme.colors.textSecondary }]}>Account Color</Text>
@@ -1292,6 +1699,7 @@ export default function AccountsScreen() {
               thumbColor={'#ffffff'}
             />
           </View>
+          </ScrollView>
         </View>
       </Modal>
     </ScrollView>
@@ -1414,6 +1822,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 18,
   },
+  actionPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  actionPanelTitleWrap: {
+    flex: 1,
+  },
   actionPanelEyebrow: {
     fontSize: 11,
     fontWeight: '800',
@@ -1424,6 +1841,31 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
     marginTop: 6,
+  },
+  actionPanelMeta: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+    maxWidth: 320,
+  },
+  actionPanelBadge: {
+    minWidth: 82,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  actionPanelBadgeValue: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  actionPanelBadgeLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 2,
   },
   actionButtonsRow: {
     flexDirection: 'row',
@@ -1496,6 +1938,31 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 12,
   },
+  managementStatsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  managementStatCard: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+  },
+  managementStatValue: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  managementStatLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 4,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
   sortPanel: {
     marginHorizontal: 16,
     marginBottom: 16,
@@ -1525,11 +1992,35 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 14,
   },
+  sortSummaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  sortSummaryPill: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  sortSummaryPillLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  sortSummaryPillValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+    marginTop: 5,
+  },
   sortChip: {
-    minWidth: 82,
+    minWidth: 72,
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1734,11 +2225,11 @@ const styles = StyleSheet.create({
   },
   accountStatChip: {
     flexGrow: 1,
-    flexBasis: '30%',
+    flexBasis: '47%',
     borderRadius: 16,
     borderWidth: 1,
     padding: 10,
-    minWidth: 90,
+    minWidth: 120,
   },
   accountStatLabel: {
     fontSize: 10,
@@ -1815,8 +2306,8 @@ const styles = StyleSheet.create({
   detailName: { fontSize: 20, fontWeight: '700' },
   detailType: { fontSize: 12, textTransform: 'capitalize', marginTop: 4 },
   detailBalance: { fontSize: 28, fontWeight: '800', marginTop: 12, marginBottom: 12 },
-  detailStatsRow: { flexDirection: 'row', gap: 12 },
-  detailStat: { flex: 1 },
+  detailStatsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  detailStat: { flexBasis: '47%', flexGrow: 1 },
   detailStatLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 4 },
   detailStatValue: { fontSize: 14, fontWeight: '700' },
   detailSectionTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
@@ -1851,6 +2342,67 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 8,
     lineHeight: 18,
+  },
+  modalScroll: {
+    flex: 1,
+    marginTop: 4,
+  },
+  modalScrollContent: {
+    paddingBottom: 24,
+  },
+  typeHelperText: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  groupRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  groupChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  groupChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  customTypePanel: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  customTypeTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  customTypeText: {
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  customTypeInput: {
+    marginTop: 12,
+  },
+  customTypeButton: {
+    marginTop: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  customTypeButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
   },
   colorRow: {
     flexDirection: 'row',
@@ -1933,6 +2485,11 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 });
+
+
+
+
+
 
 
 

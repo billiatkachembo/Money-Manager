@@ -25,6 +25,10 @@ export interface Theme {
   isDark: boolean;
 }
 
+export type ThemeMode = 'system' | 'light' | 'dark';
+
+const THEME_PREFERENCE_KEY = 'theme_preference';
+
 const lightTheme: Theme = {
   isDark: false,
   colors: {
@@ -65,11 +69,24 @@ const darkTheme: Theme = {
   },
 };
 
+function resolveSystemTheme(colorScheme: ColorSchemeName): 'light' | 'dark' {
+  return colorScheme === 'dark' ? 'dark' : 'light';
+}
+
+function parseThemeMode(value: unknown): ThemeMode | null {
+  if (value === 'system' || value === 'light' || value === 'dark') {
+    return value;
+  }
+
+  return null;
+}
+
 export const [ThemeProvider, useTheme] = createContextHook(() => {
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
-  const [systemTheme, setSystemTheme] = useState<ColorSchemeName>(
-    Appearance.getColorScheme()
-  );
+  const [themeMode, setThemeModeState] = useState<ThemeMode>('system');
+  const [systemTheme, setSystemTheme] = useState<ColorSchemeName>(Appearance.getColorScheme());
+
+  const resolvedThemeMode = themeMode === 'system' ? resolveSystemTheme(systemTheme) : themeMode;
+  const isDarkMode = resolvedThemeMode === 'dark';
 
   const theme = useMemo(() => {
     return isDarkMode ? darkTheme : lightTheme;
@@ -77,41 +94,57 @@ export const [ThemeProvider, useTheme] = createContextHook(() => {
 
   const loadThemePreference = useCallback(async () => {
     try {
-      const savedTheme = await AsyncStorage.getItem('theme_preference');
-      if (savedTheme) {
-        const parsed = JSON.parse(savedTheme);
-        setIsDarkMode(parsed.isDarkMode);
-      } else {
-        // Use system theme as default
-        setIsDarkMode(systemTheme === 'dark');
+      const savedTheme = await AsyncStorage.getItem(THEME_PREFERENCE_KEY);
+      if (!savedTheme) {
+        setThemeModeState('system');
+        return;
       }
+
+      const parsed = JSON.parse(savedTheme);
+      const savedThemeMode = parseThemeMode(parsed?.themeMode);
+      if (savedThemeMode) {
+        setThemeModeState(savedThemeMode);
+        return;
+      }
+
+      if (typeof parsed?.isDarkMode === 'boolean') {
+        setThemeModeState(parsed.isDarkMode ? 'dark' : 'light');
+        return;
+      }
+
+      setThemeModeState('system');
     } catch (error) {
       console.error('Failed to load theme preference:', error);
-      setIsDarkMode(systemTheme === 'dark');
+      setThemeModeState('system');
     }
-  }, [systemTheme]);
+  }, []);
 
-  const saveThemePreference = useCallback(async (darkMode: boolean) => {
+  const saveThemePreference = useCallback(async (mode: ThemeMode) => {
     try {
-      await AsyncStorage.setItem('theme_preference', JSON.stringify({
-        isDarkMode: darkMode,
-        lastUpdated: new Date().toISOString(),
-      }));
+      await AsyncStorage.setItem(
+        THEME_PREFERENCE_KEY,
+        JSON.stringify({
+          themeMode: mode,
+          lastUpdated: new Date().toISOString(),
+        })
+      );
     } catch (error) {
       console.error('Failed to save theme preference:', error);
     }
   }, []);
 
+  const setThemeMode = useCallback((mode: ThemeMode) => {
+    setThemeModeState(mode);
+    saveThemePreference(mode);
+  }, [saveThemePreference]);
+
   const toggleTheme = useCallback(() => {
-    const newDarkMode = !isDarkMode;
-    setIsDarkMode(newDarkMode);
-    saveThemePreference(newDarkMode);
-  }, [isDarkMode, saveThemePreference]);
+    setThemeMode(isDarkMode ? 'light' : 'dark');
+  }, [isDarkMode, setThemeMode]);
 
   const setTheme = useCallback((darkMode: boolean) => {
-    setIsDarkMode(darkMode);
-    saveThemePreference(darkMode);
-  }, [saveThemePreference]);
+    setThemeMode(darkMode ? 'dark' : 'light');
+  }, [setThemeMode]);
 
   useEffect(() => {
     loadThemePreference();
@@ -127,9 +160,11 @@ export const [ThemeProvider, useTheme] = createContextHook(() => {
 
   return useMemo(() => ({
     theme,
+    themeMode,
     isDarkMode,
     systemTheme,
     toggleTheme,
     setTheme,
-  }), [theme, isDarkMode, systemTheme, toggleTheme, setTheme]);
+    setThemeMode,
+  }), [theme, themeMode, isDarkMode, systemTheme, toggleTheme, setTheme, setThemeMode]);
 });

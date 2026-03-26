@@ -7,6 +7,14 @@ import {
 import { InsightContext } from './insights';
 import { computeBudgetSpendingForDate, getActiveBudgets } from './budgeting';
 import { deriveAccountBalance, roundCurrency } from './ledger';
+import { getAccountTypeDefinition } from '../../constants/account-types';
+import { computeDebtPortfolioTotals } from './debt-portfolio';
+
+const APP_SHORT_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+function formatShortMonthLabel(date: Date): string {
+  return APP_SHORT_MONTH_LABELS[date.getMonth()] ?? '';
+}
 
 export interface MonthlySummary {
   month: string;
@@ -244,7 +252,13 @@ function computePositiveNetStreak(monthly: MonthlySummary[]): number {
 
 function computeLiquidBalance(accounts: Account[]): number {
   return accounts
-    .filter((account) => account.type !== 'credit' && account.isActive !== false)
+    .filter((account) => {
+      if (account.isActive === false) {
+        return false;
+      }
+      const group = getAccountTypeDefinition(account.type).group;
+      return group === 'cash_bank' || group === 'savings';
+    })
     .reduce((sum, account) => sum + Math.max(0, account.balance), 0);
 }
 
@@ -260,7 +274,7 @@ export function computeNetWorthProgress(
   const monthKeys = buildMonthWindow(safeMonths, referenceDate);
   const labels = monthKeys.map((key) => {
     const { year, month } = parseMonthKey(key);
-    return new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'short' });
+    return formatShortMonthLabel(new Date(year, month - 1, 1));
   });
 
   const orderedTransactions = [...transactions].sort((left, right) => left.date.getTime() - right.date.getTime());
@@ -292,6 +306,10 @@ export function computeNetWorthProgress(
         liabilities += Math.abs(balance);
       }
     }
+
+    const debtPortfolio = computeDebtPortfolioTotals(accounts, scopedTransactions);
+    assets += debtPortfolio.lentOutstanding;
+    liabilities += debtPortfolio.borrowedOutstanding;
 
     assets = roundCurrency(assets);
     liabilities = roundCurrency(liabilities);

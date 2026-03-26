@@ -1,4 +1,4 @@
-﻿export type TransactionType = 'income' | 'expense' | 'transfer' | 'debt';
+export type TransactionType = 'income' | 'expense' | 'transfer' | 'debt';
 
 export type RecurringFrequency = 'daily' | 'weekly' | 'monthly' | 'yearly';
 
@@ -90,10 +90,67 @@ export interface BudgetAlert {
   isRead: boolean;
 }
 
+export type BuiltInAccountType =
+  | 'checking'
+  | 'current_account'
+  | 'savings'
+  | 'credit'
+  | 'investment'
+  | 'cash'
+  | 'prepaid_card'
+  | 'e_wallet'
+  | 'merchant_till'
+  | 'mobile_money'
+  | 'loan'
+  | 'mortgage'
+  | 'overdraft'
+  | 'buy_now_pay_later'
+  | 'fixed_deposit'
+  | 'money_market'
+  | 'sacco'
+  | 'retirement'
+  | 'brokerage'
+  | 'crypto_wallet'
+  | 'unit_trust'
+  | 'business'
+  | 'accounts_receivable'
+  | 'insurance'
+  | 'other';
+
+export type AccountType = BuiltInAccountType | (string & {});
+
+export type AccountTypeGroup =
+  | 'cash_bank'
+  | 'savings'
+  | 'credit'
+  | 'investment'
+  | 'business'
+  | 'other';
+
+export interface AccountTypeDefinition {
+  type: AccountType;
+  label: string;
+  description: string;
+  group: AccountTypeGroup;
+  icon: string;
+  color: string;
+  isCustom?: boolean;
+}
+
+export interface CustomAccountType {
+  type: AccountType;
+  label: string;
+  description: string;
+  group: AccountTypeGroup;
+  icon: string;
+  color: string;
+  createdAt: Date;
+}
+
 export interface Account {
   id: string;
   name: string;
-  type: 'checking' | 'savings' | 'credit' | 'investment' | 'cash';
+  type: AccountType;
   // Cached only. Transaction ledger remains source of truth.
   balance: number;
   currency: string;
@@ -212,5 +269,6 @@ export interface SeasonalFarmSummary {
   farmProfit: number;
   costBreakdown: FarmCategoryBreakdown[];
 }
+
 
 

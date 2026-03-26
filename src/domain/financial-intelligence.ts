@@ -1,5 +1,8 @@
-﻿import { Budget, DebtAccount, Insight, Transaction } from '../../types/transaction';
+import { Account, Budget, DebtAccount, Insight, Transaction } from '../../types/transaction';
+import { getAccountTypeDefinition } from '../../constants/account-types';
+import { formatDateDDMMYYYY } from '../../utils/date';
 import { roundCurrency } from './ledger';
+import { computeDebtPortfolioTotals } from './debt-portfolio';
 
 export interface BudgetSuggestion {
   categoryId: string;
@@ -21,6 +24,7 @@ export interface CashflowRunway {
   daysUntilEmpty: number | null;
   remainingDaysInMonth: number;
   willRunOut: boolean;
+  projectedRunOutDate: Date | null;
 }
 
 export interface NetWorthSimulationPoint {
@@ -98,6 +102,42 @@ function standardDeviation(values: number[]): number {
   const mean = average(values);
   const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
   return Math.sqrt(variance);
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function addDaysToDate(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days, date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds());
+}
+
+function getDaysInMonth(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+}
+
+function normalizePartialMonthTotal(total: number, bucketMonth: string, referenceDate: Date): number {
+  if (bucketMonth != monthKey(referenceDate)) {
+    return total;
+  }
+
+  const daysElapsed = Math.max(1, referenceDate.getDate());
+  const daysInMonth = getDaysInMonth(referenceDate);
+  const progress = Math.min(1, daysElapsed / daysInMonth);
+  return progress >= 1 ? total : total / progress;
+}
+
+function isLiquidAccount(account: Account): boolean {
+  const definition = getAccountTypeDefinition(account.type);
+  return definition.group === 'cash_bank' || definition.group === 'savings';
+}
+
+function computeLiquidBalanceFromAccounts(accounts: Account[]): number {
+  return roundCurrency(
+    accounts
+      .filter((account) => account.isActive !== false && isLiquidAccount(account))
+      .reduce((sum, account) => sum + Math.max(0, Number(account.balance ?? 0)), 0)
+  );
 }
 
 function resolveBudgetForCategory(budgets: Budget[], categoryId: string): Budget | undefined {
@@ -193,9 +233,17 @@ function computeRecentMonthlySnapshot(
     return null;
   }
 
+  const normalizedTotals = totals.map((entry, index) => {
+    const bucketMonth = monthWindow[index] ?? monthKey(referenceDate);
+    return {
+      income: normalizePartialMonthTotal(entry.income, bucketMonth, referenceDate),
+      expenses: normalizePartialMonthTotal(entry.expenses, bucketMonth, referenceDate),
+    };
+  });
+
   const divisor = monthWindow.length;
-  const income = totals.reduce((sum, entry) => sum + entry.income, 0) / divisor;
-  const expenses = totals.reduce((sum, entry) => sum + entry.expenses, 0) / divisor;
+  const income = normalizedTotals.reduce((sum, entry) => sum + entry.income, 0) / divisor;
+  const expenses = normalizedTotals.reduce((sum, entry) => sum + entry.expenses, 0) / divisor;
 
   return {
     averageIncome: roundCurrency(income),
@@ -334,18 +382,24 @@ export function computeCashflowRunway(
   monthlyExpenses: number,
   referenceDate: Date = new Date()
 ): CashflowRunway {
+  const safeBalance = Math.max(0, roundCurrency(balance));
+  const safeMonthlyExpenses = Math.max(0, roundCurrency(monthlyExpenses));
   const daysInMonth = new Date(referenceDate.getFullYear(), referenceDate.getMonth() + 1, 0).getDate();
-  const daysPassed = Math.max(1, referenceDate.getDate());
   const remainingDays = Math.max(daysInMonth - referenceDate.getDate() + 1, 1);
-  const dailyBurnRate = monthlyExpenses > 0 ? monthlyExpenses / daysPassed : 0;
-  const daysUntilEmpty = dailyBurnRate > 0 ? balance / dailyBurnRate : null;
-  const willRunOut = daysUntilEmpty !== null ? daysUntilEmpty < remainingDays : false;
+  const dailyBurnRate = safeMonthlyExpenses > 0 ? safeMonthlyExpenses / daysInMonth : 0;
+  const rawDaysUntilEmpty = dailyBurnRate > 0 ? safeBalance / dailyBurnRate : null;
+  const daysUntilEmpty = rawDaysUntilEmpty !== null ? roundCurrency(rawDaysUntilEmpty) : null;
+  const projectedRunOutDate = rawDaysUntilEmpty !== null
+    ? addDaysToDate(startOfDay(referenceDate), Math.max(0, Math.ceil(rawDaysUntilEmpty) - 1))
+    : null;
+  const willRunOut = rawDaysUntilEmpty !== null ? rawDaysUntilEmpty < remainingDays : false;
 
   return {
     dailyBurnRate: roundCurrency(dailyBurnRate),
-    daysUntilEmpty: daysUntilEmpty !== null ? roundCurrency(daysUntilEmpty) : null,
+    daysUntilEmpty,
     remainingDaysInMonth: remainingDays,
     willRunOut,
+    projectedRunOutDate,
   };
 }
 
@@ -427,7 +481,18 @@ export function computeWealthMilestones(
   const sorted = milestones.slice().sort((a, b) => a - b);
   const achieved = sorted.filter((value) => currentNetWorth >= value);
   const nextMilestone = sorted.find((value) => value > currentNetWorth) ?? null;
-  const progressRatio = nextMilestone ? Math.min(1, currentNetWorth / nextMilestone) : 1;
+  const previousMilestone = nextMilestone
+    ? sorted
+        .slice()
+        .reverse()
+        .find((value) => value <= currentNetWorth) ?? 0
+    : sorted[sorted.length - 1] ?? 0;
+  const span = nextMilestone !== null ? nextMilestone - previousMilestone : 0;
+  const progressRatio = nextMilestone !== null
+    ? span > 0
+      ? Math.min(1, Math.max(0, (currentNetWorth - previousMilestone) / span))
+      : Math.min(1, Math.max(0, currentNetWorth / nextMilestone))
+    : 1;
   const monthsToTarget = nextMilestone
     ? estimateMonthsToTarget(currentNetWorth, nextMilestone, monthlySavings, annualReturn)
     : null;
@@ -468,6 +533,41 @@ function buildDebtInputs(
     });
 
   return { debts, extraPayment: Math.max(0, extraPayment) };
+}
+
+function applyDebtRepaymentsToDebtAccounts(
+  debtAccounts: DebtAccount[],
+  totalRepayments: number
+): DebtAccount[] {
+  const safeRepayments = Math.max(0, roundCurrency(totalRepayments));
+  if (safeRepayments <= 0) {
+    return debtAccounts;
+  }
+
+  const borrowedAccounts = debtAccounts.filter((account) => account.direction === 'borrowed' && account.balance > 0);
+  const totalBorrowed = borrowedAccounts.reduce((sum, account) => sum + account.balance, 0);
+  if (totalBorrowed <= 0) {
+    return debtAccounts;
+  }
+
+  let remainingReduction = Math.min(safeRepayments, totalBorrowed);
+  const balances = new Map<string, number>();
+
+  borrowedAccounts.forEach((account, index) => {
+    const isLast = index === borrowedAccounts.length - 1;
+    const proportionalReduction = isLast
+      ? remainingReduction
+      : roundCurrency(safeRepayments * (account.balance / totalBorrowed));
+    const reduction = Math.min(account.balance, remainingReduction, Math.max(0, proportionalReduction));
+    balances.set(account.id, roundCurrency(account.balance - reduction));
+    remainingReduction = roundCurrency(Math.max(0, remainingReduction - reduction));
+  });
+
+  return debtAccounts.map((account) => (
+    account.direction === 'borrowed' && balances.has(account.id)
+      ? { ...account, balance: balances.get(account.id) ?? account.balance }
+      : account
+  ));
 }
 
 function simulateDebtPayoff(
@@ -584,7 +684,7 @@ export function buildFinancialIntelligenceInsights(params: {
     insights.push({
       id: 'cashflow-runout',
       title: 'Cashflow runway',
-      message: `At this pace, your balance could run out in ${days} days.`,
+      message: `At your recent expense pace, your liquid balance could run out in ${days} days${params.cashflowRunway.projectedRunOutDate ? `, around ${formatDateDDMMYYYY(params.cashflowRunway.projectedRunOutDate)}` : ''}.`,
       severity: 'warning',
       confidence: 0.8,
     });
@@ -628,6 +728,7 @@ export function buildFinancialIntelligenceInsights(params: {
 
 export function computeFinancialIntelligence(params: {
   transactions: Transaction[];
+  accounts: Account[];
   budgets: Budget[];
   debtAccounts: DebtAccount[];
   netBalance: number;
@@ -646,22 +747,28 @@ export function computeFinancialIntelligence(params: {
   const annualReturn = 0.05;
 
   const budgetSuggestions = computeBudgetSuggestions(params.transactions, params.budgets, 6, referenceDate);
-  const cashflowRunway = computeCashflowRunway(params.netBalance, params.monthlyExpenses, referenceDate);
+  const liquidBalance = computeLiquidBalanceFromAccounts(params.accounts);
+  const debtPortfolio = computeDebtPortfolioTotals(params.accounts, params.transactions);
+  const effectiveNetWorth = roundCurrency(params.netBalance + debtPortfolio.lentOutstanding - debtPortfolio.borrowedOutstanding);
+  const cashflowRunway = computeCashflowRunway(liquidBalance, baselineMonthlyExpenses, referenceDate);
   const netWorthSimulation = simulateNetWorthGrowth({
-    currentNetWorth: params.netBalance,
+    currentNetWorth: effectiveNetWorth,
     monthlySavings,
     annualReturn,
     years: 10,
   });
-  const debtPayoff = computeDebtPayoffPlan(params.debtAccounts, {
-    defaultAnnualRate: params.averageDebtInterestRate ?? 0.18,
-    extraPayment: Math.max(0, monthlySavings),
-  });
+  const debtPayoff = computeDebtPayoffPlan(
+    applyDebtRepaymentsToDebtAccounts(params.debtAccounts, debtPortfolio.debtRepayments),
+    {
+      defaultAnnualRate: params.averageDebtInterestRate ?? 0.18,
+      extraPayment: Math.max(0, monthlySavings),
+    }
+  );
   const milestones = computeWealthMilestones(
-    params.netBalance,
+    effectiveNetWorth,
     monthlySavings,
-    annualReturn,
-    buildWealthMilestoneLadder(params.netBalance, baselineMonthlyIncome, baselineMonthlyExpenses)
+    0,
+    buildWealthMilestoneLadder(effectiveNetWorth, baselineMonthlyIncome, baselineMonthlyExpenses)
   );
 
   const hasTransactions = params.transactions.length > 0;
@@ -685,6 +792,7 @@ export function computeFinancialIntelligence(params: {
     insights,
   };
 }
+
 
 
 

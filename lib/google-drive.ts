@@ -22,6 +22,7 @@ const FOLDER_ID_KEY = 'googleDriveFolderId';
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+const BACKUP_FILE_PREFIXES = ['money-manager-drive-backup', 'money-manager-backup'];
 
 export async function loadDriveAuth(): Promise<DriveAuthState | null> {
   const accessToken = await SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
@@ -130,6 +131,25 @@ async function findFolder(accessToken: string, name: string): Promise<DriveFile 
   return result.files?.[0] ?? null;
 }
 
+async function resolveStoredFolder(accessToken: string, folderId: string): Promise<DriveFile | null> {
+  try {
+    const url = `${DRIVE_API_BASE}/files/${folderId}?fields=id,name,mimeType,trashed`;
+    const folder = await driveFetch<DriveFile & { mimeType?: string; trashed?: boolean }>(url, accessToken);
+    if (folder.mimeType !== DRIVE_FOLDER_MIME || folder.trashed) {
+      return null;
+    }
+    return folder;
+  } catch (error) {
+    if (error instanceof Error) {
+      const message = error.message.toLowerCase();
+      if (message.includes('file not found') || message.includes('not found') || message.includes('insufficient file permissions')) {
+        return null;
+      }
+    }
+    throw error;
+  }
+}
+
 async function createFolder(accessToken: string, name: string): Promise<DriveFile> {
   const payload = {
     name,
@@ -146,7 +166,11 @@ async function createFolder(accessToken: string, name: string): Promise<DriveFil
 export async function getOrCreateBackupFolder(accessToken: string, name: string): Promise<string> {
   const storedId = await SecureStore.getItemAsync(FOLDER_ID_KEY);
   if (storedId) {
-    return storedId;
+    const storedFolder = await resolveStoredFolder(accessToken, storedId);
+    if (storedFolder?.id) {
+      return storedFolder.id;
+    }
+    await SecureStore.deleteItemAsync(FOLDER_ID_KEY);
   }
 
   const existing = await findFolder(accessToken, name);
@@ -196,9 +220,12 @@ export async function uploadBackupFile(
 }
 
 export async function listBackupFiles(accessToken: string, folderId?: string): Promise<DriveFile[]> {
-  const baseQuery = "mimeType='application/json' and trashed=false and name contains 'money-manager-drive-backup'";
+  const prefixQuery = BACKUP_FILE_PREFIXES
+    .map((prefix) => `name contains '${prefix}'`)
+    .join(' or ');
+  const baseQuery = `mimeType='application/json' and trashed=false and (${prefixQuery})`;
   const query = folderId ? `${baseQuery} and '${folderId}' in parents` : baseQuery;
-  const url = `${DRIVE_API_BASE}/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime,size)`;
+  const url = `${DRIVE_API_BASE}/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc,createdTime desc&pageSize=25&fields=files(id,name,modifiedTime,createdTime,size)`;
   const result = await driveFetch<{ files?: DriveFile[] }>(url, accessToken);
   return result.files ?? [];
 }

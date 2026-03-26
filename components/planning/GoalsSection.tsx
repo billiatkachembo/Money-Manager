@@ -92,6 +92,41 @@ export function GoalsSection() {
 
   const today = useMemo(() => new Date(), []);
 
+  const goalTips = useMemo(() => {
+    if (financialGoals.length === 0) {
+      return [
+        'Start with one clear goal, one target amount, and one realistic deadline so progress is easy to track.',
+        'Name the goal after the outcome you want, like Emergency Fund or School Fees, to keep motivation high.',
+        'Automate even a small transfer after every income payment so the goal grows before other spending happens.',
+      ];
+    }
+
+    const sortedGoals = [...financialGoals].sort(
+      (left, right) => left.targetDate.getTime() - right.targetDate.getTime()
+    );
+    const nextGoal = sortedGoals[0];
+    const monthlyContribution = estimateMonthlyContribution(nextGoal, today);
+    const almostCompleteGoal = sortedGoals.find((goal) => {
+      const progress = calculateProgress(goal.currentAmount, goal.targetAmount);
+      return progress >= 75 && goal.currentAmount < goal.targetAmount;
+    });
+    const overdueGoal = sortedGoals.find(
+      (goal) => goal.targetDate.getTime() < today.getTime() && goal.currentAmount < goal.targetAmount
+    );
+
+    return [
+      monthlyContribution
+        ? `To stay on pace for ${nextGoal.title}, aim to set aside about ${formatCurrency(monthlyContribution.monthlyRequired)} each month.`
+        : `Review ${nextGoal.title} and adjust the deadline or contribution amount so the plan stays realistic.`,
+      almostCompleteGoal
+        ? `${almostCompleteGoal.title} is close to complete. Protect that momentum by avoiding withdrawals until it is fully funded.`
+        : 'Focus on one or two top-priority goals at a time so your monthly cash flow is not spread too thin.',
+      overdueGoal
+        ? `${overdueGoal.title} is already past its target date. Update the goal or increase contributions so it becomes achievable again.`
+        : 'Review your goals at least once a month and raise contributions whenever income increases.',
+    ];
+  }, [financialGoals, formatCurrency, today]);
+
   const resetForm = () => {
     setGoalForm({ title: '', targetAmount: '', targetDate: '', category: 'savings' });
     setEditingGoal(null);
@@ -361,6 +396,18 @@ export function GoalsSection() {
           );
         })
       )}
+
+      <View style={[styles.tipsCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+        <Text style={[styles.tipsTitle, { color: theme.colors.text }]}>Goal Tips</Text>
+        {goalTips.map((tip, index) => (
+          <View key={`goal-tip-${index}`} style={styles.tipRow}>
+            <View style={[styles.tipBadge, { backgroundColor: theme.colors.primary + '18' }]}>
+              <Text style={[styles.tipBadgeText, { color: theme.colors.primary }]}>{index + 1}</Text>
+            </View>
+            <Text style={[styles.tipText, { color: theme.colors.textSecondary }]}>{tip}</Text>
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -545,6 +592,40 @@ const styles = StyleSheet.create({
   contributionValue: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  tipsCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    marginTop: 4,
+  },
+  tipsTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  tipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 10,
+  },
+  tipBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  tipBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  tipText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
   },
 });
 

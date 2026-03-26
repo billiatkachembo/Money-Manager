@@ -24,7 +24,7 @@ import {
   createContainer,
 } from 'victory-native';
 import { Defs, LinearGradient as SvgLinearGradient, Stop } from 'react-native-svg';
-import { ArrowDownRight, ArrowUpRight, DollarSign, Download, X } from 'lucide-react-native';
+import { ArrowDownRight, ArrowUpRight, Check, ChevronDown, Download, X } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { formatDateDDMMYYYY, formatDateWithWeekday } from '@/utils/date';
@@ -41,6 +41,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import ViewShot from 'react-native-view-shot';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 const chartPalette = {
   income: '#22C55E',
@@ -69,10 +70,18 @@ const VoronoiCursorContainer = createContainer('voronoi', 'cursor') as React.Com
 type ExportableChartId =
   | 'net-worth-progress'
   | 'expense-distribution'
-  | 'trend-14-day'
   | 'comparison-6-month'
   | 'spending-by-category'
   | 'net-worth-forecast';
+
+type AnalyticsRangePreset = 'monthly' | 'sixMonths' | 'annually' | 'period';
+
+const ANALYTICS_RANGE_OPTIONS: Array<{ key: AnalyticsRangePreset; label: string }> = [
+  { key: 'monthly', label: 'Weekly / Monthly' },
+  { key: 'sixMonths', label: 'Six Months Trend' },
+  { key: 'annually', label: 'Annually' },
+  { key: 'period', label: 'Period' },
+];
 
 function toMonthKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -80,16 +89,6 @@ function toMonthKey(date: Date): string {
 
 function toDayKey(date: Date): string {
   return `${toMonthKey(date)}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function buildRecentDays(length: number): Date[] {
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (length - 1));
-  return Array.from({ length }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return date;
-  });
 }
 
 function buildRecentMonths(length: number): Date[] {
@@ -134,10 +133,6 @@ function formatShortMonthLabel(date: Date): string {
   return date.toLocaleDateString('en-US', { month: 'short' });
 }
 
-function formatShortDayLabel(date: Date): string {
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
-
 function truncateLabel(label: string, maxLength = 10): string {
   if (label.length <= maxLength) {
     return label;
@@ -156,6 +151,35 @@ function sanitizeFileSegment(value: string): string {
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function endOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function countDaysInclusive(start: Date, end: Date): number {
+  const startMs = startOfDay(start).getTime();
+  const endMs = endOfDay(end).getTime();
+  const diff = Math.max(0, endMs - startMs);
+  return Math.max(1, Math.floor(diff / (1000 * 60 * 60 * 24)) + 1);
+}
+
+function countMonthsInclusive(start: Date, end: Date): number {
+  const yearDiff = end.getFullYear() - start.getFullYear();
+  const monthDiff = end.getMonth() - start.getMonth();
+  return Math.max(1, yearDiff * 12 + monthDiff + 1);
+}
+
+function buildMonthBuckets(start: Date, end: Date): Date[] {
+  const bucketCount = countMonthsInclusive(start, end);
+  return Array.from({ length: bucketCount }, (_, index) => {
+    const monthDate = new Date(start.getFullYear(), start.getMonth() + index, 1);
+    return new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  });
 }
 
 function estimateMonthsToTarget(
@@ -247,8 +271,8 @@ function computeTransactionNetWorthImpact(
 interface MonthContributionItem {
   transaction: Transaction;
   netWorthImpact: number;
-  fromAccountName: string;
-  toAccountName: string;
+  fromAccountName: string | undefined;
+  toAccountName: string | undefined;
 }
 
 interface MilestoneCard {
@@ -347,7 +371,7 @@ function AnalyticsCategoryPlaceholder({
 }
 
 const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: { visibleStage: number }) {
-  const { transactions, allTransactions, accounts, debtAccounts, getTotalIncome, getTotalExpenses, formatCurrency, financialIntelligence } = useTransactionStore();
+  const { transactions, allTransactions, accounts, debtAccounts, formatCurrency, financialIntelligence } = useTransactionStore();
   const { theme } = useTheme();
   const { width: screenWidth } = useWindowDimensions();
   const advisorInsights = financialIntelligence.insights ?? [];
@@ -359,12 +383,20 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const chartCaptureRefs = useRef<Record<ExportableChartId, ViewShot | null>>({
     'net-worth-progress': null,
     'expense-distribution': null,
-    'trend-14-day': null,
     'comparison-6-month': null,
     'spending-by-category': null,
     'net-worth-forecast': null,
   });
   const [exportingChartId, setExportingChartId] = useState<ExportableChartId | null>(null);
+  const [selectedRange, setSelectedRange] = useState<AnalyticsRangePreset>('monthly');
+  const [showRangeMenu, setShowRangeMenu] = useState(false);
+  const [customStartDate, setCustomStartDate] = useState(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [customEndDate, setCustomEndDate] = useState(() => endOfDay(new Date()));
+  const [showCustomStartPicker, setShowCustomStartPicker] = useState(false);
+  const [showCustomEndPicker, setShowCustomEndPicker] = useState(false);
 
   const netWorthForecastData = useMemo(() => {
     if (!netWorthSimulation) {
@@ -415,37 +447,119 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     [theme.isDark]
   );
   const chartPadding = useMemo(() => ({ top: 16, bottom: 40, left: 50, right: 16 }), []);
-  const chartAnimation = useMemo(
-    () => ({ duration: 900, easing: 'cubicOut' as const }),
-    []
-  );
-  const chartCaptureOptions = useMemo(
-    () => ({ format: 'png' as const, quality: 1, result: 'tmpfile' as const }),
-    []
-  );
+  const chartAnimation = useMemo(() => ({ duration: 900, easing: 'cubicOut' as const }), []);
+  const chartCaptureOptions = useMemo(() => ({ format: 'png' as const, quality: 1, result: 'tmpfile' as const }), []);
   const setChartCaptureRef = (chartId: ExportableChartId) => (ref: ViewShot | null) => {
     chartCaptureRefs.current[chartId] = ref;
   };
   const today = new Date();
-  const currentMonth = toMonthKey(today);
-  const elapsedDays = Math.max(1, today.getDate());
+  const activeRange = useMemo(() => {
+    const normalizedCustomStart = startOfDay(customStartDate);
+    const normalizedCustomEnd = endOfDay(customEndDate);
 
-  const currentMonthTransactions = useMemo(
-    () => transactions.filter((transaction) => toMonthKey(transaction.date) === currentMonth),
-    [currentMonth, transactions]
+    switch (selectedRange) {
+      case 'sixMonths':
+        return {
+          label: 'Six Months Trend',
+          badge: '6-month view',
+          start: new Date(today.getFullYear(), today.getMonth() - 5, 1),
+          end: endOfDay(today),
+          summaryTitle: 'Last 6 Months',
+          summaryCaption: 'Income, expenses, and savings across the last six months.',
+          comparisonTitle: '6-Month Income vs Expenses',
+          comparisonSummaryLabel: 'net over 6 months',
+          distributionCaption: 'Expense mix by category for the last 6 months.',
+          footerTransactionLabel: 'in the last 6 months',
+          topCategoryLeadText: 'leading across the last 6 months.',
+          netStatLabel: 'Net in 6 Months',
+          monthsWindow: 6,
+          showComparison: true,
+        };
+      case 'annually':
+        return {
+          label: 'Annually',
+          badge: 'Annual view',
+          start: new Date(today.getFullYear(), today.getMonth() - 11, 1),
+          end: endOfDay(today),
+          summaryTitle: 'Last 12 Months',
+          summaryCaption: 'Income, expenses, and savings across the last twelve months.',
+          comparisonTitle: '12-Month Income vs Expenses',
+          comparisonSummaryLabel: 'net over 12 months',
+          distributionCaption: 'Expense mix by category for the last 12 months.',
+          footerTransactionLabel: 'in the last 12 months',
+          topCategoryLeadText: 'leading across the last 12 months.',
+          netStatLabel: 'Net in 12 Months',
+          monthsWindow: 12,
+          showComparison: true,
+        };
+      case 'period': {
+        const periodMonths = countMonthsInclusive(normalizedCustomStart, normalizedCustomEnd);
+        return {
+          label: 'Period',
+          badge: 'Custom period',
+          start: normalizedCustomStart,
+          end: normalizedCustomEnd,
+          summaryTitle: 'Selected Period',
+          summaryCaption: `${formatDateDDMMYYYY(normalizedCustomStart)} to ${formatDateDDMMYYYY(normalizedCustomEnd)}.`,
+          comparisonTitle: periodMonths > 1 ? `${periodMonths}-Month Income vs Expenses` : 'Period Income vs Expenses',
+          comparisonSummaryLabel: 'net in selected period',
+          distributionCaption: 'Expense mix by category for the selected period.',
+          footerTransactionLabel: 'in the selected period',
+          topCategoryLeadText: 'leading in the selected period.',
+          netStatLabel: 'Net in Period',
+          monthsWindow: Math.max(1, Math.min(24, periodMonths)),
+          showComparison: periodMonths > 1,
+        };
+      }
+      case 'monthly':
+      default:
+        return {
+          label: 'Weekly / Monthly',
+          badge: 'Weekly / monthly view',
+          start: new Date(today.getFullYear(), today.getMonth(), 1),
+          end: endOfDay(today),
+          summaryTitle: 'This Month',
+          summaryCaption: `Income, expenses, and savings for ${formatShortMonthLabel(today)}.`,
+          comparisonTitle: '6-Month Income vs Expenses',
+          comparisonSummaryLabel: 'net this month',
+          distributionCaption: 'Current-month expense mix by category.',
+          footerTransactionLabel: 'this month',
+          topCategoryLeadText: 'leading this month.',
+          netStatLabel: 'Net This Month',
+          monthsWindow: 6,
+          showComparison: false,
+        };
+    }
+  }, [customEndDate, customStartDate, selectedRange, today]);
+
+  const activeRangeStartMs = activeRange.start.getTime();
+  const activeRangeEndMs = activeRange.end.getTime();
+
+  const selectedTransactions = useMemo(
+    () =>
+      transactions.filter((transaction) => {
+        const time = transaction.date.getTime();
+        return time >= activeRangeStartMs && time <= activeRangeEndMs;
+      }),
+    [activeRangeEndMs, activeRangeStartMs, transactions]
+  );
+
+  const elapsedDays = useMemo(
+    () => countDaysInclusive(activeRange.start, activeRange.end),
+    [activeRange.end, activeRange.start]
   );
 
   const quickStats = useMemo(
-    () => computeQuickStats(currentMonthTransactions, elapsedDays),
-    [currentMonthTransactions, elapsedDays]
+    () => computeQuickStats(selectedTransactions, elapsedDays),
+    [elapsedDays, selectedTransactions]
   );
 
   const monthlyIncome = quickStats.income;
   const monthlyExpenses = quickStats.expenses;
 
   const categorySpending = useMemo(
-    () => computeExpenseCategoryBreakdown(currentMonthTransactions),
-    [currentMonthTransactions]
+    () => computeExpenseCategoryBreakdown(selectedTransactions),
+    [selectedTransactions]
   );
 
   const categoryBarData = useMemo(() => {
@@ -469,93 +583,97 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     return categorySpending.reduce((top, item) => (item.amount > top.amount ? item : top), categorySpending[0]);
   }, [categorySpending]);
 
-  const expenseDonutData = useMemo(() => {
-    if (categorySpending.length === 0) {
-      return [];
-    }
+  const expenseDistribution = useMemo(
+    () => computeExpenseDistribution(categorySpending, 5),
+    [categorySpending]
+  );
 
-    const distribution = computeExpenseDistribution(categorySpending, 5);
-    return distribution.map((entry, index) => ({
-      x: entry.name,
-      y: entry.amount,
-      color: entry.color ?? categoryPalette[index % categoryPalette.length],
-    }));
-  }, [categorySpending]);
+  const expenseDonutData = useMemo(
+    () =>
+      expenseDistribution.map((entry, index) => ({
+        x: entry.name,
+        y: entry.amount,
+        color: entry.color ?? categoryPalette[index % categoryPalette.length],
+        share: entry.share,
+      })),
+    [expenseDistribution]
+  );
 
   const expenseDonutColors = useMemo(
     () => expenseDonutData.map((entry) => entry.color),
     [expenseDonutData]
   );
 
-  const transactionsByDay = useMemo(() => {
-    const map = new Map<string, { income: number; expenses: number }>();
-    for (const transaction of transactions) {
+  const comparisonMonths = useMemo(() => {
+    if (!activeRange.showComparison) {
+      return [] as Date[];
+    }
+
+    if (selectedRange === 'sixMonths') {
+      return buildRecentMonths(6);
+    }
+
+    if (selectedRange === 'annually') {
+      return buildRecentMonths(12);
+    }
+
+    return buildMonthBuckets(activeRange.start, activeRange.end);
+  }, [activeRange.end, activeRange.showComparison, activeRange.start, selectedRange]);
+
+  const comparisonSeries = useMemo(() => {
+    if (comparisonMonths.length === 0) {
+      return {
+        labels: [] as string[],
+        expenseData: [] as Array<{ x: string; y: number }>,
+        incomeData: [] as Array<{ x: string; y: number }>,
+        totalIncome: 0,
+        totalExpenses: 0,
+      };
+    }
+
+    const firstMonth = comparisonMonths[0];
+    const lastMonth = comparisonMonths[comparisonMonths.length - 1];
+    const includeYear = comparisonMonths.length > 12 || firstMonth.getFullYear() !== lastMonth.getFullYear();
+    const bucketLabels = comparisonMonths.map((month) =>
+      month.toLocaleDateString('en-US', includeYear ? { month: 'short', year: '2-digit' } : { month: 'short' })
+    );
+    const buckets = comparisonMonths.map((month, index) => ({
+      key: toMonthKey(month),
+      label: bucketLabels[index] ?? formatShortMonthLabel(month),
+      income: 0,
+      expenses: 0,
+    }));
+    const bucketMap = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+
+    for (const transaction of selectedTransactions) {
       if (transaction.type !== 'income' && transaction.type !== 'expense') {
         continue;
       }
-      const key = toDayKey(transaction.date);
-      const entry = map.get(key) ?? { income: 0, expenses: 0 };
-      if (transaction.type === 'income') {
-        entry.income += transaction.amount;
-      } else {
-        entry.expenses += transaction.amount;
+
+      const bucket = bucketMap.get(toMonthKey(transaction.date));
+      if (!bucket) {
+        continue;
       }
-      map.set(key, entry);
+
+      if (transaction.type === 'income') {
+        bucket.income += transaction.amount;
+      } else {
+        bucket.expenses += transaction.amount;
+      }
     }
-    return map;
-  }, [transactions]);
-
-  const trendSeries = useMemo(() => {
-    const recentDays = buildRecentDays(14);
-    const expenses = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.expenses ?? 0);
-    const income = recentDays.map((date) => transactionsByDay.get(toDayKey(date))?.income ?? 0);
-    const net = income.map((value, index) => (value ?? 0) - (expenses[index] ?? 0));
-
-    const tickValues = recentDays.filter((_, index) => index % 2 === 0);
-    const totalExpenses = roundCurrency(expenses.reduce((sum, value) => sum + value, 0));
 
     return {
-      expenseData: recentDays.map((date, index) => ({
-        x: date,
-        y: expenses[index] ?? 0,
-      })),
-      incomeData: recentDays.map((date, index) => ({
-        x: date,
-        y: income[index] ?? 0,
-      })),
-      netData: recentDays.map((date, index) => ({
-        x: date,
-        y: net[index] ?? 0,
-      })),
-      tickValues,
-      totalExpenses,
+      labels: buckets.map((bucket) => bucket.label),
+      expenseData: buckets.map((bucket) => ({ x: bucket.label, y: roundCurrency(bucket.expenses) })),
+      incomeData: buckets.map((bucket) => ({ x: bucket.label, y: roundCurrency(bucket.income) })),
+      totalIncome: roundCurrency(buckets.reduce((sum, bucket) => sum + bucket.income, 0)),
+      totalExpenses: roundCurrency(buckets.reduce((sum, bucket) => sum + bucket.expenses, 0)),
     };
-  }, [transactionsByDay]);
-
-  const monthlyComparisonSeries = useMemo(() => {
-    const recentMonths = buildRecentMonths(6);
-    const labels = recentMonths.map((month) => month.toLocaleDateString('en-US', { month: 'short' }));
-    const expenses = recentMonths.map((month) => getTotalExpenses(toMonthKey(month)));
-    const income = recentMonths.map((month) => getTotalIncome(toMonthKey(month)));
-
-    return {
-      labels,
-      expenseData: labels.map((label, index) => ({
-        x: label,
-        y: expenses[index] ?? 0,
-      })),
-      incomeData: labels.map((label, index) => ({
-        x: label,
-        y: income[index] ?? 0,
-      })),
-      totalIncome: roundCurrency(income.reduce((sum, value) => sum + value, 0)),
-      totalExpenses: roundCurrency(expenses.reduce((sum, value) => sum + value, 0)),
-    };
-  }, [getTotalExpenses, getTotalIncome, transactions]);
+  }, [comparisonMonths, selectedTransactions]);
 
   const netWorthProgress = useMemo(
-    () => computeNetWorthProgress(accounts, allTransactions, 6),
-    [accounts, allTransactions]
+    () => computeNetWorthProgress(accounts, allTransactions, activeRange.monthsWindow, activeRange.end),
+    [accounts, activeRange.end, activeRange.monthsWindow, allTransactions]
   );
 
   const accountBalanceById = useMemo(() => {
@@ -1005,20 +1123,19 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     };
   }, [monthContributionItems]);
 
-  const hasTrendData = useMemo(
-    () =>
-      trendSeries.expenseData.some((point) => point.y !== 0) ||
-      trendSeries.incomeData.some((point) => point.y !== 0) ||
-      trendSeries.netData.some((point) => point.y !== 0),
-    [trendSeries]
-  );
-
   const hasComparisonData = useMemo(
     () =>
-      monthlyComparisonSeries.expenseData.some((point) => point.y !== 0) ||
-      monthlyComparisonSeries.incomeData.some((point) => point.y !== 0),
-    [monthlyComparisonSeries]
+      activeRange.showComparison && (
+        comparisonSeries.expenseData.some((point) => point.y !== 0) ||
+        comparisonSeries.incomeData.some((point) => point.y !== 0)
+      ),
+    [activeRange.showComparison, comparisonSeries]
   );
+
+  const hasExpenseDistributionData = expenseDistribution.length > 0;
+  const hasCategoryBreakdownData = categoryBarData.length > 0;
+  const hasSpendingTrendCharts =
+    hasExpenseDistributionData || hasComparisonData || hasCategoryBreakdownData;
 
   const handleExportChart = async (chartId: ExportableChartId, title: string) => {
     if (exportingChartId) {
@@ -1122,26 +1239,130 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     );
   };
 
+  const handleRangeSelect = (range: AnalyticsRangePreset) => {
+    setSelectedRange(range);
+    setShowRangeMenu(false);
+  };
+
+  const handleCustomStartDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    setShowCustomStartPicker(false);
+    if (!selectedDate) {
+      return;
+    }
+
+    const nextStart = startOfDay(selectedDate);
+    setCustomStartDate(nextStart);
+
+    if (nextStart.getTime() > customEndDate.getTime()) {
+      setCustomEndDate(endOfDay(selectedDate));
+    }
+  };
+
+  const handleCustomEndDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    setShowCustomEndPicker(false);
+    if (!selectedDate) {
+      return;
+    }
+
+    const nextEnd = endOfDay(selectedDate);
+    setCustomEndDate(nextEnd);
+
+    if (nextEnd.getTime() < customStartDate.getTime()) {
+      setCustomStartDate(startOfDay(selectedDate));
+    }
+  };
+
   return (
     <>
       <ScrollView
         style={[styles.container, { backgroundColor: theme.colors.background }]}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        onScrollBeginDrag={() => setShowRangeMenu(false)}
       >
         <View style={[styles.analyticsHero, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
           <View style={[styles.analyticsHeroOrb, { backgroundColor: theme.colors.primary + '14' }]} />
           <View style={styles.analyticsHeroContent}>
-            <View
-              style={[
-                styles.analyticsHeroBadge,
-                { backgroundColor: secondarySurface, borderColor: softBorderColor },
-              ]}
-            >
-              <Text style={[styles.analyticsHeroBadgeText, { color: theme.colors.primary }]}>Live overview</Text>
+            <View style={styles.analyticsHeroTopRow}>
+              <View style={styles.analyticsHeroHeading}>
+                <View
+                  style={[
+                    styles.analyticsHeroBadge,
+                    { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                  ]}
+                >
+                  <Text style={[styles.analyticsHeroBadgeText, { color: theme.colors.primary }]}>{activeRange.badge}</Text>
+                </View>
+                <Text style={[styles.analyticsHeroTitle, { color: theme.colors.text }]}>Analytics</Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Select analytics range"
+                style={[
+                  styles.analyticsRangeButton,
+                  { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                ]}
+                onPress={() => setShowRangeMenu((current) => !current)}
+              >
+                <Text style={[styles.analyticsRangeButtonText, { color: theme.colors.text }]}>{activeRange.label}</Text>
+                <ChevronDown size={16} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
             </View>
-            <Text style={[styles.analyticsHeroTitle, { color: theme.colors.text }]}>Analytics</Text>
-            <Text style={[styles.analyticsHeroSubtitle, { color: theme.colors.textSecondary }]}>A cleaner view of your cash flow, spending patterns, and financial momentum.</Text>
+            <Text style={[styles.analyticsHeroSubtitle, { color: theme.colors.textSecondary }]}>Choose a timeframe to focus the charts, summaries, and insights.</Text>
+            {showRangeMenu ? (
+              <View style={[styles.analyticsRangeMenu, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
+                {ANALYTICS_RANGE_OPTIONS.map((option) => {
+                  const isActive = option.key === selectedRange;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      accessibilityRole="button"
+                      style={[
+                        styles.analyticsRangeMenuItem,
+                        isActive && { backgroundColor: theme.colors.primary + '12' },
+                      ]}
+                      onPress={() => handleRangeSelect(option.key)}
+                    >
+                      <Text
+                        style={[
+                          styles.analyticsRangeMenuText,
+                          { color: isActive ? theme.colors.primary : theme.colors.text },
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      {isActive ? <Check size={15} color={theme.colors.primary} /> : null}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ) : null}
+            {selectedRange === 'period' ? (
+              <View style={styles.analyticsPeriodRow}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[
+                    styles.analyticsPeriodField,
+                    { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                  ]}
+                  onPress={() => setShowCustomStartPicker(true)}
+                >
+                  <Text style={[styles.analyticsPeriodLabel, { color: theme.colors.textSecondary }]}>From</Text>
+                  <Text style={[styles.analyticsPeriodValue, { color: theme.colors.text }]}>{formatDateDDMMYYYY(customStartDate)}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[
+                    styles.analyticsPeriodField,
+                    { backgroundColor: secondarySurface, borderColor: softBorderColor },
+                  ]}
+                  onPress={() => setShowCustomEndPicker(true)}
+                >
+                  <Text style={[styles.analyticsPeriodLabel, { color: theme.colors.textSecondary }]}>To</Text>
+                  <Text style={[styles.analyticsPeriodValue, { color: theme.colors.text }]}>{formatDateDDMMYYYY(customEndDate)}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
             <View style={styles.analyticsHeroStats}>
               <View
                 style={[
@@ -1162,7 +1383,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                   { backgroundColor: secondarySurface, borderColor: softBorderColor },
                 ]}
               >
-                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Monthly Net</Text>
+                <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>{activeRange.netStatLabel}</Text>
                 <AdaptiveAmountText
                   style={[
                     styles.analyticsHeroStatValue,
@@ -1186,10 +1407,10 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
             </View>
             <View style={styles.analyticsHeroFooter}>
               <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
-                {quickStats.transactionCount} transaction{quickStats.transactionCount === 1 ? '' : 's'} this month
+                {quickStats.transactionCount} transaction{quickStats.transactionCount === 1 ? '' : 's'} {activeRange.footerTransactionLabel}
               </Text>
               <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                {topCategory ? `${topCategory.categoryName} leads your spending this month.` : 'Add more activity to unlock deeper patterns.'}
+                {topCategory ? `${topCategory.categoryName} is ${activeRange.topCategoryLeadText}` : 'Add more activity to unlock deeper patterns.'}
               </Text>
             </View>
           </View>
@@ -1202,9 +1423,9 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.summaryCardHeader}>
           <View style={styles.summaryCardTitleWrap}>
-            <Text style={[styles.cardTitle, styles.summaryCardTitle, { color: theme.colors.text }]}>This Month</Text>
+            <Text style={[styles.cardTitle, styles.summaryCardTitle, { color: theme.colors.text }]}>{activeRange.summaryTitle}</Text>
             <Text style={[styles.summaryCardCaption, { color: theme.colors.textSecondary }]}>
-              Income, expenses, and savings for {formatShortMonthLabel(today)}.
+              {activeRange.summaryCaption}
             </Text>
           </View>
           <View
@@ -1573,369 +1794,262 @@ ${formatCurrency(datum.y)}`
         </ViewShot>
       </View>
 
-      </AnalyticsCategoryBlock>      {visibleStage >= 2 ? (
+      </AnalyticsCategoryBlock>
+      {visibleStage >= 2 ? (
 
       <AnalyticsCategoryBlock
         eyebrow="Activity"
         title="Spending & Trends"
         subtitle="Track where money is going and how income and expenses are changing."
       >
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
-          <View style={styles.cardHeaderTrailing}>
-            <View style={styles.cardSubtitle}>
-              <DollarSign size={16} color={theme.colors.textSecondary} />
-              <Text
-                style={[styles.cardSubtitleText, { color: theme.colors.textSecondary }]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.72}
-              >
-                {formatCurrency(monthlyExpenses)} total
-              </Text>
-            </View>
-            {renderChartExportAction('expense-distribution', 'Expense Distribution', expenseDonutData.length === 0)}
-          </View>
-        </View>
-        <ViewShot ref={setChartCaptureRef('expense-distribution')} options={chartCaptureOptions}>
-          <View collapsable={false}>
-        <View style={styles.chartSummary}>
-          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(monthlyExpenses)} />
-          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>total expenses this month</Text>
-        </View>
-        {expenseDonutData.length === 0 ? (
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
-                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
-            </View>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
-          </View>
-        ) : (
-          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
-            <View style={styles.donutWrapper}>
-              <VictoryPie
-                data={expenseDonutData}
-                colorScale={expenseDonutColors}
-                width={chartWidth}
-                height={220}
-                innerRadius={60}
-                radius={90}
-                padAngle={1.5}
-                animate={chartAnimation}
-                labels={() => ''}
-                style={{
-                  data: {
-                    stroke: theme.colors.surface,
-                    strokeWidth: 2,
-                  },
-                }}
-              />
-              <View style={[styles.donutCenter, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
-                <Text style={[styles.donutLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
-                <AdaptiveAmountText style={[styles.donutValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(monthlyExpenses)} />
+      {hasSpendingTrendCharts ? (
+        <>
+          {hasExpenseDistributionData ? (
+            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <View style={styles.cardHeader}>
+                <View style={styles.cardHeaderLeading}>
+                  <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Expense Distribution</Text>
+                  <Text style={[styles.cardHeaderMetaText, { color: theme.colors.textSecondary }]}>
+                    {topCategory ? `${topCategory.categoryName} is ${activeRange.topCategoryLeadText}` : activeRange.distributionCaption}
+                  </Text>
+                </View>
+                {renderChartExportAction('expense-distribution', 'Expense Distribution')}
               </View>
-            </View>
-          </View>
-        )}
-          </View>
-        </ViewShot>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>14-Day Trend</Text>
-          <View style={styles.cardHeaderLegendActions}>
-            <View style={[styles.legendRow, styles.headerLegendRow]}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.savings }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
-              </View>
-            </View>
-            {renderChartExportAction('trend-14-day', '14-Day Trend', !hasTrendData)}
-          </View>
-        </View>
-        <ViewShot ref={setChartCaptureRef('trend-14-day')} options={chartCaptureOptions}>
-          <View collapsable={false}>
-        <View style={styles.chartSummary}>
-          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(trendSeries.totalExpenses)} />
-          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>last 14 days spend</Text>
-        </View>
-        {!hasTrendData ? (
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
-                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
-            </View>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No transactions in the last 14 days</Text>
-          </View>
-        ) : (
-          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
-            <VictoryChart
-              width={chartWidth}
-              height={220}
-              padding={chartPadding}
-              scale={{ x: 'time' }}
-              domainPadding={{ y: 12 }}
-              containerComponent={
-                <VoronoiCursorContainer
-                  cursorDimension="x"
-                  cursorComponent={
-                    <VictoryLine
-                      style={{
-                        data: {
-                          stroke: gridColor,
-                          strokeWidth: 1,
-                        },
-                      }}
+              <ViewShot ref={setChartCaptureRef('expense-distribution')} options={chartCaptureOptions}>
+                <View collapsable={false}>
+                  <View style={styles.chartSummary}>
+                    <AdaptiveAmountText
+                      style={[styles.chartSummaryValue, { color: theme.colors.text }]}
+                      minFontSize={14}
+                      value={formatCurrency(monthlyExpenses)}
                     />
-                  }
-                />
-              }
-            >
-              <Defs>
-                <SvgLinearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0%" stopColor={chartPalette.expenses} stopOpacity={0.28} />
-                  <Stop offset="100%" stopColor={chartPalette.expenses} stopOpacity={0} />
-                </SvgLinearGradient>
-              </Defs>
-              <VictoryAxis
-                tickValues={trendSeries.tickValues}
-                tickFormat={(value) => formatShortDayLabel(new Date(value))}
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: 'transparent' },
-                }}
-              />
-              <VictoryAxis
-                dependentAxis
-                tickCount={3}
-                tickFormat={(value) => formatCompactNumber(value)}
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: gridColor },
-                }}
-              />
-              <VictoryArea
-                data={trendSeries.expenseData}
-                interpolation="natural"
-                animate={chartAnimation}
-                style={{
-                  data: {
-                    stroke: chartPalette.expenses,
-                    strokeWidth: 2,
-                    fill: 'url(#trendGradient)',
-                  },
-                }}
-                labels={({ datum }) =>
-                  `${formatShortDayLabel(new Date(datum.x))}
-${formatCurrency(datum.y)}`
-                }
-                labelComponent={
-                  <VictoryTooltip
-                    flyoutStyle={tooltipFlyoutStyle}
-                    style={tooltipTextStyle}
-                    pointerLength={6}
-                    cornerRadius={10}
-                    renderInPortal={false}
-                  />
-                }
-              />
-              <VictoryLine
-                data={trendSeries.incomeData}
-                interpolation="natural"
-                animate={chartAnimation}
-                style={{
-                  data: {
-                    stroke: chartPalette.income,
-                    strokeWidth: 1.8,
-                  },
-                }}
-              />
-              <VictoryLine
-                data={trendSeries.netData}
-                interpolation="natural"
-                animate={chartAnimation}
-                style={{
-                  data: {
-                    stroke: chartPalette.savings,
-                    strokeWidth: 1.6,
-                    strokeDasharray: '3,3',
-                  },
-                }}
-              />
-            </VictoryChart>
-          </View>
-        )}
-          </View>
-        </ViewShot>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>6-Month Income vs Expenses</Text>
-          <View style={styles.cardHeaderLegendActions}>
-            <View style={[styles.legendRow, styles.headerLegendRow]}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
-              </View>
+                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
+                      {expenseDistribution.length === 1
+                        ? selectedRange === 'monthly' ? '1 category contributing this month' : '1 category in view'
+                        : selectedRange === 'monthly' ? `${expenseDistribution.length} categories contributing this month` : `${expenseDistribution.length} categories in view`}
+                    </Text>
+                  </View>
+                  <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
+                    <View style={styles.donutWrapper}>
+                      <VictoryPie
+                        data={expenseDonutData}
+                        colorScale={expenseDonutColors}
+                        width={chartWidth}
+                        height={220}
+                        innerRadius={60}
+                        radius={90}
+                        padAngle={1.5}
+                        animate={chartAnimation}
+                        labels={() => ''}
+                        style={{
+                          data: {
+                            stroke: theme.colors.surface,
+                            strokeWidth: 2,
+                          },
+                        }}
+                      />
+                      <View style={[styles.donutCenter, { backgroundColor: cardBackground, borderColor: softBorderColor }]}>
+                        <Text style={[styles.donutLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
+                        <AdaptiveAmountText
+                          style={[styles.donutValue, { color: theme.colors.text }]}
+                          minFontSize={14}
+                          value={formatCurrency(monthlyExpenses)}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                  <View style={styles.categoriesList}>
+                    {expenseDistribution.map((entry, index) => {
+                      const accentColor = entry.color ?? categoryPalette[index % categoryPalette.length];
+                      return (
+                        <View key={`${entry.name}-${index}`} style={styles.categoryRow}>
+                          <View style={styles.categoryInfo}>
+                            <View style={[styles.categoryDot, { backgroundColor: accentColor }]} />
+                            <Text style={[styles.categoryName, { color: theme.colors.text }]} numberOfLines={1}>
+                              {entry.name}
+                            </Text>
+                          </View>
+                          <View style={styles.categoryAmount}>
+                            <View style={styles.categoryMeta}>
+                              <Text style={[styles.categoryAmountText, { color: theme.colors.text }]} numberOfLines={1}>
+                                {formatCurrency(entry.amount)}
+                              </Text>
+                              <Text style={[styles.categoryShareText, { color: theme.colors.textSecondary }]}>
+                                {formatPercentage(entry.share)}
+                              </Text>
+                            </View>
+                            <View style={[styles.progressBarContainer, { backgroundColor: theme.colors.border }]}>
+                              <View
+                                style={[
+                                  styles.progressBar,
+                                  {
+                                    width: `${Math.max(entry.share * 100, 6)}%`,
+                                    backgroundColor: accentColor,
+                                  },
+                                ]}
+                              />
+                            </View>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </View>
+              </ViewShot>
             </View>
-            {renderChartExportAction('comparison-6-month', '6-Month Income vs Expenses', !hasComparisonData)}
-          </View>
-        </View>
-        <ViewShot ref={setChartCaptureRef('comparison-6-month')} options={chartCaptureOptions}>
-          <View collapsable={false}>
-        <View style={styles.chartSummary}>
-          <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatSignedCurrency(formatCurrency, monthlyIncome - monthlyExpenses)}</Text>
-          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>net this month</Text>
-        </View>
-        {!hasComparisonData ? (
+          ) : null}
+
+          {hasComparisonData ? (
+            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <View style={styles.cardHeader}>
+                <Text style={[styles.cardTitle, { color: theme.colors.text }]}>{activeRange.comparisonTitle}</Text>
+                <View style={styles.cardHeaderLegendActions}>
+                  <View style={[styles.legendRow, styles.headerLegendRow]}>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
+                      <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                    </View>
+                    <View style={styles.legendItem}>
+                      <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
+                      <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
+                    </View>
+                  </View>
+                  {renderChartExportAction('comparison-6-month', activeRange.comparisonTitle)}
+                </View>
+              </View>
+              <ViewShot ref={setChartCaptureRef('comparison-6-month')} options={chartCaptureOptions}>
+                <View collapsable={false}>
+                  <View style={styles.chartSummary}>
+                    <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatSignedCurrency(formatCurrency, monthlyIncome - monthlyExpenses)}</Text>
+                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>{activeRange.comparisonSummaryLabel}</Text>
+                  </View>
+                  <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
+                    <VictoryChart
+                      width={chartWidth}
+                      height={220}
+                      padding={chartPadding}
+                      domainPadding={{ x: 20, y: 12 }}
+                    >
+                      <VictoryAxis
+                        style={{
+                          axis: { stroke: 'transparent' },
+                          ticks: { stroke: 'transparent' },
+                          tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                          grid: { stroke: 'transparent' },
+                        }}
+                      />
+                      <VictoryAxis
+                        dependentAxis
+                        tickCount={3}
+                        tickFormat={(value) => formatCompactNumber(value)}
+                        style={{
+                          axis: { stroke: 'transparent' },
+                          ticks: { stroke: 'transparent' },
+                          tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                          grid: { stroke: gridColor },
+                        }}
+                      />
+                      <VictoryGroup offset={14}>
+                        <VictoryBar
+                          data={comparisonSeries.incomeData}
+                          barWidth={12}
+                          cornerRadius={{ top: 6, bottom: 6 }}
+                          animate={chartAnimation}
+                          style={{
+                            data: {
+                              fill: chartPalette.income,
+                            },
+                          }}
+                        />
+                        <VictoryBar
+                          data={comparisonSeries.expenseData}
+                          barWidth={12}
+                          cornerRadius={{ top: 6, bottom: 6 }}
+                          animate={chartAnimation}
+                          style={{
+                            data: {
+                              fill: chartPalette.expenses,
+                            },
+                          }}
+                        />
+                      </VictoryGroup>
+                    </VictoryChart>
+                  </View>
+                </View>
+              </ViewShot>
+            </View>
+          ) : null}
+
+          {hasCategoryBreakdownData ? (
+            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <View style={styles.cardHeader}>
+                <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
+                {renderChartExportAction('spending-by-category', 'Spending by Category')}
+              </View>
+              <ViewShot ref={setChartCaptureRef('spending-by-category')} options={chartCaptureOptions}>
+                <View collapsable={false}>
+                  <View style={styles.chartSummary}>
+                    <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(topCategory?.amount ?? 0)} />
+                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
+                      {topCategory ? `${topCategory.categoryName} top category` : 'Top category'}
+                    </Text>
+                  </View>
+                  <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
+                    <VictoryChart
+                      width={chartWidth}
+                      height={220}
+                      padding={{ top: 16, bottom: 40, left: 32, right: 16 }}
+                      domainPadding={{ x: 18, y: 12 }}
+                    >
+                      <VictoryAxis
+                        tickValues={categoryBarData.map((item) => item.x)}
+                        style={{
+                          axis: { stroke: 'transparent' },
+                          ticks: { stroke: 'transparent' },
+                          tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                          grid: { stroke: 'transparent' },
+                        }}
+                      />
+                      <VictoryAxis
+                        dependentAxis
+                        tickCount={3}
+                        tickFormat={(value) => formatCompactNumber(value)}
+                        style={{
+                          axis: { stroke: 'transparent' },
+                          ticks: { stroke: 'transparent' },
+                          tickLabels: { fill: axisLabelColor, fontSize: 10 },
+                          grid: { stroke: gridColor },
+                        }}
+                      />
+                      <VictoryBar
+                        data={categoryBarData}
+                        barWidth={14}
+                        cornerRadius={{ top: 6, bottom: 6 }}
+                        animate={chartAnimation}
+                        style={{
+                          data: {
+                            fill: ({ datum }) => datum.fill,
+                          },
+                        }}
+                      />
+                    </VictoryChart>
+                  </View>
+                </View>
+              </ViewShot>
+            </View>
+          ) : null}
+        </>
+      ) : (
+        <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending Charts</Text>
           <View style={styles.emptyState}>
             <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
-                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
+              <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
             </View>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No data for comparison</Text>
+            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>Add transactions to unlock your spending charts.</Text>
           </View>
-        ) : (
-          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
-            <VictoryChart
-              width={chartWidth}
-              height={220}
-              padding={chartPadding}
-              domainPadding={{ x: 20, y: 12 }}
-            >
-              <VictoryAxis
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: 'transparent' },
-                }}
-              />
-              <VictoryAxis
-                dependentAxis
-                tickCount={3}
-                tickFormat={(value) => formatCompactNumber(value)}
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: gridColor },
-                }}
-              />
-              <VictoryGroup offset={14}>
-                <VictoryBar
-                  data={monthlyComparisonSeries.incomeData}
-                  barWidth={12}
-                  cornerRadius={{ top: 6, bottom: 6 }}
-                  animate={chartAnimation}
-                  style={{
-                    data: {
-                      fill: chartPalette.income,
-                    },
-                  }}
-                />
-                <VictoryBar
-                  data={monthlyComparisonSeries.expenseData}
-                  barWidth={12}
-                  cornerRadius={{ top: 6, bottom: 6 }}
-                  animate={chartAnimation}
-                  style={{
-                    data: {
-                      fill: chartPalette.expenses,
-                    },
-                  }}
-                />
-              </VictoryGroup>
-            </VictoryChart>
-          </View>
-        )}
-          </View>
-        </ViewShot>
-      </View>
-
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
-          {renderChartExportAction('spending-by-category', 'Spending by Category', categorySpending.length === 0)}
         </View>
-        <ViewShot ref={setChartCaptureRef('spending-by-category')} options={chartCaptureOptions}>
-          <View collapsable={false}>
-        <View style={styles.chartSummary}>
-          <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(topCategory?.amount ?? 0)} />
-          <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
-            {topCategory ? `${topCategory.categoryName} top category` : 'Top category'}
-          </Text>
-        </View>
-        {categorySpending.length === 0 ? (
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyStateIcon, { borderColor: theme.colors.border }]}>
-                    <View style={[styles.emptyStateDot, { backgroundColor: theme.colors.border }]} />
-            </View>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>No expenses this month</Text>
-          </View>
-        ) : (
-          <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
-            <VictoryChart
-              width={chartWidth}
-              height={220}
-              padding={{ top: 16, bottom: 40, left: 32, right: 16 }}
-              domainPadding={{ x: 18, y: 12 }}
-            >
-              <VictoryAxis
-                tickValues={categoryBarData.map((item) => item.x)}
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: 'transparent' },
-                }}
-              />
-              <VictoryAxis
-                dependentAxis
-                tickCount={3}
-                tickFormat={(value) => formatCompactNumber(value)}
-                style={{
-                  axis: { stroke: 'transparent' },
-                  ticks: { stroke: 'transparent' },
-                  tickLabels: { fill: axisLabelColor, fontSize: 10 },
-                  grid: { stroke: gridColor },
-                }}
-              />
-              <VictoryBar
-                data={categoryBarData}
-                barWidth={14}
-                cornerRadius={{ top: 6, bottom: 6 }}
-                animate={chartAnimation}
-                style={{
-                  data: {
-                    fill: ({ datum }) => datum.fill,
-                  },
-                }}
-              />
-            </VictoryChart>
-          </View>
-        )}
-          </View>
-        </ViewShot>
-      </View>
-
+      )}
       <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Quick Stats</Text>
         <View style={styles.statsGrid}>
@@ -1984,7 +2098,7 @@ ${formatCurrency(datum.y)}`
               value={(quickStats.netAmount >= 0 ? '+' : '').concat(formatCurrency(quickStats.netAmount))}
             />
             <Text style={[styles.statLabel, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-              Net This Month
+              {activeRange.netStatLabel}
             </Text>
           </View>
         </View>
@@ -1998,7 +2112,8 @@ ${formatCurrency(datum.y)}`
           cardCount={3}
           chartCardIndex={0}
         />
-      )}      {visibleStage >= 3 ? (
+      )}
+      {visibleStage >= 3 ? (
 
       <AnalyticsCategoryBlock
         eyebrow="Guidance"
@@ -2106,7 +2221,8 @@ ${formatCurrency(datum.y)}`
           cardCount={3}
           chartCardIndex={-1}
         />
-      )}      {visibleStage >= 4 ? (
+      )}
+      {visibleStage >= 4 ? (
 
       <AnalyticsCategoryBlock
         eyebrow="Planning"
@@ -2674,6 +2790,71 @@ const styles = StyleSheet.create({
   analyticsHeroContent: {
     gap: 14,
   },
+  analyticsHeroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  analyticsHeroHeading: {
+    flex: 1,
+    minWidth: 0,
+    gap: 10,
+  },
+  analyticsRangeButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  analyticsRangeButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  analyticsRangeMenu: {
+    marginTop: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  analyticsRangeMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  analyticsRangeMenuText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  analyticsPeriodRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+  },
+  analyticsPeriodField: {
+    flex: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  analyticsPeriodLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  analyticsPeriodValue: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
   analyticsHeroBadge: {
     alignSelf: 'flex-start',
     borderRadius: 999,
@@ -3154,18 +3335,20 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   categoriesList: {
-    gap: 16,
+    gap: 14,
+    marginTop: 6,
   },
   categoryRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 16,
+    gap: 14,
   },
   categoryInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    minWidth: 0,
   },
   categoryDot: {
     width: 12,
@@ -3179,25 +3362,30 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   categoryAmount: {
-    minWidth: 120,
+    width: 136,
+    maxWidth: '44%',
+    minWidth: 118,
   },
   categoryMeta: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   categoryAmountText: {
     fontSize: 14,
     fontWeight: '600',
+    textAlign: 'right',
+    flexShrink: 1,
   },
   categoryShareText: {
     fontSize: 12,
     fontWeight: '500',
+    textAlign: 'right',
   },
   progressBarContainer: {
-    width: 120,
+    width: '100%',
     height: 4,
     borderRadius: 2,
     overflow: 'hidden',

@@ -24,6 +24,7 @@ import {
   ArrowDownRight,
   PiggyBank,
   Target,
+  FileText,
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { TransactionItem } from '@/components/TransactionItem';
@@ -34,6 +35,7 @@ import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useQuickActionsStore } from '@/store/quick-actions-store';
 import { useTheme } from '@/store/theme-store';
+import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
 import { Insight, Transaction } from '@/types/transaction';
@@ -54,7 +56,6 @@ function SkeletonBlock({ width, height, style }: { width: number | string; heigh
     animation.start();
     return () => animation.stop();
   }, [opacity]);
-
   return (
     <Animated.View
       style={[
@@ -92,7 +93,6 @@ const HealthScoreRing = React.memo(function HealthScoreRing({
       Animated.timing(opacityAnim, { toValue: 1, duration: 320, useNativeDriver: true }),
     ]).start();
   }, [opacityAnim, scaleAnim, progress]);
-
   return (
     <Animated.View style={{ alignItems: 'center', opacity: opacityAnim, transform: [{ scale: scaleAnim }] }}>
       <View
@@ -152,7 +152,6 @@ const InsightCard = React.memo(function InsightCard({ insight, isDark, onPress }
   const onPressOut = useCallback(() => {
     Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }).start();
   }, [scaleAnim]);
-
   return (
     <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
       <TouchableOpacity
@@ -218,6 +217,7 @@ export default function HomeScreen() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [preferredType, setPreferredType] = useState<'income' | 'expense' | 'transfer' | 'debt' | null>(null);
   const [activeMetricTooltip, setActiveMetricTooltip] = useState<MetricCardTarget | null>(null);
+  const [showQuickAddMenu, setShowQuickAddMenu] = useState(false);
   const { theme } = useTheme();
   const { t } = useI18n();
   const fabScale = useRef(new Animated.Value(1)).current;
@@ -245,6 +245,7 @@ export default function HomeScreen() {
     deleteTransaction,
   } = useTransactionStore();
   const { openAddTransactionAt, consumeQuickAdd } = useQuickActionsStore();
+  const openNotesComposer = useTabNavigationStore((state) => state.openNotesComposer);
 
   const currentMonth = useMemo(() => new Date().toISOString().slice(0, 7), []);
   const monthlyIncome = getTotalIncome(currentMonth);
@@ -368,37 +369,25 @@ export default function HomeScreen() {
   }, [fabScale]);
   const onFabPressOut = useCallback(() => {
     Animated.spring(fabScale, { toValue: 1, useNativeDriver: true, friction: 6 }).start();
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setPreferredType(null);
-    setShowAddModal(true);
   }, [fabScale]);
 
-  const handleFabLongPress = useCallback(() => {
-    Alert.alert(t('home.addType.title'), t('home.addType.message'), [
-      {
-        text: 'Income',
-        onPress: () => {
-          setPreferredType('income');
-          setShowAddModal(true);
-        },
-      },
-      {
-        text: 'Expense',
-        onPress: () => {
-          setPreferredType('expense');
-          setShowAddModal(true);
-        },
-      },
-      {
-        text: 'Transfer',
-        onPress: () => {
-          setPreferredType('transfer');
-          setShowAddModal(true);
-        },
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }, [setPreferredType, setShowAddModal]);
+  const handleAddFabPress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowQuickAddMenu((current) => !current);
+  }, []);
+
+  const handleAddTransactionPress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setShowQuickAddMenu(false);
+    setPreferredType(null);
+    setShowAddModal(true);
+  }, []);
+
+  const handleAddNotePress = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowQuickAddMenu(false);
+    openNotesComposer();
+  }, [openNotesComposer]);
 
   const handleMetricPress = useCallback((target: MetricCardTarget) => {
     setActiveMetricTooltip((current) => (current === target ? null : target));
@@ -423,12 +412,79 @@ export default function HomeScreen() {
   const isDark = theme.isDark;
   const metricTooltipBackground = isDark ? '#0F172A' : '#1F2937';
 
+  const heroCard = (
+    <LinearGradient
+      colors={isDark ? ['#14332B', '#0C1F1A'] : ['#0D3B2E', '#155C47']}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.heroCard}
+    >
+      <View style={styles.heroTop}>
+        <View>
+          <Text style={styles.heroLabel}>Net Worth</Text>
+          <AdaptiveAmountText
+            style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}
+            minFontSize={18}
+            value={`${netBalance < 0 ? '-' : ''}${formatCurrency(Math.abs(netBalance))}`}
+          />
+          <Text
+            style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.72}
+          >
+            This month {monthlyCashFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(monthlyCashFlow))}
+          </Text>
+        </View>
+        <View style={styles.cashFlowPill}>
+          <Text style={styles.cashFlowPillLabel}>Cash Flow</Text>
+          <View style={styles.cashFlowValueRow}>
+            {monthlyCashFlow >= 0 ? (
+              <ArrowUpRight size={12} color="#4ADE80" />
+            ) : (
+              <ArrowDownRight size={12} color="#F87171" />
+            )}
+            <AdaptiveAmountText
+              style={[
+                styles.cashFlowPillText,
+                { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
+              ]}
+              minFontSize={9}
+              value={`${monthlyCashFlow >= 0 ? '+' : ''}${formatCurrency(monthlyCashFlow)}`}
+            />
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.flowRow}>
+        <View style={styles.flowItem}>
+          <View style={[styles.flowIcon, { backgroundColor: 'rgba(74,222,128,0.15)' }]}>
+            <TrendingUp size={13} color="#4ADE80" />
+          </View>
+          <View>
+            <Text style={styles.flowLabel}>Income</Text>
+            <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyIncome)} />
+          </View>
+        </View>
+        <View style={styles.flowDivider} />
+        <View style={styles.flowItem}>
+          <View style={[styles.flowIcon, { backgroundColor: 'rgba(248,113,113,0.15)' }]}>
+            <TrendingDown size={13} color="#F87171" />
+          </View>
+          <View>
+            <Text style={styles.flowLabel}>Expenses</Text>
+            <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyExpenses)} />
+          </View>
+        </View>
+      </View>
+    </LinearGradient>
+  );
+
   const renderMetricTooltip = (target: MetricCardTarget) => {
     if (activeMetricTooltip !== target) {
       return null;
     }
-
-    return (
+  return (
       <View pointerEvents="none" style={[styles.metricTooltip, { backgroundColor: metricTooltipBackground }]}>
         <Text style={styles.metricTooltipText}>{metricTooltipMessages[target]}</Text>
         <View style={[styles.metricTooltipArrow, { borderTopColor: metricTooltipBackground }]} />
@@ -457,13 +513,13 @@ export default function HomeScreen() {
   }, [consumeQuickAdd, openAddTransactionAt]);
 
   if (!isLoaded && !showSkeleton) {
-    return (
+  return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]} />
     );
   }
 
   if (!isLoaded) {
-    return (
+  return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <View style={styles.skeletonWrap}>
           <SkeletonBlock width="100%" height={144} />
@@ -482,83 +538,21 @@ export default function HomeScreen() {
       </View>
     );
   }
-
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+      {heroCard}
+
       <ScrollView
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
-        onScrollBeginDrag={() => setActiveMetricTooltip(null)}
+        onScrollBeginDrag={() => {
+          setActiveMetricTooltip(null);
+          setShowQuickAddMenu(false);
+        }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
         }
       >
-        <LinearGradient
-          colors={isDark ? ['#14332B', '#0C1F1A'] : ['#0D3B2E', '#155C47']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.heroCard}
-        >
-          <View style={styles.heroTop}>
-            <View>
-              <Text style={styles.heroLabel}>Net Worth</Text>
-              <AdaptiveAmountText
-                style={[styles.heroBalance, netBalance < 0 && styles.negativeBalance]}
-                minFontSize={18}
-                value={`${netBalance < 0 ? '-' : ''}${formatCurrency(Math.abs(netBalance))}`}
-              />
-              <Text
-                style={[styles.heroMeta, monthlyCashFlow < 0 && styles.heroMetaNegative]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.72}
-              >
-                This month {monthlyCashFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(monthlyCashFlow))}
-              </Text>
-            </View>
-            <View style={styles.cashFlowPill}>
-              <Text style={styles.cashFlowPillLabel}>Cash Flow</Text>
-              <View style={styles.cashFlowValueRow}>
-                {monthlyCashFlow >= 0 ? (
-                  <ArrowUpRight size={12} color="#4ADE80" />
-                ) : (
-                  <ArrowDownRight size={12} color="#F87171" />
-                )}
-                <AdaptiveAmountText
-                  style={[
-                    styles.cashFlowPillText,
-                    { color: monthlyCashFlow >= 0 ? '#4ADE80' : '#F87171' },
-                  ]}
-                  minFontSize={9}
-                  value={`${monthlyCashFlow >= 0 ? '+' : ''}${formatCurrency(monthlyCashFlow)}`}
-                />
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.flowRow}>
-            <View style={styles.flowItem}>
-              <View style={[styles.flowIcon, { backgroundColor: 'rgba(74,222,128,0.15)' }]}>
-                <TrendingUp size={13} color="#4ADE80" />
-              </View>
-              <View>
-                <Text style={styles.flowLabel}>Income</Text>
-                <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyIncome)} />
-              </View>
-            </View>
-            <View style={styles.flowDivider} />
-            <View style={styles.flowItem}>
-              <View style={[styles.flowIcon, { backgroundColor: 'rgba(248,113,113,0.15)' }]}>
-                <TrendingDown size={13} color="#F87171" />
-              </View>
-              <View>
-                <Text style={styles.flowLabel}>Expenses</Text>
-                <AdaptiveAmountText style={styles.flowValue} minFontSize={11} value={formatCurrency(monthlyExpenses)} />
-              </View>
-            </View>
-          </View>
-        </LinearGradient>
-
 
         <View style={styles.metricsRow}>
           <TouchableOpacity
@@ -876,12 +870,29 @@ export default function HomeScreen() {
       </ScrollView>
 
       <Animated.View style={[styles.fabContainer, { transform: [{ scale: fabScale }] }]}>
+        {showQuickAddMenu ? (
+          <View style={[styles.quickAddMenu, { backgroundColor: isDark ? '#111827' : '#FFFFFF', borderColor: theme.colors.border }]}>
+            <TouchableOpacity style={styles.quickAddOption} onPress={handleAddTransactionPress} activeOpacity={0.85}>
+              <View style={[styles.quickAddIconWrap, { backgroundColor: isDark ? '#163D31' : '#DCFCE7' }]}>
+                <Plus size={15} color={isDark ? '#4ADE80' : '#166534'} />
+              </View>
+              <Text style={[styles.quickAddOptionText, { color: theme.colors.text }]}>Add transaction</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.quickAddOption} onPress={handleAddNotePress} activeOpacity={0.85}>
+              <View style={[styles.quickAddIconWrap, { backgroundColor: isDark ? '#1E293B' : '#E2E8F0' }]}>
+                <FileText size={15} color={isDark ? '#E5E7EB' : '#334155'} />
+              </View>
+              <Text style={[styles.quickAddOptionText, { color: theme.colors.text }]}>Add note</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         <TouchableOpacity
           style={[styles.fab, { backgroundColor: isDark ? '#16A34A' : '#0D3B2E' }]}
           onPressIn={onFabPressIn}
           onPressOut={onFabPressOut}
-          onLongPress={handleFabLongPress}
-          delayLongPress={250}
+          onPress={handleAddFabPress}
           activeOpacity={1}
           testID="add-transaction-fab"
         >
@@ -923,34 +934,36 @@ const styles = StyleSheet.create({
   heroCard: {
     marginHorizontal: 16,
     marginTop: 8,
-    borderRadius: 18,
-    padding: 18,
+    marginBottom: 4,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   heroTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 10,
   },
   heroLabel: {
     color: 'rgba(255,255,255,0.55)',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600' as const,
-    letterSpacing: 0.8,
+    letterSpacing: 0.6,
     textTransform: 'uppercase' as const,
   },
   heroBalance: {
     color: '#FFFFFF',
-    fontSize: 26,
+    fontSize: 18,
     fontWeight: '800' as const,
-    marginTop: 3,
-    letterSpacing: -0.5,
+    marginTop: 1,
+    letterSpacing: -0.25,
   },
   heroMeta: {
     color: 'rgba(255,255,255,0.72)',
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '600' as const,
-    marginTop: 5,
+    marginTop: 3,
   },
   heroMetaNegative: {
     color: '#FCA5A5',
@@ -961,26 +974,26 @@ const styles = StyleSheet.create({
   cashFlowPill: {
     flexDirection: 'column',
     alignItems: 'flex-start',
-    gap: 1,
+    gap: 0,
     backgroundColor: 'rgba(255,255,255,0.08)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
-    marginTop: 2,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 11,
+    marginTop: 1,
   },
   cashFlowPillLabel: {
-    fontSize: 9,
+    fontSize: 7,
     fontWeight: '600' as const,
     color: 'rgba(255,255,255,0.6)',
-    letterSpacing: 0.3,
+    letterSpacing: 0.25,
   },
   cashFlowValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   cashFlowPillText: {
-    fontSize: 11,
+    fontSize: 9,
     fontWeight: '700' as const,
     flexShrink: 1,
   },
@@ -988,8 +1001,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.06)',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
   },
   flowItem: {
     flex: 1,
@@ -997,31 +1011,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   flowIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 8,
+    marginRight: 6,
   },
   flowLabel: {
     color: 'rgba(255,255,255,0.5)',
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '600' as const,
-    letterSpacing: 0.3,
+    letterSpacing: 0.25,
   },
   flowValue: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 11,
     fontWeight: '700' as const,
     marginTop: 1,
     flexShrink: 1,
   },
   flowDivider: {
     width: 1,
-    height: 24,
+    height: 18,
     backgroundColor: 'rgba(255,255,255,0.12)',
-    marginHorizontal: 8,
+    marginHorizontal: 6,
   },
   metricsRow: {
     flexDirection: 'row',
@@ -1291,8 +1305,41 @@ const styles = StyleSheet.create({
   },
   fabContainer: {
     position: 'absolute',
-    bottom: 24,
     right: 24,
+    bottom: 24,
+    alignItems: 'flex-end',
+  },
+  quickAddMenu: {
+    minWidth: 168,
+    marginBottom: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.14,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  quickAddOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  quickAddIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickAddOptionText: {
+    fontSize: 13,
+    fontWeight: '600' as const,
   },
   fab: {
     width: 56,

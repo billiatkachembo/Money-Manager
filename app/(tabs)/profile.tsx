@@ -1,4 +1,4 @@
-﻿/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
@@ -1398,7 +1398,7 @@ export default function ProfileScreen() {
       </View>
       <View style={styles.footer}>
         <Text style={[styles.version, { color: theme.colors.textSecondary }]}>Money Manager v1.0.0</Text>
-        <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Made with Billiat</Text>
+        <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Designed and developed by Billiat</Text>
       </View>
       
 {/* App Settings Modal */}

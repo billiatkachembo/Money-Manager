@@ -86,10 +86,10 @@ const TRANSACTION_TYPE_OPTIONS: Array<{
   accent: string;
   icon: React.ComponentType<{ size?: number; color?: string }>;
 }> = [
-  { key: 'expense', label: 'Expense', accent: '#F97316', icon: ArrowDownRight },
-  { key: 'income', label: 'Income', accent: '#16A34A', icon: ArrowUpRight },
-  { key: 'transfer', label: 'Transfer', accent: '#2563EB', icon: ArrowLeftRight },
-  { key: 'debt', label: 'Debt', accent: '#A855F7', icon: Landmark },
+  { key: 'expense', label: 'Expense', accent: '#C2410C', icon: ArrowDownRight },
+  { key: 'income', label: 'Income', accent: '#166534', icon: ArrowUpRight },
+  { key: 'transfer', label: 'Transfer', accent: '#1D4ED8', icon: ArrowLeftRight },
+  { key: 'debt', label: 'Debt', accent: '#7E22CE', icon: Landmark },
 ];
 
 const createEmptyOcrDetections = () => ({
@@ -862,7 +862,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   };
 
   const amountEntryValue = (activeSheet === 'calculator' ? calculatorDraft : amount).replace(/\*/g, 'x');
-  const amountFieldFontSize = useMemo(() => getAdaptiveAmountFontSize(amountEntryValue || '0', 22, 16), [amountEntryValue]);
+  const amountFieldFontSize = useMemo(() => getAdaptiveAmountFontSize(amountEntryValue || '0', 19, 14), [amountEntryValue]);
 
   const openAnchoredSheet = (
     sheetName: 'category' | 'accounts',
@@ -1446,11 +1446,11 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
             ) : null}
           </View>
           {type === 'expense' ? (
-            <View style={styles.inputGroup}>
-              <View style={styles.recurringRow}>
+            <View style={[styles.inputGroup, styles.compactToggleGroup]}>
+              <View style={[styles.recurringRow, styles.compactToggleRow]}>
                 <View style={styles.recurringInfo}>
                   <Landmark size={20} color={theme.colors.primary} />
-                  <Text style={[styles.label, { color: theme.colors.text }]}>{t('addTransaction.debtPayment')}</Text>
+                  <Text style={[styles.label, styles.recurringToggleLabel, { color: theme.colors.text }]}>{t('addTransaction.debtPayment')}</Text>
                 </View>
                 <Switch
                   value={debtPayment}
@@ -1463,10 +1463,10 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
           ) : null}
 
           <View style={styles.inputGroup}>
-            <View style={styles.recurringRow}>
+            <View style={[styles.recurringRow, !isRecurring && styles.compactToggleRow]}>
               <View style={styles.recurringInfo}>
                 <Repeat size={20} color={theme.colors.primary} />
-                <Text style={[styles.label, { color: theme.colors.text }]}>{t('addTransaction.recurringTransaction')}</Text>
+                <Text style={[styles.label, styles.recurringToggleLabel, { color: theme.colors.text }]}>{t('addTransaction.recurringTransaction')}</Text>
               </View>
               <Switch
                 value={isRecurring}
@@ -1669,6 +1669,9 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     position: 'relative',
   },
+  compactToggleGroup: {
+    marginBottom: 12,
+  },
   label: {
     fontSize: 16,
     fontWeight: '600',
@@ -1704,12 +1707,12 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   amountField: {
-    minHeight: 44,
+    minHeight: 38,
     paddingHorizontal: 0,
-    paddingTop: 4,
-    paddingBottom: 8,
+    paddingTop: 2,
+    paddingBottom: 6,
     borderBottomWidth: 1,
-    fontSize: 22,
+    fontSize: 19,
     fontWeight: '600',
     textAlign: 'right',
   },
@@ -2256,10 +2259,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
+  compactToggleRow: {
+    marginBottom: 0,
+  },
   recurringInfo: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  recurringToggleLabel: {
+    marginBottom: 0,
   },
   frequencySelector: {
     flexDirection: 'row',

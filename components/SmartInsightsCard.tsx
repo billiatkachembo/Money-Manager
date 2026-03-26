@@ -42,6 +42,16 @@ interface AnalyticsSummary {
 
 const DAY_MS = 1000 * 60 * 60 * 24;
 
+function clampInsightPercent(value: number, allowNegative = false): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const rounded = Math.round(value);
+  return Math.min(100, Math.max(allowNegative ? -100 : 0, rounded));
+}
+
+
 function parseTransactionDate(value: Transaction['date']): Date | null {
   const parsed = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -150,11 +160,13 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
     const trendState: 'up' | 'down' | 'flat' =
       trendPercent > 20 ? 'up' : trendPercent < -20 ? 'down' : 'flat';
 
+    const clampedTrendPercent = clampInsightPercent(Math.abs(trendPercent));
+
     const trendText =
       trendState === 'up'
-        ? `Spending increased ${Math.round(trendPercent)}% this week`
+        ? `Spending increased ${clampedTrendPercent}% this week`
         : trendState === 'down'
-          ? `Good job, spending decreased ${Math.round(Math.abs(trendPercent))}% this week`
+          ? `Good job, spending decreased ${clampedTrendPercent}% this week`
           : previousWeekExpenses === 0 && lastWeekExpenses === 0
             ? 'No expense activity in the last 14 days'
             : 'Spending is stable versus last week';
@@ -283,7 +295,7 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
       };
     }
 
-    const deviation = Math.round(Math.abs(analytics.spendingPace - 1) * 100);
+    const deviation = clampInsightPercent(Math.abs(analytics.spendingPace - 1) * 100);
 
     if (analytics.spendingPace > 1.05) {
       return {
@@ -404,11 +416,11 @@ export const SmartInsightsCard = React.memo(function SmartInsightsCard() {
         ratioIcon = 'alert';
       } else if (Number.isFinite(analytics.spendingRatio)) {
         if (analytics.spendingRatio > 1) {
-          ratioMessage = `Your expenses exceed income by ${Math.round((analytics.spendingRatio - 1) * 100)}%`;
+          ratioMessage = `Your expenses exceed income by ${clampInsightPercent((analytics.spendingRatio - 1) * 100)}%`;
           ratioTone = 'warning';
           ratioIcon = 'alert';
         } else {
-          ratioMessage = `You are spending ${Math.round(analytics.spendingRatio * 100)}% of your income`;
+          ratioMessage = `You are spending ${clampInsightPercent(analytics.spendingRatio * 100)}% of your income`;
           ratioTone = analytics.spendingRatio <= 0.8 ? 'positive' : analytics.spendingRatio <= 1 ? 'neutral' : 'warning';
           ratioIcon = analytics.spendingRatio <= 0.8 ? 'check' : analytics.spendingRatio <= 1 ? 'check' : 'alert';
         }

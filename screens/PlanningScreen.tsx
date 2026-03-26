@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { View, StyleSheet, ScrollView, Pressable, Text } from 'react-native';
 import { Calculator, PiggyBank, Target } from 'lucide-react-native';
 import { useTheme } from '@/store/theme-store';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useFinancialCalculators } from '@/hooks/useFinancialCalculators';
+import { PlanningOverviewCard } from '@/components/planning/PlanningOverviewCard';
 import { GoalsSection } from '@/components/planning/GoalsSection';
 import { BudgetsSection } from '@/components/planning/BudgetsSection';
 import { CalculatorsSection } from '@/components/planning/CalculatorsSection';
@@ -109,7 +110,12 @@ export default function PlanningScreen() {
         </Pressable>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        showsVerticalScrollIndicator={false}
+      >
+        <PlanningOverviewCard />
         {activeSection === 'goals' && <GoalsSection />}
         {activeSection === 'budgets' && <BudgetsSection />}
         {activeSection === 'calculator' && (
@@ -136,7 +142,8 @@ const styles = StyleSheet.create({
   tabContainer: {
     flexDirection: 'row',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 10,
     borderBottomWidth: 1,
   },
   tab: {
@@ -145,7 +152,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     borderRadius: 12,
     marginHorizontal: 4,
   },
@@ -155,7 +162,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(102, 126, 234, 0.3)',
   },
   tabPressed: {
-    opacity: 0.75,
+    opacity: 0.78,
   },
   tabText: {
     fontSize: 14,
@@ -164,5 +171,8 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  contentContainer: {
+    paddingBottom: 24,
   },
 });

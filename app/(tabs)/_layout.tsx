@@ -35,17 +35,17 @@ export default function TabLayout() {
   const { t } = useI18n();
 
   const topTabs: TabItem[] = [
-    { key: 'home', title: t('tabs.home'), icon: Home, component: HomeScreen },
-    { key: 'transactions', title: t('tabs.transactions'), icon: List, component: TransactionsScreen },
+    { key: 'accounts', title: t('tabs.accounts'), icon: CreditCard, component: AccountsScreen },
     { key: 'analytics', title: t('tabs.analytics'), icon: BarChart3, component: AnalyticsScreen },
-    { key: 'profile', title: t('tabs.profile'), icon: User, component: ProfileScreen },
+    { key: 'planning', title: t('tabs.planning'), icon: Target, component: PlanningScreen },
+    { key: 'notes', title: t('tabs.notes'), icon: FileText, component: NotesScreen },
   ];
 
   const bottomTabs: TabItem[] = [
+    { key: 'home', title: t('tabs.home'), icon: Home, component: HomeScreen },
+    { key: 'transactions', title: t('tabs.transactions'), icon: List, component: TransactionsScreen },
     { key: 'calendar', title: t('tabs.calendar'), icon: Calendar, component: CalendarScreen },
-    { key: 'accounts', title: t('tabs.accounts'), icon: CreditCard, component: AccountsScreen },
-    { key: 'notes', title: t('tabs.notes'), icon: FileText, component: NotesScreen },
-    { key: 'planning', title: t('tabs.planning'), icon: Target, component: PlanningScreen },
+    { key: 'profile', title: t('tabs.profile'), icon: User, component: ProfileScreen },
   ];
 
   const allTabs = [...topTabs, ...bottomTabs];
@@ -56,159 +56,167 @@ export default function TabLayout() {
       flex: 1,
       backgroundColor: theme.colors.background,
     },
-    topNavContainer: {
-      backgroundColor: theme.colors.surface,
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      paddingBottom: 12,
-    },
-    topTabsGrid: {
-      flexDirection: 'row',
+    topNavShell: {
+      backgroundColor: theme.colors.background,
+      paddingTop: insets.top + 6,
+      paddingBottom: 8,
       paddingHorizontal: 16,
-      marginBottom: 16,
-      gap: 8,
+    },
+    topNavTrack: {
+      flexDirection: 'row',
+      padding: 4,
+      borderRadius: 18,
+      backgroundColor: theme.isDark ? '#111827' : '#EEF2F6',
+      borderWidth: 1,
+      borderColor: theme.isDark ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.05)',
     },
     topTabItem: {
       flex: 1,
+      minHeight: 46,
+      borderRadius: 14,
       alignItems: 'center',
-      paddingVertical: 12,
-      paddingHorizontal: 8,
-      borderRadius: 16,
-      backgroundColor: theme.colors.background,
-      borderWidth: 1,
-      borderColor: 'transparent',
+      justifyContent: 'center',
+      paddingHorizontal: 6,
+      paddingVertical: 6,
     },
     activeTopTabItem: {
-      backgroundColor: theme.colors.primary + '10',
-      borderColor: theme.colors.primary,
-      shadowColor: theme.colors.primary,
-      shadowOffset: {
-        width: 0,
-        height: 2,
-      },
-      shadowOpacity: 0.1,
-      shadowRadius: 4,
-      elevation: 2,
+      backgroundColor: theme.colors.surface,
+      shadowColor: '#020617',
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: theme.isDark ? 0.2 : 0.08,
+      shadowRadius: 12,
+      elevation: 3,
     },
     topTabLabel: {
-      fontSize: 12,
-      fontWeight: '500',
+      marginTop: 3,
+      fontSize: 10,
+      fontWeight: '600',
       color: theme.colors.textSecondary,
-      marginTop: 4,
       textAlign: 'center',
     },
     activeTopTabLabel: {
-      color: theme.colors.primary,
-      fontWeight: '600',
+      color: theme.colors.text,
     },
-    bottomTabsContainer: {
-      flexDirection: 'row',
-      justifyContent: 'space-around',
-      paddingHorizontal: 20,
-      paddingTop: 12,
-      paddingBottom: 4,
+    content: {
+      flex: 1,
+      backgroundColor: theme.colors.background,
+    },
+    bottomNavShell: {
+      backgroundColor: theme.colors.surface,
       borderTopWidth: 1,
       borderTopColor: theme.colors.border,
-      backgroundColor: theme.isDark ? theme.colors.surface : '#fafbfc',
+      paddingTop: 8,
+      paddingBottom: Math.max(insets.bottom, 10),
+      paddingHorizontal: 10,
+    },
+    bottomNavRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      justifyContent: 'space-between',
     },
     bottomTabItem: {
-      alignItems: 'center',
-      paddingVertical: 10,
-      paddingHorizontal: 16,
-      borderRadius: 14,
-      minWidth: 90,
       flex: 1,
-      marginHorizontal: 4,
+      minHeight: 52,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 4,
+      paddingVertical: 6,
+      borderRadius: 12,
     },
     activeBottomTabItem: {
-      backgroundColor: theme.colors.primary + '15',
-      borderWidth: 1,
-      borderColor: theme.colors.primary + '30',
+      backgroundColor: theme.colors.primary + '10',
     },
     bottomTabLabel: {
-      fontSize: 11,
+      marginTop: 3,
+      fontSize: 10,
       fontWeight: '500',
       color: theme.colors.textSecondary,
-      marginTop: 4,
       textAlign: 'center',
     },
     activeBottomTabLabel: {
       color: theme.colors.primary,
-      fontWeight: '600',
+      fontWeight: '700',
     },
-    content: {
-      flex: 1,
+    bottomActiveIndicator: {
+      marginTop: 4,
+      width: 18,
+      height: 3,
+      borderRadius: 999,
+      backgroundColor: theme.colors.primary,
     },
   });
 
+  const renderTopTab = (tab: TabItem) => {
+    const isActive = activeTab === tab.key;
+    const IconComponent = tab.icon;
+
+    return (
+      <TouchableOpacity
+        key={tab.key}
+        style={[styles.topTabItem, isActive && styles.activeTopTabItem]}
+        onPress={() => setActiveTab(tab.key)}
+        activeOpacity={0.88}
+      >
+        <IconComponent
+          size={17}
+          color={isActive ? theme.colors.text : theme.colors.textSecondary}
+        />
+        <Text
+          style={[styles.topTabLabel, isActive && styles.activeTopTabLabel]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
+          {tab.title}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderBottomTab = (tab: TabItem) => {
+    const isActive = activeTab === tab.key;
+    const IconComponent = tab.icon;
+
+    return (
+      <TouchableOpacity
+        key={tab.key}
+        style={[styles.bottomTabItem, isActive && styles.activeBottomTabItem]}
+        onPress={() => setActiveTab(tab.key)}
+        activeOpacity={0.88}
+      >
+        <IconComponent
+          size={18}
+          color={isActive ? theme.colors.primary : theme.colors.textSecondary}
+        />
+        <Text
+          style={[styles.bottomTabLabel, isActive && styles.activeBottomTabLabel]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
+          {tab.title}
+        </Text>
+        {isActive ? <View style={styles.bottomActiveIndicator} /> : null}
+      </TouchableOpacity>
+    );
+  };
+
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={[styles.topNavContainer, { paddingTop: insets.top }]}>
-        <View style={styles.topTabsGrid}>
-          {topTabs.map((tab) => {
-            const isActive = activeTab === tab.key;
-            const IconComponent = tab.icon;
-
-            return (
-              <TouchableOpacity
-                key={tab.key}
-                style={[
-                  styles.topTabItem,
-                  isActive && styles.activeTopTabItem,
-                ]}
-                onPress={() => setActiveTab(tab.key)}
-              >
-                <IconComponent
-                  size={22}
-                  color={isActive ? theme.colors.primary : theme.colors.textSecondary}
-                />
-                <Text
-                  style={[
-                    styles.topTabLabel,
-                    isActive && styles.activeTopTabLabel,
-                  ]}
-                >
-                  {tab.title}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        <View style={styles.bottomTabsContainer}>
-          {bottomTabs.map((tab) => {
-            const isActive = activeTab === tab.key;
-            const IconComponent = tab.icon;
-
-            return (
-              <TouchableOpacity
-                key={tab.key}
-                style={[
-                  styles.bottomTabItem,
-                  isActive && styles.activeBottomTabItem,
-                ]}
-                onPress={() => setActiveTab(tab.key)}
-              >
-                <IconComponent
-                  size={18}
-                  color={isActive ? theme.colors.primary : theme.colors.textSecondary}
-                />
-                <Text
-                  style={[
-                    styles.bottomTabLabel,
-                    isActive && styles.activeBottomTabLabel,
-                  ]}
-                >
-                  {tab.title}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+    <SafeAreaView style={styles.container} edges={[]}>
+      <View style={styles.topNavShell}>
+        <View style={styles.topNavTrack}>
+          {topTabs.map(renderTopTab)}
         </View>
       </View>
 
       <View style={styles.content}>
         <ActiveComponent />
+      </View>
+
+      <View style={styles.bottomNavShell}>
+        <View style={styles.bottomNavRow}>
+          {bottomTabs.map(renderBottomTab)}
+        </View>
       </View>
     </SafeAreaView>
   );

@@ -15,7 +15,81 @@ type QuickAddPermissionOptions = {
   requestPermission?: boolean;
 };
 
+const NOTIFICATIONS_SUPPORTED = Platform.OS !== 'web';
+
+export type AppNotificationPermissionState = 'granted' | 'denied' | 'undetermined' | 'unsupported';
+
+function getWebNotificationApi(): { permission: string; requestPermission: () => Promise<string> } | null {
+  const candidate = (globalThis as typeof globalThis & { Notification?: { permission?: string; requestPermission?: (() => Promise<string>) | (() => string) } }).Notification;
+
+  if (!candidate) {
+    return null;
+  }
+
+  const requestPermission = candidate.requestPermission as ((this: unknown) => Promise<string> | string) | undefined;
+  if (typeof requestPermission !== 'function') {
+    return null;
+  }
+
+  return {
+    permission: candidate.permission ?? 'default',
+    requestPermission: async () => await Promise.resolve(requestPermission.call(candidate)),
+  };
+}
+
+
+export async function getAppNotificationPermissionStateAsync(): Promise<AppNotificationPermissionState> {
+  if (Platform.OS === 'web') {
+    const WebNotification = getWebNotificationApi();
+    if (!WebNotification) {
+      return 'unsupported';
+    }
+
+    if (WebNotification.permission === 'granted') {
+      return 'granted';
+    }
+
+    if (WebNotification.permission === 'denied') {
+      return 'denied';
+    }
+
+    return 'undetermined';
+  }
+
+  const settings = await Notifications.getPermissionsAsync();
+  if (settings.granted || settings.status === 'granted') {
+    return 'granted';
+  }
+
+  if (settings.status === 'denied' || settings.canAskAgain === false) {
+    return 'denied';
+  }
+
+  return 'undetermined';
+}
+
+export async function requestAppNotificationPermissionAsync(): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    const WebNotification = getWebNotificationApi();
+    if (!WebNotification) {
+      return false;
+    }
+
+    if (WebNotification.permission === 'granted') {
+      return true;
+    }
+
+    const result = await WebNotification.requestPermission();
+    return result === 'granted';
+  }
+
+  return ensurePermissionAsync(true);
+}
+
 async function ensurePermissionAsync(requestPermission: boolean): Promise<boolean> {
+  if (!NOTIFICATIONS_SUPPORTED) {
+    return false;
+  }
   const settings = await Notifications.getPermissionsAsync();
   if (settings.granted || settings.status === 'granted') {
     return true;
@@ -32,8 +106,8 @@ async function ensurePermissionAsync(requestPermission: boolean): Promise<boolea
 async function ensureCategoryAsync(): Promise<void> {
   try {
     await Notifications.setNotificationCategoryAsync(QUICK_ADD_NOTIFICATION_CATEGORY_ID, [
-      { identifier: QUICK_ADD_ACTION_ID, buttonTitle: '➕ Add' },
-      { identifier: QUICK_SEARCH_ACTION_ID, buttonTitle: '🔍 Search' },
+      { identifier: QUICK_ADD_ACTION_ID, buttonTitle: 'Add' },
+      { identifier: QUICK_SEARCH_ACTION_ID, buttonTitle: 'Search' },
     ]);
   } catch (error) {
     console.warn('Quick Add category unavailable', error);
@@ -93,6 +167,9 @@ function parseReminderTime(reminderTime: string): { hour: number; minute: number
 }
 
 export async function clearQuickAddNotificationAsync(): Promise<void> {
+  if (!NOTIFICATIONS_SUPPORTED) {
+    return;
+  }
   try {
     await Notifications.dismissNotificationAsync(QUICK_ADD_NOTIFICATION_ID);
   } catch (error) {
@@ -107,6 +184,9 @@ export async function clearQuickAddNotificationAsync(): Promise<void> {
 }
 
 export async function clearDailyReminderAsync(): Promise<void> {
+  if (!NOTIFICATIONS_SUPPORTED) {
+    return;
+  }
   try {
     await Notifications.dismissNotificationAsync(DAILY_REMINDER_NOTIFICATION_ID);
   } catch (error) {
@@ -123,6 +203,9 @@ export async function clearDailyReminderAsync(): Promise<void> {
 export async function enableQuickAddNotificationAsync(
   options: QuickAddPermissionOptions = {}
 ): Promise<boolean> {
+  if (!NOTIFICATIONS_SUPPORTED) {
+    return false;
+  }
   const hasPermission = await ensurePermissionAsync(!!options.requestPermission);
   if (!hasPermission) {
     return false;
@@ -136,7 +219,7 @@ export async function enableQuickAddNotificationAsync(
     identifier: QUICK_ADD_NOTIFICATION_ID,
     content: {
       title: 'Money Manager',
-      body: 'Use ➕ Add for a transaction or note, or 🔍 Search for history.',
+      body: 'Use Add for a transaction or note, or Search for history.',
       data: { source: QUICK_ADD_NOTIFICATION_SOURCE },
       categoryIdentifier: QUICK_ADD_NOTIFICATION_CATEGORY_ID,
       sticky: true,
@@ -157,6 +240,9 @@ export async function enableDailyReminderAsync(
   reminderTime: string,
   options: QuickAddPermissionOptions = {}
 ): Promise<boolean> {
+  if (!NOTIFICATIONS_SUPPORTED) {
+    return false;
+  }
   const hasPermission = await ensurePermissionAsync(!!options.requestPermission);
   if (!hasPermission) {
     return false;

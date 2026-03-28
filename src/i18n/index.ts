@@ -97,6 +97,8 @@ const en: TranslationMap = {
   'addTransaction.borrowed': 'Borrowed',
   'addTransaction.lent': 'Lent',
   'addTransaction.counterparty': 'Counterparty',
+  'addTransaction.lenderPlaceholder': 'Lender',
+  'addTransaction.borrowerPlaceholder': 'Borrower',
   'addTransaction.dueDatePlaceholder': 'Due date (DD/MM/YYYY)',
   'addTransaction.interestRatePlaceholder': 'Interest rate (%)',
   'addTransaction.addButton': 'Add Transaction',

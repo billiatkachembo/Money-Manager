@@ -3,7 +3,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { FileText, Plus } from 'lucide-react-native';
@@ -22,11 +22,16 @@ import {
 } from '@/src/notifications/quick-add-notification';
 import { AppTooltipHost } from '@/components/ui/AppTooltipHost';
 import { installAlertTooltipBridge } from '@/src/ui/alert-tooltip-bridge';
+import { showAppTooltip } from '@/store/app-tooltip-store';
 
 SplashScreen.preventAutoHideAsync();
 
 
 function QuickAddNotificationManager() {
+  if (Platform.OS === 'web') {
+    return null;
+  }
+
   const lastHandledId = useRef<string | null>(null);
   const [showQuickCreate, setShowQuickCreate] = useState(false);
   const { theme } = useTheme();
@@ -184,6 +189,118 @@ function QuickAddNotificationManager() {
   );
 }
 
+type WebRuntimeBridge = typeof globalThis & {
+  location?: {
+    href: string;
+    pathname: string;
+    search: string;
+    hash: string;
+  };
+  history?: {
+    replaceState: (data: unknown, unused: string, url?: string | URL | null) => void;
+  };
+  document?: {
+    title?: string;
+  };
+};
+
+type PcManagerHandoffPayload = {
+  themeMode?: 'system' | 'light' | 'dark';
+  settings?: {
+    currency?: string;
+    language?: string;
+  };
+  userProfile?: {
+    name?: string;
+    email?: string;
+    phone?: string;
+    location?: string;
+    occupation?: string;
+    joinDate?: string;
+    avatar?: string;
+  };
+};
+
+function WebPcManagerHandoffManager() {
+  const appliedRef = useRef(false);
+  const { userProfile, updateSettings, updateUserProfile } = useTransactionStore();
+  const { setThemeMode } = useTheme();
+
+  useEffect(() => {
+    const webRuntime = globalThis as WebRuntimeBridge;
+
+    if (Platform.OS !== 'web' || !webRuntime.location?.href || appliedRef.current) {
+      return;
+    }
+
+    let currentUrl: URL;
+
+    try {
+      currentUrl = new URL(webRuntime.location.href);
+    } catch (error) {
+      return;
+    }
+
+    const rawPayload = currentUrl.searchParams.get('pc_manager_handoff');
+    if (!rawPayload) {
+      return;
+    }
+
+    appliedRef.current = true;
+
+    try {
+      const payload = JSON.parse(rawPayload) as PcManagerHandoffPayload;
+      const nextSettings: Record<string, string> = {};
+
+      if (typeof payload.settings?.currency === 'string' && payload.settings.currency.trim()) {
+        nextSettings.currency = payload.settings.currency.trim().toUpperCase();
+      }
+
+      if (typeof payload.settings?.language === 'string' && payload.settings.language.trim()) {
+        nextSettings.language = payload.settings.language.trim().toLowerCase();
+      }
+
+      if (Object.keys(nextSettings).length > 0) {
+        updateSettings(nextSettings);
+      }
+
+      if (payload.userProfile) {
+        const parsedJoinDate = payload.userProfile.joinDate ? new Date(payload.userProfile.joinDate) : userProfile.joinDate;
+        const safeJoinDate = Number.isNaN(parsedJoinDate.getTime()) ? userProfile.joinDate : parsedJoinDate;
+
+        updateUserProfile({
+          ...userProfile,
+          ...(typeof payload.userProfile.name === 'string' ? { name: payload.userProfile.name } : {}),
+          ...(typeof payload.userProfile.email === 'string' ? { email: payload.userProfile.email } : {}),
+          ...(typeof payload.userProfile.phone === 'string' ? { phone: payload.userProfile.phone } : {}),
+          ...(typeof payload.userProfile.location === 'string' ? { location: payload.userProfile.location } : {}),
+          ...(typeof payload.userProfile.occupation === 'string' ? { occupation: payload.userProfile.occupation } : {}),
+          ...(typeof payload.userProfile.avatar === 'string' ? { avatar: payload.userProfile.avatar } : {}),
+          joinDate: safeJoinDate,
+        });
+      }
+
+      if (payload.themeMode === 'system' || payload.themeMode === 'light' || payload.themeMode === 'dark') {
+        setThemeMode(payload.themeMode);
+      }
+
+      showAppTooltip({
+        tone: 'success',
+        title: 'PC Manager',
+        message: 'Your profile and preferences are ready on web.',
+      });
+    } catch (error) {
+      // Ignore malformed handoff payloads and just clear the parameter below.
+    }
+
+    currentUrl.searchParams.delete('pc_manager_handoff');
+    const cleanedPath = `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` || '/';
+    webRuntime.history?.replaceState({}, webRuntime.document?.title ?? '', cleanedPath);
+  }, [setThemeMode, updateSettings, updateUserProfile, userProfile]);
+
+  return null;
+}
+
 function RootLayoutNav() {
   const { theme } = useTheme();
 
@@ -192,6 +309,7 @@ function RootLayoutNav() {
   return (
     <>
       <StatusBar style={theme.isDark ? 'light' : 'dark'} />
+      <WebPcManagerHandoffManager />
       <QuickAddNotificationManager />
       <Stack screenOptions={{ headerBackTitle: 'Back' }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

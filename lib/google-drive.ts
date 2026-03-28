@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
 export interface DriveAuthState {
@@ -23,14 +24,53 @@ const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
 const BACKUP_FILE_PREFIXES = ['money-manager-drive-backup', 'money-manager-backup'];
+const isSecureStoreAvailable =
+  typeof SecureStore.getItemAsync === 'function' &&
+  typeof SecureStore.setItemAsync === 'function' &&
+  typeof SecureStore.deleteItemAsync === 'function';
+
+function getWebStorage(): Storage | null {
+  try {
+    const localStorageCandidate = (globalThis as typeof globalThis & { localStorage?: Storage }).localStorage;
+    return localStorageCandidate ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function getStoredValue(key: string): Promise<string | null> {
+  if (Platform.OS === 'web' || !isSecureStoreAvailable) {
+    return getWebStorage()?.getItem(key) ?? null;
+  }
+
+  return SecureStore.getItemAsync(key);
+}
+
+async function setStoredValue(key: string, value: string): Promise<void> {
+  if (Platform.OS === 'web' || !isSecureStoreAvailable) {
+    getWebStorage()?.setItem(key, value);
+    return;
+  }
+
+  await SecureStore.setItemAsync(key, value);
+}
+
+async function deleteStoredValue(key: string): Promise<void> {
+  if (Platform.OS === 'web' || !isSecureStoreAvailable) {
+    getWebStorage()?.removeItem(key);
+    return;
+  }
+
+  await SecureStore.deleteItemAsync(key);
+}
 
 export async function loadDriveAuth(): Promise<DriveAuthState | null> {
-  const accessToken = await SecureStore.getItemAsync(ACCESS_TOKEN_KEY);
+  const accessToken = await getStoredValue(ACCESS_TOKEN_KEY);
   if (!accessToken) {
     return null;
   }
-  const refreshToken = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
-  const expiresAtRaw = await SecureStore.getItemAsync(EXPIRES_AT_KEY);
+  const refreshToken = await getStoredValue(REFRESH_TOKEN_KEY);
+  const expiresAtRaw = await getStoredValue(EXPIRES_AT_KEY);
   const expiresAt = expiresAtRaw ? Number(expiresAtRaw) : undefined;
   return {
     accessToken,
@@ -40,27 +80,27 @@ export async function loadDriveAuth(): Promise<DriveAuthState | null> {
 }
 
 export async function saveDriveAuth(state: DriveAuthState, expiresIn?: number): Promise<void> {
-  await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, state.accessToken);
+  await setStoredValue(ACCESS_TOKEN_KEY, state.accessToken);
 
   if (state.refreshToken) {
-    await SecureStore.setItemAsync(REFRESH_TOKEN_KEY, state.refreshToken);
+    await setStoredValue(REFRESH_TOKEN_KEY, state.refreshToken);
   } else {
-    await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
+    await deleteStoredValue(REFRESH_TOKEN_KEY);
   }
 
   if (typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0) {
     const expiresAt = Date.now() + expiresIn * 1000;
-    await SecureStore.setItemAsync(EXPIRES_AT_KEY, String(expiresAt));
+    await setStoredValue(EXPIRES_AT_KEY, String(expiresAt));
   } else {
-    await SecureStore.deleteItemAsync(EXPIRES_AT_KEY);
+    await deleteStoredValue(EXPIRES_AT_KEY);
   }
 }
 
 export async function clearDriveAuth(): Promise<void> {
-  await SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
-  await SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY);
-  await SecureStore.deleteItemAsync(EXPIRES_AT_KEY);
-  await SecureStore.deleteItemAsync(FOLDER_ID_KEY);
+  await deleteStoredValue(ACCESS_TOKEN_KEY);
+  await deleteStoredValue(REFRESH_TOKEN_KEY);
+  await deleteStoredValue(EXPIRES_AT_KEY);
+  await deleteStoredValue(FOLDER_ID_KEY);
 }
 
 export function isTokenValid(state: DriveAuthState | null): boolean {
@@ -164,23 +204,23 @@ async function createFolder(accessToken: string, name: string): Promise<DriveFil
 }
 
 export async function getOrCreateBackupFolder(accessToken: string, name: string): Promise<string> {
-  const storedId = await SecureStore.getItemAsync(FOLDER_ID_KEY);
+  const storedId = await getStoredValue(FOLDER_ID_KEY);
   if (storedId) {
     const storedFolder = await resolveStoredFolder(accessToken, storedId);
     if (storedFolder?.id) {
       return storedFolder.id;
     }
-    await SecureStore.deleteItemAsync(FOLDER_ID_KEY);
+    await deleteStoredValue(FOLDER_ID_KEY);
   }
 
   const existing = await findFolder(accessToken, name);
   if (existing?.id) {
-    await SecureStore.setItemAsync(FOLDER_ID_KEY, existing.id);
+    await setStoredValue(FOLDER_ID_KEY, existing.id);
     return existing.id;
   }
 
   const created = await createFolder(accessToken, name);
-  await SecureStore.setItemAsync(FOLDER_ID_KEY, created.id);
+  await setStoredValue(FOLDER_ID_KEY, created.id);
   return created.id;
 }
 

@@ -12,6 +12,7 @@ import {
   TransactionCategory,
   UserProfile,
 } from '../../types/transaction';
+import type { CustomSubcategoryMap, TransactionSubcategory } from '../../constants/categories';
 import { parseDateValue } from '../../utils/date';
 
 export interface AppSettings {
@@ -53,6 +54,10 @@ export interface PersistedState {
   merchantProfiles: MerchantProfile[];
   customExpenseCategories: TransactionCategory[];
   customIncomeCategories: TransactionCategory[];
+  customDebtCategories: TransactionCategory[];
+  customExpenseSubcategories: CustomSubcategoryMap;
+  customIncomeSubcategories: CustomSubcategoryMap;
+  customDebtSubcategories: CustomSubcategoryMap;
   customAccountTypes: CustomAccountType[];
 }
 
@@ -77,6 +82,10 @@ export const STORAGE_KEYS = {
   merchantProfiles: 'merchantProfiles',
   customExpenseCategories: 'customExpenseCategories',
   customIncomeCategories: 'customIncomeCategories',
+  customDebtCategories: 'customDebtCategories',
+  customExpenseSubcategories: 'customExpenseSubcategories',
+  customIncomeSubcategories: 'customIncomeSubcategories',
+  customDebtSubcategories: 'customDebtSubcategories',
   customAccountTypes: 'customAccountTypes',
 } as const;
 
@@ -461,6 +470,50 @@ function deserializeTransactionCategories(raw: unknown): TransactionCategory[] {
     .filter((item): item is TransactionCategory => !!item);
 }
 
+function serializeSubcategoryMap(map: CustomSubcategoryMap): Record<string, unknown[]> {
+  return Object.fromEntries(
+    Object.entries(map).map(([key, subcategories]) => [
+      key,
+      subcategories
+        .filter((subcategory) => subcategory?.id && subcategory?.name)
+        .map((subcategory) => ({
+          id: subcategory.id,
+          name: subcategory.name,
+        })),
+    ])
+  );
+}
+
+function deserializeSubcategoryMap(raw: unknown): CustomSubcategoryMap {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+      key,
+      Array.isArray(value)
+        ? value
+            .map((entry) => {
+              if (!entry || typeof entry !== 'object') {
+                return null;
+              }
+
+              const candidate = entry as Record<string, unknown>;
+              const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+              const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+              if (!id || !name) {
+                return null;
+              }
+
+              return { id, name } as TransactionSubcategory;
+            })
+            .filter((entry): entry is TransactionSubcategory => !!entry)
+        : [],
+    ])
+  );
+}
+
 function serializeCustomAccountTypes(accountTypes: CustomAccountType[]): unknown[] {
   return accountTypes
     .filter((accountType) => accountType?.type && accountType?.label)
@@ -538,6 +591,10 @@ export async function loadPersistedState(
   const rawMerchants = parseJson<unknown>(map.get(STORAGE_KEYS.merchantProfiles) ?? null, []);
   const rawCustomExpenseCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customExpenseCategories) ?? null, []);
   const rawCustomIncomeCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customIncomeCategories) ?? null, []);
+  const rawCustomDebtCategories = parseJson<unknown>(map.get(STORAGE_KEYS.customDebtCategories) ?? null, []);
+  const rawCustomExpenseSubcategories = parseJson<unknown>(map.get(STORAGE_KEYS.customExpenseSubcategories) ?? null, {});
+  const rawCustomIncomeSubcategories = parseJson<unknown>(map.get(STORAGE_KEYS.customIncomeSubcategories) ?? null, {});
+  const rawCustomDebtSubcategories = parseJson<unknown>(map.get(STORAGE_KEYS.customDebtSubcategories) ?? null, {});
   const rawCustomAccountTypes = parseJson<unknown>(map.get(STORAGE_KEYS.customAccountTypes) ?? null, []);
 
   return {
@@ -553,6 +610,10 @@ export async function loadPersistedState(
     merchantProfiles: deserializeMerchantProfiles(rawMerchants),
     customExpenseCategories: deserializeTransactionCategories(rawCustomExpenseCategories),
     customIncomeCategories: deserializeTransactionCategories(rawCustomIncomeCategories),
+    customDebtCategories: deserializeTransactionCategories(rawCustomDebtCategories),
+    customExpenseSubcategories: deserializeSubcategoryMap(rawCustomExpenseSubcategories),
+    customIncomeSubcategories: deserializeSubcategoryMap(rawCustomIncomeSubcategories),
+    customDebtSubcategories: deserializeSubcategoryMap(rawCustomDebtSubcategories),
     customAccountTypes: deserializeCustomAccountTypes(rawCustomAccountTypes),
   };
 }
@@ -620,6 +681,41 @@ export async function savePersistedPatch(
     ]);
   }
 
+  if (patch.customDebtCategories) {
+    entries.push([
+      STORAGE_KEYS.customDebtCategories,
+      JSON.stringify(serializeTransactionCategories(patch.customDebtCategories)),
+    ]);
+  }
+
+  if (patch.customExpenseSubcategories) {
+    entries.push([
+      STORAGE_KEYS.customExpenseSubcategories,
+      JSON.stringify(serializeSubcategoryMap(patch.customExpenseSubcategories)),
+    ]);
+  }
+
+  if (patch.customIncomeSubcategories) {
+    entries.push([
+      STORAGE_KEYS.customIncomeSubcategories,
+      JSON.stringify(serializeSubcategoryMap(patch.customIncomeSubcategories)),
+    ]);
+  }
+
+  if (patch.customDebtSubcategories) {
+    entries.push([
+      STORAGE_KEYS.customDebtSubcategories,
+      JSON.stringify(serializeSubcategoryMap(patch.customDebtSubcategories)),
+    ]);
+  }
+
+  if (patch.customAccountTypes) {
+    entries.push([
+      STORAGE_KEYS.customAccountTypes,
+      JSON.stringify(serializeCustomAccountTypes(patch.customAccountTypes)),
+    ]);
+  }
+
   if (entries.length === 0) {
     return;
   }
@@ -633,6 +729,7 @@ export async function clearPersistedState(adapter: StorageAdapter = asyncStorage
 
 // Prepared adapter contract for future SQLite-backed repository.
 export const storageAdapter = asyncStorageAdapter;
+
 
 
 

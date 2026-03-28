@@ -64,6 +64,7 @@ import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom
 import { BlurView } from 'expo-blur';
 import { Transaction, Budget } from '@/types/transaction';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
+import { showAppTooltip } from '@/store/app-tooltip-store';
 import {
   ProfileHeader,
   ProfileStats,
@@ -75,7 +76,7 @@ import {
   SettingsModal,
   ImportModal,
 } from '@/components/profile';
-import { enableQuickAddNotificationAsync, disableQuickAddNotificationAsync, enableDailyReminderAsync, disableDailyReminderAsync } from '@/src/notifications/quick-add-notification';
+import { enableQuickAddNotificationAsync, disableQuickAddNotificationAsync, enableDailyReminderAsync, disableDailyReminderAsync, getAppNotificationPermissionStateAsync, requestAppNotificationPermissionAsync, type AppNotificationPermissionState } from '@/src/notifications/quick-add-notification';
 import {
   clearDriveAuth,
   downloadBackupFile,
@@ -203,6 +204,7 @@ export default function ProfileScreen() {
     financialGoals,
     userProfile,
     recurringRules,
+    merchantProfiles,
     updateSettings,
     updateUserProfile,
     attemptAutoRestoreFromDrive,
@@ -234,6 +236,7 @@ export default function ProfileScreen() {
   const [backupMessage, setBackupMessage] = useState<string>('');
   const [backupHistory, setBackupHistory] = useState<BackupHistoryItem[]>([]);
   const [avatarError, setAvatarError] = useState(false);
+  const [notificationPermissionState, setNotificationPermissionState] = useState<AppNotificationPermissionState>('undetermined');
   const autoBackupPromptedRef = useRef(false);
 
   const googleClientIds = useMemo(
@@ -282,6 +285,25 @@ export default function ProfileScreen() {
   const [driveAuth, setDriveAuth] = useState<DriveAuthState | null>(null);
 
   const currencies = CURRENCY_OPTIONS;
+
+  const configuredWebAppUrl = useMemo(() => {
+    const envUrl = process.env.EXPO_PUBLIC_WEB_APP_URL?.trim();
+    if (envUrl) {
+      return envUrl;
+    }
+
+    const webRuntime = globalThis as typeof globalThis & {
+      location?: {
+        origin?: string;
+      };
+    };
+
+    if (Platform.OS === 'web' && webRuntime.location?.origin) {
+      return webRuntime.location.origin;
+    }
+
+    return null;
+  }, []);
 
   const settingsSnapPoints = useMemo(() => ['85%'], []);
   const editorSnapPoints = useMemo(() => ['80%'], []);
@@ -404,7 +426,7 @@ export default function ProfileScreen() {
   );
   const activeAccountCount = useMemo(() => accounts.filter((account) => account.isActive).length, [accounts]);
   const currentCurrency = useMemo(
-    () => currencies.find((currency) => currency.code === settings.currency) ?? currencies[0],
+    () => currencies.find((currency) => currency.code.toUpperCase() === (settings.currency ?? '').toUpperCase()) ?? currencies[0],
     [currencies, settings.currency]
   );
   const currentLanguage = useMemo(
@@ -412,6 +434,7 @@ export default function ProfileScreen() {
     [languages, settings.language]
   );
   const driveConnected = Boolean(driveAuth?.accessToken || driveAuth?.refreshToken);
+  const notificationPermissionGranted = notificationPermissionState === 'granted';
   const overviewStats = useMemo(
     () => [
       { label: 'Transactions', value: `${transactions.length}` },
@@ -439,8 +462,16 @@ export default function ProfileScreen() {
       },
       {
         label: 'Daily Reminder',
-        helper: settings.dailyReminderEnabled ? 'Scheduled reminder' : 'Reminders are off',
-        value: settings.dailyReminderEnabled ? reminderTimeLabel : 'Off',
+        helper: !notificationPermissionGranted
+          ? notificationPermissionState === 'denied'
+            ? 'Notifications are blocked'
+            : notificationPermissionState === 'unsupported'
+              ? 'Notifications unavailable here'
+              : 'Enable notifications to use reminders'
+          : settings.dailyReminderEnabled
+            ? 'Scheduled reminder'
+            : 'Reminders are off',
+        value: settings.dailyReminderEnabled && notificationPermissionGranted ? reminderTimeLabel : 'Off',
         icon: Bell,
         tint: '#EA580C',
       },
@@ -459,11 +490,51 @@ export default function ProfileScreen() {
       currentLanguage.name,
       driveConnected,
       lastBackupText,
+      notificationPermissionGranted,
+      notificationPermissionState,
       reminderTimeLabel,
       settings.dailyReminderEnabled,
     ]
   );
   const driveAccountLabel = driveConnected ? (userProfile.email?.trim() || 'Connected') : undefined;
+
+  const refreshNotificationPermissionState = useCallback(async () => {
+    try {
+      const nextState = await getAppNotificationPermissionStateAsync();
+      setNotificationPermissionState(nextState);
+      return nextState;
+    } catch {
+      setNotificationPermissionState('unsupported');
+      return 'unsupported' as const;
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshNotificationPermissionState();
+  }, [refreshNotificationPermissionState]);
+
+  const handleEnableNotificationsPress = async () => {
+    const granted = await requestAppNotificationPermissionAsync();
+    const nextState = await refreshNotificationPermissionState();
+
+    if (granted) {
+      Alert.alert(
+        'Notifications enabled',
+        Platform.OS === 'web'
+          ? 'Browser notifications are enabled. Daily reminders remain mobile-first.'
+          : 'You can now enable Quick Add and daily reminders.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      nextState === 'unsupported' ? 'Not supported' : 'Notifications disabled',
+      Platform.OS === 'web'
+        ? 'This browser could not enable notifications for the app.'
+        : 'Please allow notifications in your device settings and try again.'
+    );
+  };
+
 
   const resetBackupStatus = () => {
     setTimeout(() => {
@@ -564,12 +635,13 @@ export default function ProfileScreen() {
       transactions: allTransactions,
       accounts,
     notes,
-    settings,
-    budgets,
+      settings,
+      budgets,
       budgetAlerts,
       financialGoals,
       userProfile,
       recurringRules,
+      merchantProfiles,
       exportDate: exportedAt.toISOString(),
       totalTransactions: transactions.length,
       appVersion: '2.0.0',
@@ -778,16 +850,16 @@ export default function ProfileScreen() {
   }, [googleClientIds]);
 
   const resolveGoogleClientRequirement = useCallback(() => {
-    const requiredClientIdEnv =
+    const platformLabel =
       Platform.OS === 'ios'
-        ? 'EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID'
+        ? 'iPhone'
         : Platform.OS === 'android'
-          ? 'EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID'
-          : 'EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID';
+          ? 'Android'
+          : 'web';
 
     return {
       clientId: resolveGoogleClientId(),
-      requiredClientIdEnv,
+      platformLabel,
     };
   }, [resolveGoogleClientId]);
 
@@ -796,9 +868,11 @@ export default function ProfileScreen() {
       return 'Google Drive requires a development build. Expo Go cannot complete Google OAuth for this app.';
     }
 
-    const { clientId, requiredClientIdEnv } = resolveGoogleClientRequirement();
+    const { clientId, platformLabel } = resolveGoogleClientRequirement();
     if (!clientId) {
-      return `Google Drive requires ${requiredClientIdEnv} to be configured first.`;
+      return platformLabel === 'web'
+        ? 'Google Drive backup is not configured for web yet.'
+        : `Google Drive backup is not configured for ${platformLabel} yet.`;
     }
 
     return null;
@@ -841,10 +915,14 @@ export default function ProfileScreen() {
       );
     }
 
-    const { clientId, requiredClientIdEnv } = resolveGoogleClientRequirement();
+    const { clientId, platformLabel } = resolveGoogleClientRequirement();
 
     if (!clientId) {
-      throw new Error(`Google client ID is missing. Configure ${requiredClientIdEnv} first.`);
+      throw new Error(
+        platformLabel === 'web'
+          ? 'Google Drive sign-in is not configured for web yet.'
+          : `Google Drive sign-in is not configured for ${platformLabel} yet.`
+      );
     }
 
     let stored = driveAuth ?? (await loadDriveAuth());
@@ -990,6 +1068,69 @@ export default function ProfileScreen() {
     }
   }, [settings.autoBackup]);
 
+  const handleAutoBackupToggle = async (value: boolean) => {
+    if (!value) {
+      updateSettings({ autoBackup: false });
+      showAppTooltip({
+        title: 'Auto backup off',
+        message: 'Google Drive automatic backups are turned off.',
+        tone: 'info',
+      });
+      return;
+    }
+
+    if (!googleDriveAvailable) {
+      updateSettings({ autoBackup: false });
+      showAppTooltip({
+        title: 'Google Drive unavailable',
+        message: googleDriveUnavailableReason ?? 'Google Drive needs more setup before automatic backups can run.',
+        tone: 'warning',
+        durationMs: 4200,
+      });
+      return;
+    }
+
+    try {
+      setBackupStatus('backingup');
+      setBackupMessage(driveConnected ? 'Enabling automatic backups...' : 'Connecting Google Drive for automatic backups...');
+
+      const auth = await ensureDriveAuth();
+      await syncGoogleProfile(auth.accessToken);
+      const stored = await loadDriveAuth();
+      if (stored) {
+        setDriveAuth(stored);
+      }
+
+      updateSettings({ autoBackup: true });
+      const willScheduleBackup = allTransactions.length > 0;
+      setBackupStatus('success');
+      setBackupMessage(
+        willScheduleBackup
+          ? 'Automatic backups are enabled. A Google Drive backup will start shortly.'
+          : 'Automatic backups are enabled. Future changes will sync to Google Drive.'
+      );
+      resetBackupStatus();
+      showAppTooltip({
+        title: 'Auto backup on',
+        message: willScheduleBackup
+          ? 'A Google Drive backup will start automatically in a moment.'
+          : 'Future changes will back up automatically to Google Drive.',
+        tone: 'success',
+      });
+    } catch (error) {
+      console.error('Auto backup enable error:', error);
+      updateSettings({ autoBackup: false });
+      setBackupStatus('error');
+      setBackupMessage(error instanceof Error ? error.message : 'Failed to enable automatic backups.');
+      showAppTooltip({
+        title: 'Auto backup failed',
+        message: error instanceof Error ? error.message : 'Failed to enable automatic backups.',
+        tone: 'error',
+        durationMs: 4200,
+      });
+    }
+  };
+
   const handleBackupToGoogleDrive = async () => {
     try {
       setBackupStatus('backingup');
@@ -1006,12 +1147,13 @@ export default function ProfileScreen() {
         transactions: allTransactions,
         accounts,
     notes,
-    settings,
-    budgets,
+        settings,
+        budgets,
         budgetAlerts,
         financialGoals,
         userProfile,
         recurringRules,
+        merchantProfiles,
         exportDate: exportedAt.toISOString(),
         totalTransactions: transactions.length,
         appVersion: '2.0.0',
@@ -1145,6 +1287,7 @@ export default function ProfileScreen() {
     }
 
     updateSettings({ quickAddNotificationEnabled: value });
+    void refreshNotificationPermissionState();
   };
 
   const handleDailyReminderToggle = async (value: boolean) => {
@@ -1157,15 +1300,18 @@ export default function ProfileScreen() {
           'Please enable notifications to schedule daily reminders.'
         );
         updateSettings({ dailyReminderEnabled: false });
+    void refreshNotificationPermissionState();
         return;
       }
 
       updateSettings({ dailyReminderEnabled: true, dailyReminderTime: nextTime });
+      void refreshNotificationPermissionState();
       return;
     }
 
     await disableDailyReminderAsync();
     updateSettings({ dailyReminderEnabled: false });
+    void refreshNotificationPermissionState();
   };
 
   const applyReminderTime = async (date: Date) => {
@@ -1205,6 +1351,24 @@ export default function ProfileScreen() {
   const handleReminderTimeConfirm = () => {
     setShowReminderTimePicker(false);
     void applyReminderTime(reminderTime);
+  };
+
+  const handleDailyReminderActionPress = () => {
+    if (Platform.OS === 'web') {
+      Alert.alert(
+        'Not available on web',
+        'Daily reminders are currently available on Android and iOS only.'
+      );
+      return;
+    }
+
+    if (settings.dailyReminderEnabled) {
+      setReminderTime(parseReminderTime(settings.dailyReminderTime));
+      setShowReminderTimePicker(true);
+      return;
+    }
+
+    void handleDailyReminderToggle(true);
   };
 
   const handleAutoLockSelect = (minutes: number) => {
@@ -1362,6 +1526,73 @@ export default function ProfileScreen() {
     setShowSettings(false);
     setTimeout(action, 250);
   };
+
+  const handleOpenPcManager = useCallback(async () => {
+    if (!configuredWebAppUrl) {
+      showAppTooltip({
+        tone: 'info',
+        title: 'PC Manager',
+        message: 'Set up the web app address first to open PC Manager from this device.',
+      });
+      return;
+    }
+
+    let targetUrl: URL;
+
+    const webRuntime = globalThis as typeof globalThis & {
+      location?: {
+        origin?: string;
+        assign?: (url: string) => void;
+      };
+    };
+
+    try {
+      targetUrl = Platform.OS === 'web' && webRuntime.location?.origin
+        ? new URL(configuredWebAppUrl, webRuntime.location.origin)
+        : new URL(configuredWebAppUrl);
+    } catch (error) {
+      showAppTooltip({
+        tone: 'error',
+        title: 'PC Manager',
+        message: 'The PC Manager web address is not valid yet.',
+      });
+      return;
+    }
+
+    targetUrl.searchParams.set('pc_manager_handoff', JSON.stringify({
+      source: 'app',
+      userProfile: {
+        ...userProfile,
+        joinDate: new Date(userProfile.joinDate).toISOString(),
+      },
+      settings: {
+        currency: settings.currency,
+        language: settings.language,
+      },
+      themeMode,
+    }));
+
+    const handoffUrl = targetUrl.toString();
+
+    try {
+      if (Platform.OS === 'web' && webRuntime.location?.assign) {
+        webRuntime.location.assign(handoffUrl);
+        return;
+      }
+
+      await WebBrowser.openBrowserAsync(handoffUrl);
+    } catch (error) {
+      try {
+        await Linking.openURL(handoffUrl);
+      } catch (fallbackError) {
+        showAppTooltip({
+          tone: 'error',
+          title: 'PC Manager',
+          message: 'Could not open PC Manager right now. Please try again.',
+        });
+      }
+    }
+  }, [configuredWebAppUrl, settings.currency, settings.language, themeMode, userProfile]);
 
   const openEmailSupport = () => {
     const subject = encodeURIComponent('Money Manager Support Request');
@@ -1557,6 +1788,14 @@ export default function ProfileScreen() {
         <View style={styles.metaList}>
           {profileInfoRows.map((item, index) => {
             const Icon = item.icon;
+            const isDailyReminderRow = item.label === 'Daily Reminder';
+            const reminderActionLabel = !notificationPermissionGranted
+              ? 'Enable'
+              : Platform.OS === 'web'
+                ? 'Mobile'
+                : settings.dailyReminderEnabled
+                  ? 'Time'
+                  : 'Enable';
             return (
               <View
                 key={item.label}
@@ -1577,13 +1816,60 @@ export default function ProfileScreen() {
                     {item.helper}
                   </Text>
                 </View>
-                <Text style={[styles.metaListValue, { color: theme.colors.textSecondary }]} numberOfLines={1}>
-                  {item.value}
-                </Text>
+                <View style={styles.metaListRight}>
+                  <Text style={[styles.metaListValue, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                    {item.value}
+                  </Text>
+                  {isDailyReminderRow ? (
+                    <TouchableOpacity
+                      style={[
+                        styles.metaListActionButton,
+                        {
+                          backgroundColor: theme.colors.primary + '14',
+                          borderColor: theme.colors.primary + '24',
+                        },
+                      ]}
+                      onPress={notificationPermissionGranted ? handleDailyReminderActionPress : handleEnableNotificationsPress}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.metaListActionText, { color: theme.colors.primary }]}>{reminderActionLabel}</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
               </View>
             );
           })}
         </View>
+        {!notificationPermissionGranted && notificationPermissionState !== 'unsupported' ? (
+          <TouchableOpacity
+            style={[
+              styles.notificationPermissionPrompt,
+              {
+                backgroundColor: theme.colors.primary + '10',
+                borderColor: theme.colors.primary + '24',
+              },
+            ]}
+            onPress={handleEnableNotificationsPress}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.notificationPermissionPromptIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+              <Bell size={16} color={theme.colors.primary} />
+            </View>
+            <View style={styles.notificationPermissionPromptTextWrap}>
+              <Text style={[styles.notificationPermissionPromptTitle, { color: theme.colors.text }]}>Enable notifications</Text>
+              <Text style={[styles.notificationPermissionPromptSubtitle, { color: theme.colors.textSecondary }]}>
+                {Platform.OS === 'web'
+                  ? 'Allow browser notifications. Reminder scheduling remains mobile-first.'
+                  : notificationPermissionState === 'denied'
+                    ? 'Allow notifications in your device settings for reminders and quick actions.'
+                    : 'Turn on notifications for daily reminders and quick actions.'}
+              </Text>
+            </View>
+            <View style={[styles.notificationPermissionPromptBadge, { backgroundColor: theme.colors.primary }]}>
+              <Text style={styles.notificationPermissionPromptBadgeText}>Enable</Text>
+            </View>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       <View style={styles.footer}>
@@ -1603,6 +1889,9 @@ export default function ProfileScreen() {
         setThemeMode={setThemeMode}
         onClearData={handleClearData}
         onBackupRestore={() => openSettingsDestination(() => setShowBackupRestore(true))}
+        onOpenPcManager={() => openSettingsDestination(() => {
+          void handleOpenPcManager();
+        })}
         onPrivacySecurity={() => openSettingsDestination(() => setShowPrivacySecurity(true))}
         onHelpSupport={() => openSettingsDestination(() => setShowHelpSupport(true))}
         userProfile={userProfile}
@@ -1611,6 +1900,14 @@ export default function ProfileScreen() {
         onShowAutoLockPicker={() => openSettingsDestination(() => setShowAutoLockPicker(true))}
         onQuickAddToggle={handleQuickAddToggle}
         onDailyReminderToggle={handleDailyReminderToggle}
+        driveConnected={driveConnected}
+        driveAccountLabel={driveAccountLabel}
+        googleDriveAvailable={googleDriveAvailable}
+        googleDriveUnavailableReason={googleDriveUnavailableReason ?? undefined}
+        onAutoBackupToggle={handleAutoBackupToggle}
+        notificationPermissionGranted={notificationPermissionGranted}
+        notificationPermissionState={notificationPermissionState}
+        onEnableNotifications={handleEnableNotificationsPress}
         reminderTimeLabel={reminderTimeLabel}
         onShowReminderTimePicker={() => openSettingsDestination(() => setShowReminderTimePicker(true))}
       />
@@ -2416,6 +2713,70 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'right',
   },
+  metaListRight: {
+    alignItems: 'flex-end',
+    gap: 8,
+    marginLeft: 12,
+    minWidth: 84,
+    flexShrink: 0,
+  },
+  metaListActionButton: {
+    minWidth: 68,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metaListActionText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  notificationPermissionPrompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 14,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  notificationPermissionPromptIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationPermissionPromptTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notificationPermissionPromptTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  notificationPermissionPromptSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  notificationPermissionPromptBadge: {
+    minWidth: 72,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationPermissionPromptBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   footer: {
     alignItems: 'center',
     paddingTop: 6,
@@ -2791,6 +3152,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 });
+
 
 
 

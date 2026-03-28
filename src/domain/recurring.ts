@@ -46,6 +46,8 @@ export function createRecurringRuleFromTransaction(
     return null;
   }
 
+  const { id: _id, date: _date, ...template } = transaction;
+
   return {
     id: idFactory(),
     frequency: transaction.recurringFrequency,
@@ -53,24 +55,9 @@ export function createRecurringRuleFromTransaction(
     endDate: transaction.recurringEndDate?.toISOString(),
     lastMaterializedAt: transaction.date.toISOString(),
     template: {
-      amount: transaction.amount,
-      description: transaction.description,
-      category: transaction.category,
-      type: transaction.type,
-      createdAt: transaction.createdAt,
-      fromAccount: transaction.fromAccount,
-      toAccount: transaction.toAccount,
-      fromAccountId: transaction.fromAccountId ?? transaction.fromAccount,
-      toAccountId: transaction.toAccountId ?? transaction.toAccount,
-      transferGroupId: transaction.transferGroupId,
-      transferLeg: transaction.transferLeg,
-      isHidden: transaction.isHidden,
-      isRecurring: transaction.isRecurring,
-      recurringFrequency: transaction.recurringFrequency,
-      recurringEndDate: transaction.recurringEndDate,
-      parentTransactionId: transaction.parentTransactionId,
-      tags: transaction.tags,
-      updatedAt: transaction.updatedAt,
+      ...template,
+      fromAccountId: template.fromAccountId ?? template.fromAccount,
+      toAccountId: template.toAccountId ?? template.toAccount,
     },
   };
 }

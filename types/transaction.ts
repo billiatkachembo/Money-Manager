@@ -12,6 +12,7 @@ export interface Transaction {
   description: string;
   note?: string;
   category: TransactionCategory;
+  subcategory?: string;
   type: TransactionType;
   date: Date;
   createdAt: Date;
@@ -269,6 +270,8 @@ export interface SeasonalFarmSummary {
   farmProfit: number;
   costBreakdown: FarmCategoryBreakdown[];
 }
+
+
 
 
 

@@ -19,7 +19,7 @@ import {
   TransactionCategory,
   UserProfile,
 } from '@/types/transaction';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, findMatchingCategory, mergeCategories, resolveCanonicalCategory } from '@/constants/categories';
+import { DEBT_CATEGORIES, EXPENSE_CATEGORIES, INCOME_CATEGORIES, buildCategorySubcategoryKey, createCustomSubcategory, findMatchingCategory, getCategorySubcategories, mergeCategories, normalizeCategoryLookup, resolveCanonicalCategory, type CustomSubcategoryMap } from '@/constants/categories';
 import {
   createCustomAccountTypeDefinition,
   getAccountTypeDefinition,
@@ -81,6 +81,13 @@ interface BackupData {
   settings: AppSettings;
   recurringRules: RecurringRule[];
   merchantProfiles: MerchantProfile[];
+  customExpenseCategories: TransactionCategory[];
+  customIncomeCategories: TransactionCategory[];
+  customDebtCategories: TransactionCategory[];
+  customExpenseSubcategories: CustomSubcategoryMap;
+  customIncomeSubcategories: CustomSubcategoryMap;
+  customDebtSubcategories: CustomSubcategoryMap;
+  customAccountTypes: CustomAccountType[];
   exportDate: string;
   version: string;
 }
@@ -117,7 +124,7 @@ const FALLBACK_EXPENSE_CATEGORY =
 const FALLBACK_INCOME_CATEGORY =
   resolveCanonicalCategory({ id: 'other-income' }) ?? INCOME_CATEGORIES[0];
 const FALLBACK_DEBT_CATEGORY =
-  resolveCanonicalCategory({ id: 'debt' }) ?? EXPENSE_CATEGORIES.find((category) => category.id === 'debt') ?? FALLBACK_EXPENSE_CATEGORY;
+  resolveCanonicalCategory({ id: 'other-debt' }) ?? DEBT_CATEGORIES.find((category) => category.id === 'other-debt') ?? DEBT_CATEGORIES[0] ?? FALLBACK_EXPENSE_CATEGORY;
 
 function resolveTransactionCategory(
   transactionData: Omit<Transaction, 'id' | 'createdAt'>,
@@ -477,6 +484,10 @@ function buildDefaults(): PersistedState {
     merchantProfiles: [],
     customExpenseCategories: [],
     customIncomeCategories: [],
+    customDebtCategories: [],
+    customExpenseSubcategories: {},
+    customIncomeSubcategories: {},
+    customDebtSubcategories: {},
     customAccountTypes: [],
   };
 }
@@ -494,6 +505,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const [merchantProfiles, setMerchantProfiles] = useState<MerchantProfile[]>([]);
   const [customExpenseCategories, setCustomExpenseCategories] = useState<TransactionCategory[]>([]);
   const [customIncomeCategories, setCustomIncomeCategories] = useState<TransactionCategory[]>([]);
+  const [customDebtCategories, setCustomDebtCategories] = useState<TransactionCategory[]>([]);
+  const [customExpenseSubcategories, setCustomExpenseSubcategories] = useState<CustomSubcategoryMap>({});
+  const [customIncomeSubcategories, setCustomIncomeSubcategories] = useState<CustomSubcategoryMap>({});
+  const [customDebtSubcategories, setCustomDebtSubcategories] = useState<CustomSubcategoryMap>({});
   const [customAccountTypes, setCustomAccountTypes] = useState<CustomAccountType[]>([]);
   const [ledgerIssues, setLedgerIssues] = useState<string[]>([]);
   const [isHydrated, setIsHydrated] = useState<boolean>(false);
@@ -508,7 +523,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
   const expenseCategories = useMemo(() => {
     const categoriesFromTransactions = visibleTransactions
-      .filter((transaction) => transaction.type === 'expense' || transaction.type === 'debt')
+      .filter((transaction) => transaction.type === 'expense')
       .map((transaction) => transaction.category);
 
     const categoriesFromBudgets = budgets.map((budget) => budget.category);
@@ -528,6 +543,14 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
     return mergeCategories(INCOME_CATEGORIES, customIncomeCategories, categoriesFromTransactions);
   }, [customIncomeCategories, visibleTransactions]);
+
+  const debtCategories = useMemo(() => {
+    const categoriesFromTransactions = visibleTransactions
+      .filter((transaction) => transaction.type === 'debt')
+      .map((transaction) => transaction.category);
+
+    return mergeCategories(DEBT_CATEGORIES, customDebtCategories, categoriesFromTransactions);
+  }, [customDebtCategories, visibleTransactions]);
 
   const budgetCategories = useMemo(() => expenseCategories, [expenseCategories]);
 
@@ -906,6 +929,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         setMerchantProfiles(loaded.merchantProfiles);
         setCustomExpenseCategories(loaded.customExpenseCategories);
         setCustomIncomeCategories(loaded.customIncomeCategories);
+        setCustomDebtCategories(loaded.customDebtCategories);
+        setCustomExpenseSubcategories(loaded.customExpenseSubcategories);
+        setCustomIncomeSubcategories(loaded.customIncomeSubcategories);
+        setCustomDebtSubcategories(loaded.customDebtSubcategories);
         setCustomAccountTypes(loaded.customAccountTypes);
         setLedgerIssues(integrity.issues);
         setIsHydrated(true);
@@ -949,7 +976,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       const fromAccountId = transactionData.fromAccountId ?? transactionData.fromAccount;
       const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
       const date = parseDate(transactionData.date);
-      const availableCategories = transactionData.type === 'income' ? incomeCategories : expenseCategories;
+      const availableCategories = transactionData.type === 'income' ? incomeCategories : transactionData.type === 'debt' ? debtCategories : expenseCategories;
       const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles, availableCategories);
 
       let nextTransactions = [...ledgerTransactions];
@@ -1027,7 +1054,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         pushBudgetAlerts(primary, nextTransactions);
       }
     },
-    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, debtCategories, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const updateTransaction = useCallback(
@@ -1121,7 +1148,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       applyLedgerState(nextTransactions, accounts, recurringRules);
       pushBudgetAlerts(normalizedUpdated, nextTransactions);
     },
-    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
+    [accounts, applyLedgerState, debtCategories, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, persistPatch, pushBudgetAlerts, recurringRules]
   );
 
   const deleteTransaction = useCallback(
@@ -1336,13 +1363,14 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
   const saveCustomCategory = useCallback(
     (category: TransactionCategory, type: 'income' | 'expense' | 'debt') => {
       const isIncomeCategory = type === 'income';
-      const availableCategories = isIncomeCategory ? incomeCategories : expenseCategories;
+      const isDebtCategory = type === 'debt';
+      const availableCategories = isIncomeCategory ? incomeCategories : isDebtCategory ? debtCategories : expenseCategories;
       const existingCategory = findMatchingCategory(availableCategories, category);
       if (existingCategory) {
         return existingCategory;
       }
 
-      const currentCustomCategories = isIncomeCategory ? customIncomeCategories : customExpenseCategories;
+      const currentCustomCategories = isIncomeCategory ? customIncomeCategories : isDebtCategory ? customDebtCategories : customExpenseCategories;
       const nextCustomCategories = mergeCategories(currentCustomCategories, [category]);
       const savedCategory = findMatchingCategory(nextCustomCategories, category) ?? category;
 
@@ -1353,6 +1381,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       if (isIncomeCategory) {
         setCustomIncomeCategories(nextCustomCategories);
         void persistPatch({ customIncomeCategories: nextCustomCategories });
+      } else if (isDebtCategory) {
+        setCustomDebtCategories(nextCustomCategories);
+        void persistPatch({ customDebtCategories: nextCustomCategories });
       } else {
         setCustomExpenseCategories(nextCustomCategories);
         void persistPatch({ customExpenseCategories: nextCustomCategories });
@@ -1360,9 +1391,60 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       return savedCategory;
     },
-    [customExpenseCategories, customIncomeCategories, expenseCategories, incomeCategories, persistPatch]
+    [customDebtCategories, customExpenseCategories, customIncomeCategories, debtCategories, expenseCategories, incomeCategories, persistPatch]
   );
 
+
+  const saveCustomSubcategory = useCallback(
+    (category: TransactionCategory, name: string, type: 'income' | 'expense' | 'debt') => {
+      const isIncomeCategory = type === 'income';
+      const isDebtCategory = type === 'debt';
+      const currentSubcategoryMap = isIncomeCategory
+        ? customIncomeSubcategories
+        : isDebtCategory
+          ? customDebtSubcategories
+          : customExpenseSubcategories;
+      const categoryKey = buildCategorySubcategoryKey(category);
+      const normalizedLookup = normalizeCategoryLookup(name);
+      const availableSubcategories = getCategorySubcategories(category, currentSubcategoryMap);
+      const existingSubcategory = availableSubcategories.find((subcategory) =>
+        normalizeCategoryLookup(subcategory.id) === normalizedLookup ||
+        normalizeCategoryLookup(subcategory.name) === normalizedLookup
+      );
+
+      if (existingSubcategory) {
+        return existingSubcategory;
+      }
+
+      const savedSubcategory = createCustomSubcategory(name, availableSubcategories);
+      if (!categoryKey) {
+        return savedSubcategory;
+      }
+
+      const currentCustomSubcategories = currentSubcategoryMap[categoryKey] ?? [];
+      const nextCustomSubcategories = [...currentCustomSubcategories, savedSubcategory].sort((left, right) =>
+        left.name.localeCompare(right.name)
+      );
+      const nextSubcategoryMap = {
+        ...currentSubcategoryMap,
+        [categoryKey]: nextCustomSubcategories,
+      };
+
+      if (isIncomeCategory) {
+        setCustomIncomeSubcategories(nextSubcategoryMap);
+        void persistPatch({ customIncomeSubcategories: nextSubcategoryMap });
+      } else if (isDebtCategory) {
+        setCustomDebtSubcategories(nextSubcategoryMap);
+        void persistPatch({ customDebtSubcategories: nextSubcategoryMap });
+      } else {
+        setCustomExpenseSubcategories(nextSubcategoryMap);
+        void persistPatch({ customExpenseSubcategories: nextSubcategoryMap });
+      }
+
+      return savedSubcategory;
+    },
+    [customDebtSubcategories, customExpenseSubcategories, customIncomeSubcategories, persistPatch]
+  );
 
   const saveCustomAccountType = useCallback(
     (input: {
@@ -1559,7 +1641,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         const toAccountId = transactionData.toAccountId ?? transactionData.toAccount;
         const recurringEndDate = parseOptionalDate(transactionData.recurringEndDate);
         const updatedAt = parseOptionalDate(transactionData.updatedAt) ?? date;
-        const availableCategories = transactionData.type === 'income' ? incomeCategories : expenseCategories;
+        const availableCategories = transactionData.type === 'income' ? incomeCategories : transactionData.type === 'debt' ? debtCategories : expenseCategories;
         const resolvedCategory = resolveTransactionCategory(transactionData, merchantProfiles, availableCategories);
 
         if (!Number.isFinite(amount) || amount <= 0) {
@@ -1655,7 +1737,7 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
 
       return { importedCount, skippedCount };
     },
-    [accounts, applyLedgerState, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, recurringRules, visibleTransactions]
+    [accounts, applyLedgerState, debtCategories, expenseCategories, incomeCategories, ledgerTransactions, merchantProfiles, recurringRules, visibleTransactions]
   );
 
   const restoreBackupSnapshot = useCallback(
@@ -1694,6 +1776,23 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
           ? snapshot.customIncomeCategories
           : defaults.customIncomeCategories
       );
+      const nextCustomDebtCategories = mergeCategories(
+        Array.isArray(snapshot.customDebtCategories)
+          ? snapshot.customDebtCategories
+          : defaults.customDebtCategories
+      );
+      const nextCustomExpenseSubcategories =
+        snapshot.customExpenseSubcategories && typeof snapshot.customExpenseSubcategories === 'object'
+          ? snapshot.customExpenseSubcategories
+          : defaults.customExpenseSubcategories;
+      const nextCustomIncomeSubcategories =
+        snapshot.customIncomeSubcategories && typeof snapshot.customIncomeSubcategories === 'object'
+          ? snapshot.customIncomeSubcategories
+          : defaults.customIncomeSubcategories;
+      const nextCustomDebtSubcategories =
+        snapshot.customDebtSubcategories && typeof snapshot.customDebtSubcategories === 'object'
+          ? snapshot.customDebtSubcategories
+          : defaults.customDebtSubcategories;
       const nextCustomAccountTypes = Array.isArray(snapshot.customAccountTypes)
         ? snapshot.customAccountTypes
             .map((entry) => {
@@ -1734,6 +1833,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setMerchantProfiles(nextMerchantProfiles);
       setCustomExpenseCategories(nextCustomExpenseCategories);
       setCustomIncomeCategories(nextCustomIncomeCategories);
+      setCustomDebtCategories(nextCustomDebtCategories);
+      setCustomExpenseSubcategories(nextCustomExpenseSubcategories);
+      setCustomIncomeSubcategories(nextCustomIncomeSubcategories);
+      setCustomDebtSubcategories(nextCustomDebtSubcategories);
       setCustomAccountTypes(nextCustomAccountTypes);
       setRecurringRules(nextRecurringRules);
       setLedgerIssues(integrity.issues);
@@ -1752,6 +1855,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
         merchantProfiles: nextMerchantProfiles,
         customExpenseCategories: nextCustomExpenseCategories,
         customIncomeCategories: nextCustomIncomeCategories,
+        customDebtCategories: nextCustomDebtCategories,
+        customExpenseSubcategories: nextCustomExpenseSubcategories,
+        customIncomeSubcategories: nextCustomIncomeSubcategories,
+        customDebtSubcategories: nextCustomDebtSubcategories,
         customAccountTypes: nextCustomAccountTypes,
       });
     },
@@ -1782,6 +1889,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       merchantProfiles,
       customExpenseCategories,
       customIncomeCategories,
+      customDebtCategories,
+      customExpenseSubcategories,
+      customIncomeSubcategories,
+      customDebtSubcategories,
       customAccountTypes,
       exportDate: exportedAt.toISOString(),
       totalTransactions: ledgerTransactions.length,
@@ -1796,6 +1907,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       ledgerTransactions,
       customExpenseCategories,
       customIncomeCategories,
+      customDebtCategories,
+      customExpenseSubcategories,
+      customIncomeSubcategories,
+      customDebtSubcategories,
       customAccountTypes,
       merchantProfiles,
       notes,
@@ -1869,6 +1984,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       recurringRules.length === 0 &&
       customExpenseCategories.length === 0 &&
       customIncomeCategories.length === 0 &&
+      customDebtCategories.length === 0 &&
+      Object.keys(customExpenseSubcategories).length === 0 &&
+      Object.keys(customIncomeSubcategories).length === 0 &&
+      Object.keys(customDebtSubcategories).length === 0 &&
       customAccountTypes.length === 0,
     [
       accounts.length,
@@ -1876,7 +1995,11 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       budgets.length,
       customExpenseCategories.length,
       customIncomeCategories.length,
+      customDebtCategories.length,
       customAccountTypes.length,
+      Object.keys(customExpenseSubcategories).length,
+      Object.keys(customIncomeSubcategories).length,
+      Object.keys(customDebtSubcategories).length,
       financialGoals.length,
       ledgerTransactions.length,
       notes.length,
@@ -2015,6 +2138,10 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
       setMerchantProfiles(defaults.merchantProfiles);
       setCustomExpenseCategories(defaults.customExpenseCategories);
       setCustomIncomeCategories(defaults.customIncomeCategories);
+      setCustomDebtCategories(defaults.customDebtCategories);
+      setCustomExpenseSubcategories(defaults.customExpenseSubcategories);
+      setCustomIncomeSubcategories(defaults.customIncomeSubcategories);
+      setCustomDebtSubcategories(defaults.customDebtSubcategories);
       setCustomAccountTypes(defaults.customAccountTypes);
       setLedgerIssues([]);
       setIsHydrated(true);
@@ -2169,8 +2296,13 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     budgets,
     expenseCategories,
     incomeCategories,
+    debtCategories,
     accountTypeDefinitions,
+    customExpenseSubcategories,
+    customIncomeSubcategories,
+    customDebtSubcategories,
     saveCustomCategory,
+    saveCustomSubcategory,
     saveCustomAccountType,
     budgetAlerts,
     financialGoals,
@@ -2227,6 +2359,9 @@ export const [TransactionProvider, useTransactionStore] = createContextHook(() =
     attemptAutoRestoreFromDrive,
   };
 });
+
+
+
 
 
 

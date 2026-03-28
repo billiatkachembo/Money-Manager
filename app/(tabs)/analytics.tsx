@@ -20,6 +20,7 @@ import {
   VictoryGroup,
   VictoryLine,
   VictoryPie,
+  VictoryScatter,
   VictoryTooltip,
   createContainer,
 } from 'victory-native';
@@ -612,19 +613,59 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     const buildForecastDate = (yearOffset: number) =>
       new Date(baseDate.getFullYear() + yearOffset, baseDate.getMonth(), baseDate.getDate());
 
+    const pointByYear = new Map(netWorthSimulation.points.map((point) => [point.year, point]));
     const data = netWorthSimulation.points.map((point) => ({
       x: buildForecastDate(point.year),
       y: point.netWorth,
+      year: point.year,
+      savedCapital: roundCurrency(netWorthSimulation.currentNetWorth + point.contributions),
+      contributions: point.contributions,
+      growth: point.growth,
+    }));
+
+    const contributionData = data.map((point) => ({
+      x: point.x,
+      y: point.savedCapital,
+      year: point.year,
     }));
 
     const tickValues = netWorthSimulation.points
-      .filter((_, index) => index % 2 === 0)
+      .filter((_, index) => index === 0 || index === netWorthSimulation.points.length - 1 || index % 2 === 0)
       .map((point) => buildForecastDate(point.year));
+
+    const horizonYears = Array.from(
+      new Set([1, 3, 5, 10, netWorthSimulation.years].filter((year) => year > 0 && year <= netWorthSimulation.years))
+    ).sort((left, right) => left - right);
+
+    const horizonItems = horizonYears.flatMap((year) => {
+      const point = pointByYear.get(year);
+      if (!point) {
+        return [];
+      }
+
+      return [{
+        year,
+        label: `${year}Y`,
+        date: buildForecastDate(year),
+        value: point.netWorth,
+        contributions: point.contributions,
+        growth: point.growth,
+      }];
+    });
+
+    const futureDelta = roundCurrency(netWorthSimulation.futureValue - netWorthSimulation.currentNetWorth);
+    const futureDeltaRatio = netWorthSimulation.currentNetWorth !== 0
+      ? futureDelta / Math.max(Math.abs(netWorthSimulation.currentNetWorth), 1)
+      : null;
 
     return {
       data,
+      contributionData,
       tickValues,
       projectedDate: data[data.length - 1]?.x ?? buildForecastDate(netWorthSimulation.years),
+      horizonItems,
+      futureDelta,
+      futureDeltaRatio,
     };
   }, [analyticsReferenceDate, netWorthSimulation]);
 
@@ -635,6 +676,8 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const secondarySurface = theme.isDark ? 'rgba(15,23,42,0.82)' : '#F8FAFC';
   const analyticsCanvasBackground = theme.isDark ? 'rgba(15,23,42,0.92)' : '#F8FAFC';
   const softBorderColor = theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)';
+  const forecastProjectionColor = theme.isDark ? '#A78BFA' : chartPalette.investments;
+  const forecastContributionColor = theme.isDark ? '#CBD5E1' : '#64748B';
   const tooltipFlyoutStyle = useMemo(
     () => ({
       fill: theme.isDark ? '#0F172A' : '#FFFFFF',
@@ -1291,6 +1334,9 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       const [year, month] = point.month.split('-').map(Number);
       return new Date(year, (month ?? 1) - 1, 1);
     });
+    const includeYear =
+      dates.length > 1 && dates[0].getFullYear() !== dates[dates.length - 1].getFullYear();
+    const labels = dates.map((date) => formatMonthYearShortLabel(date, includeYear));
 
     return {
       netWorthData: dates.map((date, index) => ({
@@ -1305,7 +1351,9 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         x: date,
         y: cumulativeNetFlow[index] ?? 0,
       })),
-      tickValues: dates.filter((_, index) => index % 2 === 0),
+      tickValues: dates.length <= 6 ? dates : dates.filter((_, index) => index % 2 === 0),
+      labels,
+      includeYear,
     };
   }, [cumulativeNetFlow, netWorthProgress]);
 
@@ -1333,6 +1381,9 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   );
 
   const selectedMonthPoint = netWorthProgress.points[safeSelectedMonthIndex];
+  const selectedMonthLabel = selectedMonthPoint
+    ? netWorthSeries.labels[safeSelectedMonthIndex] ?? selectedMonthPoint.label
+    : null;
   const selectedMonthChange = netWorthProgress.monthOverMonthChange[safeSelectedMonthIndex] ?? 0;
   const selectedMonthCumulativeGrowth = netWorthProgress.cumulativeGrowth[safeSelectedMonthIndex] ?? 0;
   const selectedMonthCumulativeNetFlow = cumulativeNetFlow[safeSelectedMonthIndex] ?? 0;
@@ -1727,7 +1778,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
             </View>
             <View style={[styles.netWorthGrowthRow, { borderTopColor: theme.colors.border }]}>
               <Text style={[styles.netWorthGrowthLabel, { color: theme.colors.textSecondary }]}>
-                Cumulative Growth (since {netWorthProgress.labels[0] || 'start'})
+                Cumulative Growth (since {netWorthSeries.labels[0] || 'start'})
               </Text>
               <Text
                 style={[
@@ -1796,7 +1847,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 </Defs>
                 <VictoryAxis
                   tickValues={netWorthSeries.tickValues}
-                  tickFormat={(value) => formatShortMonthLabel(new Date(value))}
+                  tickFormat={(value) => formatMonthYearShortLabel(new Date(value), netWorthSeries.includeYear)}
                   style={{
                     axis: { stroke: 'transparent' },
                     ticks: { stroke: 'transparent' },
@@ -1888,7 +1939,7 @@ ${formatCurrency(datum.y)}`
               >
                 <View style={styles.monthTooltipHeader}>
                   <Text style={[styles.monthTooltipTitle, { color: theme.colors.text }]}>
-                    {selectedMonthPoint.label} {selectedMonthPoint.month.slice(0, 4)}
+                    {selectedMonthLabel ?? 'Month Details'}
                   </Text>
                   <View style={styles.monthTooltipChange}>
                     {selectedMonthChange > 0 ? (
@@ -1935,7 +1986,7 @@ ${formatCurrency(datum.y)}`
                       setShowMonthDrillDown(true);
                     }}
                   >
-                    <Text style={[styles.monthChipLabel, { color: theme.colors.text }]}>{point.label}</Text>
+                    <Text style={[styles.monthChipLabel, { color: theme.colors.text }]}>{netWorthSeries.labels[index] ?? point.label}</Text>
                     <View style={styles.monthChipChangeRow}>
                       {change > 0 ? (
                         <ArrowUpRight size={12} color={changeColor} />
@@ -2381,32 +2432,117 @@ ${formatCurrency(datum.y)}`
           </View>
         ) : (
           <View>
-            <View style={styles.forecastHeader}>
-              <AdaptiveAmountText
-                style={[styles.forecastValue, { color: theme.colors.text }]}
-                minFontSize={18}
-                value={formatCurrency(netWorthSimulation.futureValue)}
-              />
-              <Text style={[styles.forecastMeta, { color: theme.colors.textSecondary }]}>
-                Projected by {netWorthForecastData ? formatDateWithWeekday(netWorthForecastData.projectedDate) : `${netWorthSimulation.years} years from now`}
-              </Text>
-              <Text
-                style={[styles.forecastSub, { color: theme.colors.textSecondary }]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.72}
-              >
-                Contributions {formatCurrency(netWorthSimulation.totalContributions)} - Growth {formatCurrency(netWorthSimulation.investmentGrowth)}
-              </Text>
+            <View
+              style={[
+                styles.forecastSummaryShell,
+                { backgroundColor: secondarySurface, borderColor: softBorderColor },
+              ]}
+            >
+              <View style={styles.forecastSummaryTopRow}>
+                <View style={styles.forecastHeader}>
+                  <Text style={[styles.forecastEyebrow, { color: theme.colors.textSecondary }]}>Projected Net Worth</Text>
+                  <AdaptiveAmountText
+                    style={[styles.forecastValue, { color: theme.colors.text }]}
+                    minFontSize={22}
+                    value={formatCurrency(netWorthSimulation.futureValue)}
+                  />
+                  <Text style={[styles.forecastMeta, { color: theme.colors.textSecondary }]}>
+                    Projected by {netWorthForecastData ? formatDateWithWeekday(netWorthForecastData.projectedDate) : `${netWorthSimulation.years} years from now`}
+                  </Text>
+                </View>
+                {netWorthForecastData ? (
+                  <View
+                    style={[
+                      styles.forecastDeltaPill,
+                      { backgroundColor: theme.colors.surface, borderColor: softBorderColor },
+                    ]}
+                  >
+                    <Text style={[styles.forecastDeltaLabel, { color: theme.colors.textSecondary }]}>Outlook</Text>
+                    <AdaptiveAmountText
+                      style={[
+                        styles.forecastDeltaValue,
+                        { color: netWorthForecastData.futureDelta >= 0 ? theme.colors.success : theme.colors.error },
+                      ]}
+                      minFontSize={12}
+                      value={formatSignedCurrency(formatCurrency, netWorthForecastData.futureDelta)}
+                    />
+                    {netWorthForecastData.futureDeltaRatio !== null ? (
+                      <Text
+                        style={[
+                          styles.forecastDeltaMeta,
+                          { color: netWorthForecastData.futureDelta >= 0 ? theme.colors.success : theme.colors.error },
+                        ]}
+                      >
+                        {formatPercentage(netWorthForecastData.futureDeltaRatio)}
+                      </Text>
+                    ) : null}
+                  </View>
+                ) : null}
+              </View>
+              <View style={styles.forecastMetricRow}>
+                {[
+                  { label: 'Monthly pace', value: formatCurrency(netWorthSimulation.monthlySavings), tone: theme.colors.text },
+                  { label: 'Saved capital', value: formatCurrency(netWorthSimulation.totalContributions), tone: forecastContributionColor },
+                  { label: 'Projected growth', value: formatCurrency(netWorthSimulation.investmentGrowth), tone: theme.colors.success },
+                ].map((metric) => (
+                  <View
+                    key={metric.label}
+                    style={[
+                      styles.forecastMetricCard,
+                      { backgroundColor: theme.colors.surface, borderColor: softBorderColor },
+                    ]}
+                  >
+                    <Text style={[styles.forecastMetricLabel, { color: theme.colors.textSecondary }]}>{metric.label}</Text>
+                    <AdaptiveAmountText
+                      style={[styles.forecastMetricValue, { color: metric.tone }]}
+                      minFontSize={11}
+                      value={metric.value}
+                    />
+                  </View>
+                ))}
+              </View>
+              {netWorthForecastData && netWorthForecastData.horizonItems.length > 0 ? (
+                <View style={styles.forecastTimelineGrid}>
+                  {netWorthForecastData.horizonItems.map((item) => (
+                    <View
+                      key={item.label}
+                      style={[
+                        styles.forecastTimelineItem,
+                        { backgroundColor: theme.colors.surface, borderColor: softBorderColor },
+                      ]}
+                    >
+                      <Text style={[styles.forecastTimelineLabel, { color: theme.colors.textSecondary }]}>{item.label}</Text>
+                      <AdaptiveAmountText
+                        style={[styles.forecastTimelineValue, { color: theme.colors.text }]}
+                        minFontSize={11}
+                        value={formatCurrency(item.value)}
+                      />
+                      <Text style={[styles.forecastTimelineDate, { color: theme.colors.textSecondary }]}>
+                        {formatDateDDMMYYYY(item.date)}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
             {netWorthForecastData ? (
-              <View style={[styles.chartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}>
+              <View style={[styles.chartContainer, styles.forecastChartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}> 
+                <View style={styles.forecastLegendRow}>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: forecastProjectionColor }]} />
+                    <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Projected Net Worth</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: forecastContributionColor }]} />
+                    <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Saved Capital</Text>
+                  </View>
+                </View>
                 <VictoryChart
                   width={chartWidth}
-                  height={220}
+                  height={228}
                   padding={chartPadding}
                   scale={{ x: 'time' }}
-                  domainPadding={{ y: 12, x: 12 }}
+                  domainPadding={{ y: 16, x: 16 }}
                   containerComponent={
                     <VoronoiCursorContainer
                       cursorDimension="x"
@@ -2425,8 +2561,8 @@ ${formatCurrency(datum.y)}`
                 >
                   <Defs>
                     <SvgLinearGradient id="forecastGradient" x1="0" y1="0" x2="0" y2="1">
-                      <Stop offset="0%" stopColor={chartPalette.investments} stopOpacity={0.25} />
-                      <Stop offset="100%" stopColor={chartPalette.investments} stopOpacity={0} />
+                      <Stop offset="0%" stopColor={forecastProjectionColor} stopOpacity={0.28} />
+                      <Stop offset="100%" stopColor={forecastProjectionColor} stopOpacity={0.02} />
                     </SvgLinearGradient>
                   </Defs>
                   <VictoryAxis
@@ -2441,7 +2577,7 @@ ${formatCurrency(datum.y)}`
                   />
                   <VictoryAxis
                     dependentAxis
-                    tickCount={3}
+                    tickCount={4}
                     tickFormat={(value) => formatCompactNumber(value)}
                     style={{
                       axis: { stroke: 'transparent' },
@@ -2456,14 +2592,39 @@ ${formatCurrency(datum.y)}`
                     animate={chartAnimation}
                     style={{
                       data: {
-                        stroke: chartPalette.investments,
-                        strokeWidth: 2.2,
+                        stroke: 'transparent',
                         fill: 'url(#forecastGradient)',
                       },
                     }}
+                  />
+                  <VictoryLine
+                    data={netWorthForecastData.contributionData}
+                    interpolation="natural"
+                    animate={chartAnimation}
+                    style={{
+                      data: {
+                        stroke: forecastContributionColor,
+                        strokeWidth: 1.8,
+                        strokeDasharray: '6,6',
+                        opacity: 0.95,
+                      },
+                    }}
+                  />
+                  <VictoryLine
+                    data={netWorthForecastData.data}
+                    interpolation="natural"
+                    animate={chartAnimation}
+                    style={{
+                      data: {
+                        stroke: forecastProjectionColor,
+                        strokeWidth: 3,
+                      },
+                    }}
                     labels={({ datum }) =>
-                      `${formatDateWithWeekday(new Date(datum.x))}
-${formatCurrency(datum.y)}`
+                      `Year ${datum.year}
+Projected ${formatCurrency(datum.y)}
+Saved capital ${formatCurrency(datum.savedCapital)}
+Growth ${formatCurrency(datum.growth)}`
                     }
                     labelComponent={
                       <VictoryTooltip
@@ -2475,7 +2636,21 @@ ${formatCurrency(datum.y)}`
                       />
                     }
                   />
+                  <VictoryScatter
+                    data={netWorthForecastData.data}
+                    size={({ datum }) => (datum.year === 0 || datum.year === netWorthSimulation.years ? 4.4 : 2.4)}
+                    style={{
+                      data: {
+                        fill: ({ datum }) => (datum.year === netWorthSimulation.years ? forecastProjectionColor : cardBackground),
+                        stroke: forecastProjectionColor,
+                        strokeWidth: ({ datum }) => (datum.year === netWorthSimulation.years ? 2.4 : 1.4),
+                      },
+                    }}
+                  />
                 </VictoryChart>
+                <Text style={[styles.forecastAssumptionText, { color: theme.colors.textSecondary }]}> 
+                  Assumes a saving pace of {formatCurrency(netWorthSimulation.monthlySavings)} per month and 5% annual portfolio growth.
+                </Text>
               </View>
             ) : null}
           </View>
@@ -2693,7 +2868,7 @@ ${formatCurrency(datum.y)}`
             <View style={[styles.monthModalHeader, { borderBottomColor: theme.colors.border }]}>
               <View style={styles.monthModalTitleWrap}>
                 <Text style={[styles.monthModalTitle, { color: theme.colors.text }]}>
-                  {selectedMonthPoint ? `${selectedMonthPoint.label} ${selectedMonthPoint.month.slice(0, 4)}` : 'Month Details'}
+                  {selectedMonthLabel ?? 'Month Details'}
                 </Text>
                 <Text style={[styles.monthModalSubtitle, { color: theme.colors.textSecondary }]}>
                   Transactions contributing to net worth
@@ -3204,7 +3379,7 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   analyticsHeroBadgeText: {
@@ -3272,7 +3447,7 @@ const styles = StyleSheet.create({
   categoryEyebrowBadge: {
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   categoryHeaderLine: {
@@ -3342,7 +3517,7 @@ const styles = StyleSheet.create({
   summaryCardBadge: {
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
   },
   summaryCardBadgeText: {
@@ -3513,9 +3688,9 @@ const styles = StyleSheet.create({
   monthChip: {
     borderWidth: 1,
     borderRadius: 10,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    minWidth: 86,
+    minWidth: 96,
   },
   monthChipLabel: {
     fontSize: 12,
@@ -3573,7 +3748,7 @@ const styles = StyleSheet.create({
     gap: 6,
     borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
     minWidth: 64,
   },
@@ -3590,7 +3765,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: 'rgba(148,163,184,0.12)',
@@ -3696,7 +3871,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     minHeight: 32,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: 'rgba(148,163,184,0.12)',
@@ -3998,22 +4173,132 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  forecastSummaryShell: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 14,
+    gap: 14,
+  },
+  forecastSummaryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
   forecastHeader: {
-    marginBottom: 12,
+    flex: 1,
+    gap: 4,
+  },
+  forecastEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   forecastValue: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.6,
   },
   forecastMeta: {
     fontSize: 12,
     fontWeight: '500',
-    marginTop: 4,
+    lineHeight: 17,
   },
-  forecastSub: {
+  forecastDeltaPill: {
+    minWidth: 112,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  forecastDeltaLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  forecastDeltaValue: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  forecastDeltaMeta: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  forecastMetricRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  forecastMetricCard: {
+    flex: 1,
+    minWidth: '31%',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 4,
+  },
+  forecastMetricLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  forecastMetricValue: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  forecastTimelineGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  forecastTimelineItem: {
+    minWidth: '31%',
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 4,
+  },
+  forecastTimelineLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  forecastTimelineValue: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  forecastTimelineDate: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  forecastLegendRow: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'flex-start',
+    paddingHorizontal: 8,
+    paddingTop: 4,
+  },
+  forecastChartContainer: {
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 10,
+  },
+  forecastAssumptionText: {
     fontSize: 12,
-    marginTop: 4,
-    lineHeight: 16,
+    lineHeight: 17,
+    paddingHorizontal: 8,
   },
   debtGrid: {
     flexDirection: 'row',
@@ -4126,6 +4411,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+
+
+
+
 
 
 

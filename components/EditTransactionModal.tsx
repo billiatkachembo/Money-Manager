@@ -314,7 +314,7 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
       counterparty: type === 'debt' ? counterparty.trim() || undefined : undefined,
       dueDate: type === 'debt' ? parsedDueDate ?? undefined : undefined,
       interestRate: type === 'debt' ? parsedInterestRate : undefined,
-      debtPayment: type === 'expense' ? debtPayment : undefined,
+      debtPayment: type === 'expense' || type === 'income' ? debtPayment : undefined,
     };
 
     try {
@@ -658,12 +658,12 @@ export function EditTransactionModal({ visible, transaction, onClose, onSave }: 
             </View>
           ) : null}
 
-          {type === 'expense' ? (
+          {type === 'expense' || type === 'income' ? (
             <View style={styles.inputGroup}>
               <View style={styles.debtPaymentRow}>
                 <View style={styles.debtPaymentInfo}>
                   <Landmark size={18} color={theme.colors.primary} />
-                  <Text style={[styles.label, { color: theme.colors.text }]}>Debt Payment</Text>
+                  <Text style={[styles.label, { color: theme.colors.text }]}>{type === 'income' ? 'Debt Clearing' : 'Debt Payment'}</Text>
                 </View>
                 <Switch
                   value={debtPayment}

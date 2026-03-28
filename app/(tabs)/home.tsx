@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+﻿import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Alert,
   TextInput,
+  Modal,
 } from 'react-native';
 import {
   Plus,
@@ -26,6 +27,8 @@ import {
   SlidersHorizontal,
   ChevronLeft,
   ChevronDown,
+  Check,
+  X,
 } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { TransactionItem } from '@/components/TransactionItem';
@@ -40,8 +43,13 @@ import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { useRouter } from 'expo-router';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
-import { Insight, Transaction } from '@/types/transaction';
-import { getActiveBudgets } from '@/src/domain/budgeting';
+import { Insight, Transaction, TransactionCategory } from '@/types/transaction';
+import { ACCOUNT_TYPE_GROUPS, getAccountTypeDefinition } from '@/constants/account-types';
+import { computeBudgetSpendingForDate, getActiveBudgets } from '@/src/domain/budgeting';
+import { computeBehaviorMetrics } from '@/src/domain/analytics';
+import { computeFinancialHealthMetrics, computeFinancialHealthScore } from '@/src/domain/financial-health';
+import { getFromAccountId, getToAccountId } from '@/src/domain/ledger';
+import { showAppTooltip } from '@/store/app-tooltip-store';
 import * as Haptics from 'expo-haptics';
 import { useI18n } from '@/src/i18n';
 
@@ -211,22 +219,205 @@ const insightStyles = StyleSheet.create({
 });
 
 type MetricCardTarget = 'budget' | 'health' | 'goals' | 'savings';
-type HomeActivityFilter = 'all' | Transaction['type'];
-
-const HOME_ACTIVITY_FILTERS: Array<{ key: HomeActivityFilter; label: string }> = [
-  { key: 'all', label: 'All' },
+type HomeFilterTab = 'income' | 'expense' | 'account';
+type HomeAccountFilterScope = 'income' | 'expense' | 'transfer_in' | 'transfer_out' | 'debt';
+const HOME_FILTER_TABS: Array<{ key: HomeFilterTab; label: string }> = [
   { key: 'income', label: 'Income' },
   { key: 'expense', label: 'Expenses' },
-  { key: 'transfer', label: 'Transfers' },
+  { key: 'account', label: 'Account' },
+];
+const HOME_ACCOUNT_FILTER_SCOPES: Array<{ key: HomeAccountFilterScope; label: string }> = [
+  { key: 'income', label: 'Income' },
+  { key: 'expense', label: 'Expenses' },
+  { key: 'transfer_in', label: 'Transfer In' },
+  { key: 'transfer_out', label: 'Transfer Out' },
   { key: 'debt', label: 'Debt' },
 ];
+function createInitialHomeAccountFilters(): Record<HomeAccountFilterScope, string[]> {
+  return {
+    income: [],
+    expense: [],
+    transfer_in: [],
+    transfer_out: [],
+    debt: [],
+  };
+}
 
+const APP_SHORT_MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+function formatMonthYearLabel(date: Date): string {
+  const monthLabel = APP_SHORT_MONTH_LABELS[date.getMonth()] ?? '';
+  return monthLabel + ' ' + date.getFullYear();
+}
+
+type HomeCategorySection = {
+  key: string;
+  label: string;
+  categories: TransactionCategory[];
+};
+
+type HomeSubcategoryFilterOption = {
+  key: string;
+  name: string;
+  amount: number;
+  transactionCount: number;
+};
+
+type HomeCategoryFilterOption = {
+  category: TransactionCategory;
+  categoryKey: string;
+  amount: number;
+  transactionCount: number;
+  subcategories: HomeSubcategoryFilterOption[];
+  visibleSubcategories: HomeSubcategoryFilterOption[];
+};
+
+function normalizeHomeSubcategoryValue(value?: string | null): string {
+  return value?.trim().toLowerCase() ?? '';
+}
+
+function makeHomeSubcategoryFilterKey(categoryKey: string, subcategory?: string | null): string | null {
+  const normalizedSubcategory = normalizeHomeSubcategoryValue(subcategory);
+  if (!categoryKey || !normalizedSubcategory) {
+    return null;
+  }
+
+  return 'subcategory:' + categoryKey + ':' + normalizedSubcategory;
+}
+
+function buildHomeCategoryFilterOptions(
+  transactions: Transaction[],
+  type: 'income' | 'expense',
+  availableCategories: TransactionCategory[] = []
+): HomeCategoryFilterOption[] {
+  const availableCategoryMap = new Map(
+    availableCategories.map((category) => [getCategoryFilterKey(category), category] as const)
+  );
+  const categoryBuckets = new Map<
+    string,
+    {
+      category: TransactionCategory;
+      amount: number;
+      transactionCount: number;
+      subcategories: Map<string, HomeSubcategoryFilterOption>;
+    }
+  >();
+
+  for (const transaction of transactions) {
+    if (transaction.type !== type || !transaction.category) {
+      continue;
+    }
+
+    const categoryKey = getCategoryFilterKey(transaction.category);
+    const amount = Math.abs(transaction.amount);
+    const existingCategory = categoryBuckets.get(categoryKey);
+
+    if (existingCategory) {
+      existingCategory.amount += amount;
+      existingCategory.transactionCount += 1;
+    } else {
+      categoryBuckets.set(categoryKey, {
+        category: transaction.category,
+        amount,
+        transactionCount: 1,
+        subcategories: new Map(),
+      });
+    }
+
+    const nextCategory = categoryBuckets.get(categoryKey);
+    const subcategoryKey = makeHomeSubcategoryFilterKey(categoryKey, transaction.subcategory);
+    const subcategoryName = transaction.subcategory?.trim();
+    if (!nextCategory || !subcategoryKey || !subcategoryName) {
+      continue;
+    }
+
+    const existingSubcategory = nextCategory.subcategories.get(subcategoryKey);
+    if (existingSubcategory) {
+      existingSubcategory.amount += amount;
+      existingSubcategory.transactionCount += 1;
+    } else {
+      nextCategory.subcategories.set(subcategoryKey, {
+        key: subcategoryKey,
+        name: subcategoryName,
+        amount,
+        transactionCount: 1,
+      });
+    }
+  }
+
+  return Array.from(categoryBuckets.entries())
+    .map(([categoryKey, entry]) => {
+      const resolvedCategory = availableCategoryMap.get(categoryKey) ?? entry.category;
+      const subcategories = Array.from(entry.subcategories.values()).sort((left, right) => {
+        const amountDelta = right.amount - left.amount;
+        if (amountDelta !== 0) {
+          return amountDelta;
+        }
+        return left.name.localeCompare(right.name);
+      });
+
+      return {
+        category: resolvedCategory,
+        categoryKey,
+        amount: entry.amount,
+        transactionCount: entry.transactionCount,
+        subcategories,
+        visibleSubcategories: subcategories,
+      };
+    })
+    .sort((left, right) => {
+      const amountDelta = right.amount - left.amount;
+      if (amountDelta !== 0) {
+        return amountDelta;
+      }
+      return left.category.name.localeCompare(right.category.name);
+    });
+}
+
+function doesTransactionMatchHomeCategoryFilters(
+  transaction: Transaction,
+  selectedFilterSet: ReadonlySet<string>
+): boolean {
+  if (selectedFilterSet.size === 0) {
+    return true;
+  }
+
+  const categoryKey = getCategoryFilterKey(transaction.category);
+  if (selectedFilterSet.has(categoryKey)) {
+    return true;
+  }
+
+  const subcategoryKey = makeHomeSubcategoryFilterKey(categoryKey, transaction.subcategory);
+  return subcategoryKey ? selectedFilterSet.has(subcategoryKey) : false;
+}
 function toMonthKey(date: Date): string {
   return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0');
 }
 
 function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
+}
+function getCategoryFilterKey(category: Transaction['category'] | null | undefined): string {
+  if (!category) {
+    return 'uncategorized';
+  }
+  return category.id || category.name.trim().toLowerCase();
+}
+function getPercentValue(value: number, total: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0 || value <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round((value / total) * 100)));
+}
+function makeHomeAccountFilterToken(kind: 'account' | 'type', value: string): string {
+  return kind + ':' + value;
+}
+
+function matchesHomeFilterQuery(query: string, ...values: Array<string | undefined | null>): boolean {
+  if (!query) {
+    return true;
+  }
+  return values.some((value) => value?.toLowerCase().includes(query));
 }
 
 export default function HomeScreen() {
@@ -245,7 +436,18 @@ export default function HomeScreen() {
   const [showHomeSearch, setShowHomeSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showHomeFilterMenu, setShowHomeFilterMenu] = useState(false);
-  const [activityFilter, setActivityFilter] = useState<HomeActivityFilter>('all');
+  const [homeFilterTab, setHomeFilterTab] = useState<HomeFilterTab>('income');
+  const [homeAccountFilterScope, setHomeAccountFilterScope] = useState<HomeAccountFilterScope>('income');
+  const [selectedIncomeFilterKeys, setSelectedIncomeFilterKeys] = useState<string[]>([]);
+  const [selectedExpenseFilterKeys, setSelectedExpenseFilterKeys] = useState<string[]>([]);
+  const [expandedIncomeFilterKeys, setExpandedIncomeFilterKeys] = useState<string[]>([]);
+  const [expandedExpenseFilterKeys, setExpandedExpenseFilterKeys] = useState<string[]>([]);
+  const [activeIncomeFilterSectionKey, setActiveIncomeFilterSectionKey] = useState('');
+  const [activeExpenseFilterSectionKey, setActiveExpenseFilterSectionKey] = useState('');
+  const [selectedAccountFilterTokens, setSelectedAccountFilterTokens] = useState<Record<HomeAccountFilterScope, string[]>>(
+    () => createInitialHomeAccountFilters()
+  );
+  const [homeFilterQuery, setHomeFilterQuery] = useState('');
   const { theme } = useTheme();
   const { t } = useI18n();
   const fabScale = useRef(new Animated.Value(1)).current;
@@ -264,10 +466,11 @@ export default function HomeScreen() {
     debtAccounts,
     getTotalIncome,
     getTotalExpenses,
-    healthScore,
     insights,
     budgets,
-    getBudgetSpending,
+    incomeCategories,
+    expenseCategories,
+    accountTypeDefinitions,
     formatCurrency,
     isLoaded,
     triggerReconciliation,
@@ -279,11 +482,9 @@ export default function HomeScreen() {
 
   const currentMonthKey = useMemo(() => toMonthKey(new Date()), []);
   const selectedMonthKey = useMemo(() => toMonthKey(selectedMonthDate), [selectedMonthDate]);
-  const selectedMonthLabel = useMemo(
-    () => selectedMonthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-    [selectedMonthDate]
-  );
+  const selectedMonthLabel = useMemo(() => formatMonthYearLabel(selectedMonthDate), [selectedMonthDate]);
   const isCurrentSelectedMonth = selectedMonthKey === currentMonthKey;
+  const selectedMonthContextLabel = isCurrentSelectedMonth ? 'This month' : selectedMonthLabel;
   const monthlyIncome = getTotalIncome(selectedMonthKey);
   const monthlyExpenses = getTotalExpenses(selectedMonthKey);
   const monthlyCashFlow = monthlyIncome - monthlyExpenses;
@@ -292,7 +493,7 @@ export default function HomeScreen() {
       .filter((entry) => entry.direction === 'borrowed')
       .reduce((sum, entry) => sum + entry.balance, 0);
     const totalDebtPayments = transactions
-      .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
+      .filter((transaction) => transaction.debtPayment)
       .reduce((sum, transaction) => sum + transaction.amount, 0);
 
     return Math.max(0, roundCurrency(borrowedBalance - totalDebtPayments));
@@ -305,31 +506,511 @@ export default function HomeScreen() {
     () => transactions.filter((transaction) => toMonthKey(transaction.date) === selectedMonthKey),
     [selectedMonthKey, transactions]
   );
+  const selectedMonthBehavior = useMemo(
+    () => computeBehaviorMetrics(transactions, budgets, accounts, selectedMonthDate),
+    [accounts, budgets, selectedMonthDate, transactions]
+  );
+  const homeLiquidBalance = useMemo(
+    () =>
+      accounts
+        .filter((account) => {
+          if (account.isActive === false) {
+            return false;
+          }
+
+          const group = getAccountTypeDefinition(account.type, accountTypeDefinitions).group;
+          return group === 'cash_bank' || group === 'savings';
+        })
+        .reduce((sum, account) => sum + Math.max(0, account.balance), 0),
+    [accounts]
+  );
+  const selectedMonthHealthMetrics = useMemo(
+    () =>
+      computeFinancialHealthMetrics({
+        monthlyIncome: selectedMonthBehavior.monthly.map((entry) => entry.income),
+        monthlyExpenses: selectedMonthBehavior.monthly.map((entry) => entry.expenses),
+        budgetAdherence: selectedMonthBehavior.budget.adherence,
+        liquidBalance: homeLiquidBalance,
+      }),
+    [homeLiquidBalance, selectedMonthBehavior]
+  );
+  const selectedMonthHealthScore = useMemo(
+    () => computeFinancialHealthScore(selectedMonthHealthMetrics),
+    [selectedMonthHealthMetrics]
+  );
+  const selectedMonthActiveBudgets = useMemo(
+    () => getActiveBudgets(budgets, selectedMonthDate),
+    [budgets, selectedMonthDate]
+  );
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const normalizedHomeFilterQuery = homeFilterQuery.trim().toLowerCase();
+  const incomeCategoryFilterSet = useMemo(() => new Set(selectedIncomeFilterKeys), [selectedIncomeFilterKeys]);
+  const expenseCategoryFilterSet = useMemo(() => new Set(selectedExpenseFilterKeys), [selectedExpenseFilterKeys]);
+  const incomeCategoryMonthlyTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const transaction of selectedMonthTransactions) {
+      if (transaction.type !== 'income') {
+        continue;
+      }
+      const key = getCategoryFilterKey(transaction.category);
+      totals.set(key, (totals.get(key) ?? 0) + transaction.amount);
+    }
+    return totals;
+  }, [selectedMonthTransactions]);
+  const expenseCategoryMonthlyTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const transaction of selectedMonthTransactions) {
+      if (transaction.type !== 'expense') {
+        continue;
+      }
+      const key = getCategoryFilterKey(transaction.category);
+      totals.set(key, (totals.get(key) ?? 0) + Math.abs(transaction.amount));
+    }
+    return totals;
+  }, [selectedMonthTransactions]);
+  const incomeFilterOptions = useMemo(
+    () => buildHomeCategoryFilterOptions(selectedMonthTransactions, 'income', incomeCategories),
+    [incomeCategories, selectedMonthTransactions]
+  );
+  const expenseFilterOptions = useMemo(
+    () => buildHomeCategoryFilterOptions(selectedMonthTransactions, 'expense', expenseCategories),
+    [expenseCategories, selectedMonthTransactions]
+  );
+  const homeVisibleAccounts = useMemo(() => accounts.filter((account) => account.isActive !== false), [accounts]);
+  const homeAccountsById = useMemo(() => new Map(homeVisibleAccounts.map((account) => [account.id, account])), [homeVisibleAccounts]);
+  const homeAccountFilterTokenSets = useMemo(
+    () => ({
+      income: new Set(selectedAccountFilterTokens.income),
+      expense: new Set(selectedAccountFilterTokens.expense),
+      transfer_in: new Set(selectedAccountFilterTokens.transfer_in),
+      transfer_out: new Set(selectedAccountFilterTokens.transfer_out),
+      debt: new Set(selectedAccountFilterTokens.debt),
+    }),
+    [selectedAccountFilterTokens]
+  );
+  const homeAccountSections = useMemo(
+    () =>
+      ACCOUNT_TYPE_GROUPS.map((group) => {
+        const accountsInGroup = homeVisibleAccounts.filter(
+          (account) => getAccountTypeDefinition(account.type, accountTypeDefinitions).group === group.key
+        );
+        const typeRows = accountTypeDefinitions.filter(
+          (definition) =>
+            definition.group === group.key && accountsInGroup.some((account) => account.type === definition.type)
+        );
+
+        return {
+          key: group.key,
+          label: group.label,
+          typeRows,
+          accounts: accountsInGroup,
+        };
+      }).filter((section) => section.typeRows.length > 0 || section.accounts.length > 0),
+    [accountTypeDefinitions, homeVisibleAccounts]
+  );
+  const homeFilterScopeCounts = useMemo(
+    () => ({
+      income: selectedAccountFilterTokens.income.length,
+      expense: selectedAccountFilterTokens.expense.length,
+      transfer_in: selectedAccountFilterTokens.transfer_in.length,
+      transfer_out: selectedAccountFilterTokens.transfer_out.length,
+      debt: selectedAccountFilterTokens.debt.length,
+    }),
+    [selectedAccountFilterTokens]
+  );
+  const activeHomeAccountScopeLabel =
+    HOME_ACCOUNT_FILTER_SCOPES.find((scope) => scope.key === homeAccountFilterScope)?.label ?? 'Accounts';
+  const displayedIncomeFilterOptions = useMemo(
+    () =>
+      incomeFilterOptions
+        .map((option) => {
+          const categoryMatches = matchesHomeFilterQuery(normalizedHomeFilterQuery, option.category.name, option.category.icon);
+          const matchingSubcategories = option.subcategories.filter((subcategory) =>
+            matchesHomeFilterQuery(normalizedHomeFilterQuery, subcategory.name, option.category.name)
+          );
+
+          if (!categoryMatches && matchingSubcategories.length === 0) {
+            return null;
+          }
+
+          return {
+            ...option,
+            visibleSubcategories: normalizedHomeFilterQuery && !categoryMatches ? matchingSubcategories : option.subcategories,
+          };
+        })
+        .filter((option): option is HomeCategoryFilterOption => !!option)
+        .sort((left, right) => {
+          const leftSelected =
+            selectedIncomeFilterKeys.includes(left.categoryKey) ||
+            left.subcategories.some((subcategory) => selectedIncomeFilterKeys.includes(subcategory.key));
+          const rightSelected =
+            selectedIncomeFilterKeys.includes(right.categoryKey) ||
+            right.subcategories.some((subcategory) => selectedIncomeFilterKeys.includes(subcategory.key));
+          if (leftSelected !== rightSelected) {
+            return leftSelected ? -1 : 1;
+          }
+          return left.category.name.localeCompare(right.category.name);
+        }),
+    [incomeFilterOptions, normalizedHomeFilterQuery, selectedIncomeFilterKeys]
+  );
+  const displayedExpenseFilterOptions = useMemo(
+    () =>
+      expenseFilterOptions
+        .map((option) => {
+          const categoryMatches = matchesHomeFilterQuery(normalizedHomeFilterQuery, option.category.name, option.category.icon);
+          const matchingSubcategories = option.subcategories.filter((subcategory) =>
+            matchesHomeFilterQuery(normalizedHomeFilterQuery, subcategory.name, option.category.name)
+          );
+
+          if (!categoryMatches && matchingSubcategories.length === 0) {
+            return null;
+          }
+
+          return {
+            ...option,
+            visibleSubcategories: normalizedHomeFilterQuery && !categoryMatches ? matchingSubcategories : option.subcategories,
+          };
+        })
+        .filter((option): option is HomeCategoryFilterOption => !!option)
+        .sort((left, right) => {
+          const leftSelected =
+            selectedExpenseFilterKeys.includes(left.categoryKey) ||
+            left.subcategories.some((subcategory) => selectedExpenseFilterKeys.includes(subcategory.key));
+          const rightSelected =
+            selectedExpenseFilterKeys.includes(right.categoryKey) ||
+            right.subcategories.some((subcategory) => selectedExpenseFilterKeys.includes(subcategory.key));
+          if (leftSelected !== rightSelected) {
+            return leftSelected ? -1 : 1;
+          }
+          return left.category.name.localeCompare(right.category.name);
+        }),
+    [expenseFilterOptions, normalizedHomeFilterQuery, selectedExpenseFilterKeys]
+  );
+  useEffect(() => {
+    const availableKeys = new Set(
+      incomeFilterOptions.flatMap((option) => [option.categoryKey, ...option.subcategories.map((subcategory) => subcategory.key)])
+    );
+    const availableCategoryKeys = new Set(incomeFilterOptions.map((option) => option.categoryKey));
+    setSelectedIncomeFilterKeys((current) => current.filter((key) => availableKeys.has(key)));
+    setExpandedIncomeFilterKeys((current) => current.filter((key) => availableCategoryKeys.has(key)));
+  }, [incomeFilterOptions]);
+
+  useEffect(() => {
+    const availableKeys = new Set(
+      expenseFilterOptions.flatMap((option) => [option.categoryKey, ...option.subcategories.map((subcategory) => subcategory.key)])
+    );
+    const availableCategoryKeys = new Set(expenseFilterOptions.map((option) => option.categoryKey));
+    setSelectedExpenseFilterKeys((current) => current.filter((key) => availableKeys.has(key)));
+    setExpandedExpenseFilterKeys((current) => current.filter((key) => availableCategoryKeys.has(key)));
+  }, [expenseFilterOptions]);
+
+  const visibleHomeAccountSections = useMemo(() => {
+    const selectedTokens = homeAccountFilterTokenSets[homeAccountFilterScope];
+
+    return homeAccountSections
+      .map((section) => {
+        const typeRows = [...section.typeRows]
+          .filter((definition) =>
+            matchesHomeFilterQuery(normalizedHomeFilterQuery, definition.label, definition.type, section.label)
+          )
+          .sort((left, right) => {
+            const leftSelected = selectedTokens.has(makeHomeAccountFilterToken('type', left.type));
+            const rightSelected = selectedTokens.has(makeHomeAccountFilterToken('type', right.type));
+            if (leftSelected !== rightSelected) {
+              return leftSelected ? -1 : 1;
+            }
+            return left.label.localeCompare(right.label);
+          });
+
+        const accounts = [...section.accounts]
+          .filter((account) => {
+            const definition = getAccountTypeDefinition(account.type, accountTypeDefinitions);
+            return matchesHomeFilterQuery(
+              normalizedHomeFilterQuery,
+              account.name,
+              account.type,
+              definition.label,
+              section.label
+            );
+          })
+          .sort((left, right) => {
+            const leftSelected = selectedTokens.has(makeHomeAccountFilterToken('account', left.id));
+            const rightSelected = selectedTokens.has(makeHomeAccountFilterToken('account', right.id));
+            if (leftSelected !== rightSelected) {
+              return leftSelected ? -1 : 1;
+            }
+            return left.name.localeCompare(right.name);
+          });
+
+        return {
+          ...section,
+          typeRows,
+          accounts,
+        };
+      })
+      .filter((section) => section.typeRows.length > 0 || section.accounts.length > 0);
+  }, [
+    accountTypeDefinitions,
+    homeAccountFilterScope,
+    homeAccountFilterTokenSets,
+    homeAccountSections,
+    normalizedHomeFilterQuery,
+  ]);
+  const appliedHomeFilterCount = useMemo(
+    () =>
+      selectedIncomeFilterKeys.length +
+      selectedExpenseFilterKeys.length +
+      Object.values(selectedAccountFilterTokens).reduce((sum, items) => sum + items.length, 0),
+    [selectedAccountFilterTokens, selectedExpenseFilterKeys.length, selectedIncomeFilterKeys.length]
+  );
+  const hasActiveHomeFilters = appliedHomeFilterCount > 0;
+  const doesAccountMatchScope = useCallback(
+    (scope: HomeAccountFilterScope, accountId?: string) => {
+      const scopeTokens = homeAccountFilterTokenSets[scope];
+      if (scopeTokens.size === 0) {
+        return true;
+      }
+      if (!accountId) {
+        return false;
+      }
+      const account = homeAccountsById.get(accountId);
+      if (!account) {
+        return false;
+      }
+      return (
+        scopeTokens.has(makeHomeAccountFilterToken('account', account.id)) ||
+        scopeTokens.has(makeHomeAccountFilterToken('type', account.type))
+      );
+    },
+    [homeAccountFilterTokenSets, homeAccountsById]
+  );
+  const doesTransactionMatchHomeFilters = useCallback(
+    (transaction: Transaction) => {
+      if (
+        transaction.type === 'income' &&
+        !doesTransactionMatchHomeCategoryFilters(transaction, incomeCategoryFilterSet)
+      ) {
+        return false;
+      }
+      if (
+        transaction.type === 'expense' &&
+        !doesTransactionMatchHomeCategoryFilters(transaction, expenseCategoryFilterSet)
+      ) {
+        return false;
+      }
+      if (transaction.type === 'income') {
+        return doesAccountMatchScope('income', getToAccountId(transaction));
+      }
+      if (transaction.type === 'expense') {
+        return doesAccountMatchScope('expense', getFromAccountId(transaction));
+      }
+      if (transaction.type === 'transfer') {
+        const hasIncomingScope = homeAccountFilterTokenSets.transfer_in.size > 0;
+        const hasOutgoingScope = homeAccountFilterTokenSets.transfer_out.size > 0;
+        if (!hasIncomingScope && !hasOutgoingScope) {
+          return true;
+        }
+        const incomingMatch = !hasIncomingScope || doesAccountMatchScope('transfer_in', getToAccountId(transaction));
+        const outgoingMatch = !hasOutgoingScope || doesAccountMatchScope('transfer_out', getFromAccountId(transaction));
+        return incomingMatch && outgoingMatch;
+      }
+      if (transaction.type === 'debt') {
+        if (homeAccountFilterTokenSets.debt.size === 0) {
+          return true;
+        }
+        return (
+          doesAccountMatchScope('debt', getFromAccountId(transaction)) ||
+          doesAccountMatchScope('debt', getToAccountId(transaction))
+        );
+      }
+      return true;
+    },
+    [
+      doesAccountMatchScope,
+      expenseCategoryFilterSet,
+      homeAccountFilterTokenSets.debt.size,
+      homeAccountFilterTokenSets.transfer_in.size,
+      homeAccountFilterTokenSets.transfer_out.size,
+      incomeCategoryFilterSet,
+    ]
+  );
   const recentTransactions = useMemo(() => {
     return [...selectedMonthTransactions]
-      .filter((transaction) => activityFilter === 'all' || transaction.type === activityFilter)
+      .filter((transaction) => doesTransactionMatchHomeFilters(transaction))
       .filter((transaction) => {
         if (!normalizedSearchQuery) {
           return true;
         }
 
+        const fromAccountName = homeAccountsById.get(getFromAccountId(transaction) ?? '')?.name ?? transaction.fromAccount;
+        const toAccountName = homeAccountsById.get(getToAccountId(transaction) ?? '')?.name ?? transaction.toAccount;
+        const amountLabel = formatCurrency(Math.abs(transaction.amount));
+        const rawAmountLabel = String(transaction.amount);
+        const categoryWithSubcategory = transaction.subcategory
+          ? transaction.category?.name + ' ' + transaction.subcategory
+          : transaction.category?.name;
+        const transactionTypeLabel = transaction.type === 'debt'
+          ? transaction.debtDirection === 'lent'
+            ? 'lent debt'
+            : 'borrowed debt'
+          : transaction.type;
+        const debtPaymentLabel = transaction.debtPayment ? 'debt payment debt clearing installment' : '';
+
         const searchFields = [
           transaction.description,
           transaction.note,
+          transaction.merchant,
+          transaction.counterparty,
           transaction.category?.name,
-          transaction.fromAccount,
-          transaction.toAccount,
-          transaction.type,
+          transaction.subcategory,
+          categoryWithSubcategory,
+          fromAccountName,
+          toAccountName,
+          transactionTypeLabel,
+          debtPaymentLabel,
+          amountLabel,
+          rawAmountLabel,
         ];
 
-        return searchFields.some((value) => value?.toLowerCase().includes(normalizedSearchQuery));
+        return searchFields.some((value) => String(value ?? '').toLowerCase().includes(normalizedSearchQuery));
       })
       .sort((a, b) => b.date.getTime() - a.date.getTime())
       .slice(0, 7);
-  }, [activityFilter, normalizedSearchQuery, selectedMonthTransactions]);
-
-
+  }, [doesTransactionMatchHomeFilters, formatCurrency, homeAccountsById, normalizedSearchQuery, selectedMonthTransactions]);
+  const homeFilterSelectionSummary = useMemo(() => {
+    const hasIncomeSelection = selectedIncomeFilterKeys.length > 0 || selectedAccountFilterTokens.income.length > 0;
+    const hasExpenseSelection = selectedExpenseFilterKeys.length > 0 || selectedAccountFilterTokens.expense.length > 0;
+    const hasTransferSelection = selectedAccountFilterTokens.transfer_in.length > 0 || selectedAccountFilterTokens.transfer_out.length > 0;
+    const hasDebtSelection = selectedAccountFilterTokens.debt.length > 0;
+    let incomeAmount = 0;
+    let expenseAmount = 0;
+    let totalAmount = 0;
+    for (const transaction of selectedMonthTransactions) {
+      const absoluteAmount = Math.abs(transaction.amount);
+      if (transaction.type === 'income' && hasIncomeSelection) {
+        const matchesCategory = doesTransactionMatchHomeCategoryFilters(transaction, incomeCategoryFilterSet);
+        const matchesAccount = doesAccountMatchScope('income', getToAccountId(transaction));
+        if (matchesCategory && matchesAccount) {
+          incomeAmount += transaction.amount;
+          totalAmount += absoluteAmount;
+        }
+        continue;
+      }
+      if (transaction.type === 'expense' && hasExpenseSelection) {
+        const matchesCategory = doesTransactionMatchHomeCategoryFilters(transaction, expenseCategoryFilterSet);
+        const matchesAccount = doesAccountMatchScope('expense', getFromAccountId(transaction));
+        if (matchesCategory && matchesAccount) {
+          expenseAmount += absoluteAmount;
+          totalAmount += absoluteAmount;
+        }
+        continue;
+      }
+      if (transaction.type === 'transfer' && hasTransferSelection) {
+        const hasIncomingScope = selectedAccountFilterTokens.transfer_in.length > 0;
+        const hasOutgoingScope = selectedAccountFilterTokens.transfer_out.length > 0;
+        const incomingMatch = !hasIncomingScope || doesAccountMatchScope('transfer_in', getToAccountId(transaction));
+        const outgoingMatch = !hasOutgoingScope || doesAccountMatchScope('transfer_out', getFromAccountId(transaction));
+        if (incomingMatch && outgoingMatch) {
+          totalAmount += absoluteAmount;
+        }
+        continue;
+      }
+      if (transaction.type === 'debt' && hasDebtSelection) {
+        const debtMatch =
+          doesAccountMatchScope('debt', getFromAccountId(transaction)) ||
+          doesAccountMatchScope('debt', getToAccountId(transaction));
+        if (debtMatch) {
+          totalAmount += absoluteAmount;
+        }
+      }
+    }
+    return {
+      incomeAmount,
+      expenseAmount,
+      totalAmount,
+      incomePercent: getPercentValue(incomeAmount, monthlyIncome),
+      expensePercent: getPercentValue(expenseAmount, monthlyExpenses),
+    };
+  }, [
+    doesAccountMatchScope,
+    doesTransactionMatchHomeCategoryFilters,
+    expenseCategoryFilterSet,
+    incomeCategoryFilterSet,
+    monthlyExpenses,
+    monthlyIncome,
+    selectedAccountFilterTokens,
+    selectedExpenseFilterKeys.length,
+    selectedIncomeFilterKeys.length,
+    selectedMonthTransactions,
+  ]);
+  const homeFilterContextLabel = useMemo(() => {
+    const tags: string[] = [];
+    if (hasActiveHomeFilters) {
+      tags.push(appliedHomeFilterCount + ' filters');
+    }
+    if (normalizedSearchQuery) {
+      tags.push('Search');
+    }
+    if (tags.length === 0) {
+      return selectedMonthLabel + ' snapshot';
+    }
+    return selectedMonthLabel + ' | ' + tags.join(' + ');
+  }, [appliedHomeFilterCount, hasActiveHomeFilters, normalizedSearchQuery, selectedMonthLabel]);
+  const incomeSectionSelectedCount = selectedIncomeFilterKeys.length + selectedAccountFilterTokens.income.length;
+  const expenseSectionSelectedCount = selectedExpenseFilterKeys.length + selectedAccountFilterTokens.expense.length;
+  const homeFilterTabCounts = useMemo(
+    () => ({
+      income: incomeSectionSelectedCount,
+      expense: expenseSectionSelectedCount,
+      account: Object.values(homeFilterScopeCounts).reduce((sum, count) => sum + count, 0),
+    }),
+    [expenseSectionSelectedCount, homeFilterScopeCounts, incomeSectionSelectedCount]
+  );
+  const homeFilterResultCount = useMemo(
+    () => {
+      if (homeFilterTab === 'income') {
+        return displayedIncomeFilterOptions.reduce((sum, option) => sum + 1 + option.visibleSubcategories.length, 0);
+      }
+      if (homeFilterTab === 'expense') {
+        return displayedExpenseFilterOptions.reduce((sum, option) => sum + 1 + option.visibleSubcategories.length, 0);
+      }
+      return visibleHomeAccountSections.reduce(
+        (sum, section) => sum + section.typeRows.length + section.accounts.length,
+        0
+      );
+    },
+    [displayedExpenseFilterOptions.length, displayedIncomeFilterOptions.length, homeFilterTab, visibleHomeAccountSections]
+  );
+  const homeFilterSearchPlaceholder =
+    homeFilterTab === 'income'
+      ? 'Search income categories'
+      : homeFilterTab === 'expense'
+        ? 'Search expense categories'
+        : 'Search accounts or account types';
+  const homeFilterResultLabel = homeFilterResultCount === 1 ? '1 option' : homeFilterResultCount + ' options';
+  const homeFilterStatusText =
+    selectedMonthContextLabel +
+    ' | ' +
+    homeFilterResultLabel +
+    (normalizedSearchQuery ? ' | Feed search on' : '') +
+    (normalizedHomeFilterQuery ? ' | Filter search on' : '');
+  const homeFilterEmptyTitle =
+    homeFilterTab === 'account'
+      ? 'No account filters found'
+      : homeFilterTab === 'income'
+        ? 'No income filters found'
+        : 'No expense filters found';
+  const homeFilterEmptyDescription =
+    homeFilterTab === 'account'
+      ? normalizedHomeFilterQuery
+        ? 'Try a different account or account type name for ' + activeHomeAccountScopeLabel + '.'
+        : 'Create accounts first to filter home activity by account.'
+      : normalizedHomeFilterQuery
+        ? 'Try a different category name or clear the filter search.'
+        : 'Nothing matches this filter section yet.';
+  const isIncomeSectionClear = incomeSectionSelectedCount === 0;
+  const isExpenseSectionClear = expenseSectionSelectedCount === 0;
+  const isCurrentAccountScopeClear = homeFilterScopeCounts[homeAccountFilterScope] === 0;
 
   const topSpending = useMemo(() => {
     const totals = new Map<string, { name: string; color: string; amount: number }>();
@@ -353,8 +1034,6 @@ export default function HomeScreen() {
 
     return Array.from(totals.values()).sort((a, b) => b.amount - a.amount).slice(0, 3);
   }, [selectedMonthTransactions]);
-  const activeBudgets = useMemo(() => getActiveBudgets(budgets), [budgets]);
-
   const savingsAccounts = useMemo(
     () => accounts.filter((account) => account.isActive && account.type === 'savings'),
     [accounts]
@@ -389,24 +1068,27 @@ export default function HomeScreen() {
   }, [financialGoals]);
 
   const budgetRisk = useMemo(() => {
-    if (activeBudgets.length === 0) return null;
+    if (selectedMonthActiveBudgets.length === 0) return null;
 
     let overCount = 0;
     let nearCount = 0;
 
-    for (const budget of activeBudgets) {
-      const spent = getBudgetSpending(budget.id);
+    for (const budget of selectedMonthActiveBudgets) {
+      const spent = computeBudgetSpendingForDate(budget, transactions, selectedMonthDate);
       const pct = budget.amount > 0 ? spent / budget.amount : 0;
       if (pct >= 1) overCount++;
       else if (pct >= 0.8) nearCount++;
     }
 
-    return { overCount, nearCount, total: activeBudgets.length };
-  }, [activeBudgets, getBudgetSpending]);
+    return { overCount, nearCount, total: selectedMonthActiveBudgets.length };
+  }, [selectedMonthActiveBudgets, selectedMonthDate, transactions]);
 
   const hasHealthData = useMemo(
-    () => transactions.length > 0 || activeBudgets.length > 0 || netBalance !== 0,
-    [activeBudgets.length, netBalance, transactions.length]
+    () =>
+      selectedMonthBehavior.monthly.some(
+        (entry) => entry.income > 0 || entry.expenses > 0 || entry.transfers > 0
+      ) || selectedMonthActiveBudgets.length > 0,
+    [selectedMonthActiveBudgets.length, selectedMonthBehavior]
   );
 
   const topInsights = useMemo(() => insights.slice(0, 3), [insights]);
@@ -445,40 +1127,32 @@ export default function HomeScreen() {
 
   const shiftSelectedMonth = useCallback((offset: number) => {
     setSelectedMonthDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
-    setShowHomeFilterMenu(false);
   }, []);
-
   const handleAddFabPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowQuickAddMenu((current) => !current);
   }, []);
-
   const handleAddTransactionPress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setShowQuickAddMenu(false);
     setPreferredType(null);
     setShowAddModal(true);
   }, []);
-
   const handleAddNotePress = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowQuickAddMenu(false);
     openNotesComposer();
   }, [openNotesComposer]);
-
   const handleMetricPress = useCallback((target: MetricCardTarget) => {
     setActiveMetricTooltip((current) => (current === target ? null : target));
   }, []);
-
   const handleMonthChange = useCallback((_event: DateTimePickerEvent, selectedDate?: Date) => {
     setShowMonthPicker(false);
     if (!selectedDate) {
       return;
     }
-
     setSelectedMonthDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   }, []);
-
   const handleSearchToggle = useCallback(() => {
     setShowQuickAddMenu(false);
     setShowHomeFilterMenu(false);
@@ -489,12 +1163,113 @@ export default function HomeScreen() {
       return !current;
     });
   }, []);
-
   const handleFilterToggle = useCallback(() => {
     setShowQuickAddMenu(false);
-    setShowHomeSearch(false);
-    setSearchQuery('');
-    setShowHomeFilterMenu((current) => !current);
+    setShowHomeFilterMenu((current) => {
+      if (current) {
+        setHomeFilterQuery('');
+      }
+      return !current;
+    });
+  }, []);
+  const handleCloseHomeFilter = useCallback(() => {
+    setHomeFilterQuery('');
+    setShowHomeFilterMenu(false);
+  }, []);
+  const handleClearHomeFilters = useCallback(() => {
+    setSelectedIncomeFilterKeys([]);
+    setSelectedExpenseFilterKeys([]);
+    setSelectedAccountFilterTokens(createInitialHomeAccountFilters());
+    setHomeFilterQuery('');
+    showAppTooltip({ message: 'Home filters cleared', tone: 'info' });
+  }, []);
+  const handleClearIncomeSectionFilters = useCallback(() => {
+    setSelectedIncomeFilterKeys([]);
+    setSelectedAccountFilterTokens((current) => ({
+      ...current,
+      income: [],
+    }));
+  }, []);
+  const handleClearExpenseSectionFilters = useCallback(() => {
+    setSelectedExpenseFilterKeys([]);
+    setSelectedAccountFilterTokens((current) => ({
+      ...current,
+      expense: [],
+    }));
+  }, []);
+  const handleToggleIncomeFilter = useCallback(
+    (key: string, config?: { categoryKey?: string; subcategoryKeys?: string[] }) => {
+      setSelectedIncomeFilterKeys((current) => {
+        const next = new Set(current);
+        const targetCategoryKey = config?.categoryKey ?? key;
+        const relatedSubcategoryKeys = config?.subcategoryKeys ?? [];
+        const isParentCategoryToggle = relatedSubcategoryKeys.length > 0 && targetCategoryKey === key;
+
+        if (next.has(key)) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+
+        if (isParentCategoryToggle) {
+          relatedSubcategoryKeys.forEach((subcategoryKey) => next.delete(subcategoryKey));
+        } else if (config?.categoryKey && config.categoryKey !== key) {
+          next.delete(config.categoryKey);
+        }
+
+        return Array.from(next);
+      });
+    },
+    []
+  );
+  const handleToggleExpenseFilter = useCallback(
+    (key: string, config?: { categoryKey?: string; subcategoryKeys?: string[] }) => {
+      setSelectedExpenseFilterKeys((current) => {
+        const next = new Set(current);
+        const targetCategoryKey = config?.categoryKey ?? key;
+        const relatedSubcategoryKeys = config?.subcategoryKeys ?? [];
+        const isParentCategoryToggle = relatedSubcategoryKeys.length > 0 && targetCategoryKey === key;
+
+        if (next.has(key)) {
+          next.delete(key);
+        } else {
+          next.add(key);
+        }
+
+        if (isParentCategoryToggle) {
+          relatedSubcategoryKeys.forEach((subcategoryKey) => next.delete(subcategoryKey));
+        } else if (config?.categoryKey && config.categoryKey !== key) {
+          next.delete(config.categoryKey);
+        }
+
+        return Array.from(next);
+      });
+    },
+    []
+  );
+  const handleToggleIncomeFilterExpansion = useCallback((categoryKey: string) => {
+    setExpandedIncomeFilterKeys((current) =>
+      current.includes(categoryKey) ? current.filter((value) => value !== categoryKey) : [...current, categoryKey]
+    );
+  }, []);
+  const handleToggleExpenseFilterExpansion = useCallback((categoryKey: string) => {
+    setExpandedExpenseFilterKeys((current) =>
+      current.includes(categoryKey) ? current.filter((value) => value !== categoryKey) : [...current, categoryKey]
+    );
+  }, []);
+  const handleToggleHomeAccountFilter = useCallback((scope: HomeAccountFilterScope, token: string) => {
+    setSelectedAccountFilterTokens((current) => ({
+      ...current,
+      [scope]: current[scope].includes(token)
+        ? current[scope].filter((value) => value !== token)
+        : [...current[scope], token],
+    }));
+  }, []);
+  const handleClearHomeAccountScope = useCallback((scope: HomeAccountFilterScope) => {
+    setSelectedAccountFilterTokens((current) => ({
+      ...current,
+      [scope]: [],
+    }));
   }, []);
 
   useEffect(() => {
@@ -515,6 +1290,196 @@ export default function HomeScreen() {
 
   const isDark = theme.isDark;
   const metricTooltipBackground = isDark ? '#0F172A' : '#1F2937';
+  const homeFilterPalette = useMemo(
+    () => ({
+      modalBackground: theme.colors.background,
+      headerBackground: theme.colors.surface,
+      sectionBackground: theme.colors.surface,
+      promptBackground: theme.colors.primary + (isDark ? '22' : '12'),
+      incomeBackground: theme.colors.info + (isDark ? '16' : '10'),
+      expenseBackground: theme.colors.error + (isDark ? '14' : '0F'),
+      totalBackground: isDark ? theme.colors.card : theme.colors.surface,
+      checkboxBorder: isDark ? 'rgba(179, 179, 179, 0.32)' : 'rgba(102, 102, 102, 0.2)',
+    }),
+    [
+      isDark,
+      theme.colors.background,
+      theme.colors.card,
+      theme.colors.error,
+      theme.colors.info,
+      theme.colors.primary,
+      theme.colors.surface,
+    ]
+  );
+  const renderHomeCategoryFilterOption = useCallback(
+    (option: HomeCategoryFilterOption, type: 'income' | 'expense') => {
+      const selectedKeys = type === 'income' ? selectedIncomeFilterKeys : selectedExpenseFilterKeys;
+      const expandedKeys = type === 'income' ? expandedIncomeFilterKeys : expandedExpenseFilterKeys;
+      const handleToggleFilter = type === 'income' ? handleToggleIncomeFilter : handleToggleExpenseFilter;
+      const handleToggleExpansion =
+        type === 'income' ? handleToggleIncomeFilterExpansion : handleToggleExpenseFilterExpansion;
+      const hasVisibleSubcategories = option.visibleSubcategories.length > 0;
+      const isCategorySelected = selectedKeys.includes(option.categoryKey);
+      const selectedSubcategoryCount = option.subcategories.filter((subcategory) => selectedKeys.includes(subcategory.key)).length;
+      const isExpanded =
+        expandedKeys.includes(option.categoryKey) ||
+        option.visibleSubcategories.some((subcategory) => selectedKeys.includes(subcategory.key)) ||
+        (!!normalizedHomeFilterQuery && hasVisibleSubcategories);
+      const isCategoryActive = isCategorySelected || selectedSubcategoryCount > 0;
+      const categoryColor = option.category.color || theme.colors.primary;
+      const categoryMetaLabel =
+        selectedSubcategoryCount > 0
+          ? selectedSubcategoryCount + ' selected'
+          : hasVisibleSubcategories
+            ? option.visibleSubcategories.length + ' subcategories'
+            : option.transactionCount + ' transactions';
+      const categoryRowBackground = isCategoryActive ? theme.colors.primary + (isDark ? '12' : '08') : 'transparent';
+      const handleToggleCategorySelection = () =>
+        handleToggleFilter(option.categoryKey, {
+          subcategoryKeys: option.subcategories.map((subcategory) => subcategory.key),
+        });
+      const handleCategoryPress = hasVisibleSubcategories
+        ? () => handleToggleExpansion(option.categoryKey)
+        : handleToggleCategorySelection;
+
+      return (
+        <View key={option.categoryKey} style={styles.homeFilterDropdownGroup}>
+          <View style={styles.homeFilterCategoryRow}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={[
+                styles.homeFilterCategoryCheckboxButton,
+                { borderBottomColor: theme.colors.border },
+                hasVisibleSubcategories && isExpanded && styles.homeFilterCategoryButtonOpen,
+                { backgroundColor: categoryRowBackground },
+              ]}
+              onPress={handleToggleCategorySelection}
+            >
+              <View
+                style={[
+                  styles.homeFilterCheckbox,
+                  {
+                    borderColor: homeFilterPalette.checkboxBorder,
+                    backgroundColor: homeFilterPalette.sectionBackground,
+                  },
+                  isCategorySelected && { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+                ]}
+              >
+                {isCategorySelected ? <Check size={13} color="#FFFFFF" /> : null}
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={[
+                styles.homeFilterCategoryButton,
+                { borderBottomColor: theme.colors.border },
+                hasVisibleSubcategories && isExpanded && styles.homeFilterCategoryButtonOpen,
+                { backgroundColor: categoryRowBackground },
+              ]}
+              onPress={handleCategoryPress}
+            >
+              <View style={[styles.homeFilterCategorySwatch, { backgroundColor: categoryColor }]} />
+              <View style={styles.homeFilterCategoryContent}>
+                <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]} numberOfLines={1}>
+                  {option.category.name}
+                </Text>
+                <Text style={[styles.homeFilterCategoryMeta, { color: theme.colors.textSecondary }]} numberOfLines={1}>
+                  {categoryMetaLabel}
+                </Text>
+              </View>
+              <AdaptiveAmountText
+                style={[
+                  styles.homeFilterRowAmount,
+                  { color: isCategoryActive ? theme.colors.primary : theme.colors.textSecondary },
+                ]}
+                minFontSize={10}
+                value={formatCurrency(option.amount)}
+              />
+              {hasVisibleSubcategories ? (
+                <ChevronDown
+                  size={16}
+                  color={theme.colors.textSecondary}
+                  style={isExpanded ? styles.homeFilterExpandIconOpen : undefined}
+                />
+              ) : null}
+            </TouchableOpacity>
+          </View>
+
+          {hasVisibleSubcategories && isExpanded ? (
+            <View style={styles.homeFilterSubcategoryList}>
+              {option.visibleSubcategories.map((subcategory) => {
+                const isSubcategorySelected = selectedKeys.includes(subcategory.key);
+                return (
+                  <TouchableOpacity
+                    key={subcategory.key}
+                    accessibilityRole="button"
+                    style={[
+                      styles.homeFilterSubcategoryRow,
+                      { borderTopColor: theme.colors.border },
+                      isSubcategorySelected && { backgroundColor: theme.colors.primary + (isDark ? '10' : '06') },
+                    ]}
+                    onPress={() =>
+                      handleToggleFilter(subcategory.key, {
+                        categoryKey: option.categoryKey,
+                      })
+                    }
+                  >
+                    <View
+                      style={[
+                        styles.homeFilterCheckbox,
+                        {
+                          borderColor: homeFilterPalette.checkboxBorder,
+                          backgroundColor: homeFilterPalette.sectionBackground,
+                        },
+                        isSubcategorySelected && {
+                          backgroundColor: theme.colors.primary,
+                          borderColor: theme.colors.primary,
+                        },
+                      ]}
+                    >
+                      {isSubcategorySelected ? <Check size={13} color="#FFFFFF" /> : null}
+                    </View>
+                    <View style={[styles.homeFilterSubcategoryDot, { backgroundColor: categoryColor }]} />
+                    <Text style={[styles.homeFilterSubcategoryText, { color: theme.colors.text }]} numberOfLines={1}>
+                      {subcategory.name}
+                    </Text>
+                    <AdaptiveAmountText
+                      style={[
+                        styles.homeFilterSubcategoryAmount,
+                        { color: isSubcategorySelected ? theme.colors.primary : theme.colors.textSecondary },
+                      ]}
+                      minFontSize={10}
+                      value={formatCurrency(subcategory.amount)}
+                    />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : null}
+        </View>
+      );
+    },
+    [
+      expandedExpenseFilterKeys,
+      expandedIncomeFilterKeys,
+      formatCurrency,
+      handleToggleExpenseFilter,
+      handleToggleExpenseFilterExpansion,
+      handleToggleIncomeFilter,
+      handleToggleIncomeFilterExpansion,
+      homeFilterPalette.checkboxBorder,
+      homeFilterPalette.sectionBackground,
+      isDark,
+      normalizedHomeFilterQuery,
+      selectedExpenseFilterKeys,
+      selectedIncomeFilterKeys,
+      theme.colors.border,
+      theme.colors.primary,
+      theme.colors.text,
+      theme.colors.textSecondary,
+    ]
+  );
+
   const transactionEmptyState = useMemo(() => {
     if (selectedMonthTransactions.length === 0) {
       return {
@@ -522,12 +1487,17 @@ export default function HomeScreen() {
         description: 'Use the Add button below to track activity for this month.',
       };
     }
-
+    if (hasActiveHomeFilters || normalizedSearchQuery) {
+      return {
+        title: 'No matching transactions',
+        description: 'Try a different search term or clear the current filter section.',
+      };
+    }
     return {
-      title: 'No matching transactions',
-      description: 'Try a different search term or clear the current filter.',
+      title: 'Nothing new yet',
+      description: 'Transactions for ' + selectedMonthLabel + ' will appear here as you add them.',
     };
-  }, [selectedMonthLabel, selectedMonthTransactions.length]);
+  }, [hasActiveHomeFilters, normalizedSearchQuery, selectedMonthLabel, selectedMonthTransactions.length]);
 
   const recentActivitySummary = useMemo(() => {
     const counts = recentTransactions.reduce(
@@ -568,7 +1538,6 @@ export default function HomeScreen() {
             minFontSize={18}
             value={`${netBalance < 0 ? '-' : ''}${formatCurrency(Math.abs(netBalance))}`}
           />
-          <Text style={[styles.homeSummaryMeta, { color: theme.colors.textSecondary }]}>{selectedMonthLabel}</Text>
         </View>
 
         <View style={styles.homeSummarySide}>
@@ -730,6 +1699,9 @@ export default function HomeScreen() {
               onPress={handleFilterToggle}
             >
               <SlidersHorizontal size={18} color={theme.colors.text} />
+              {hasActiveHomeFilters ? (
+                <View style={[styles.toolbarIndicatorDot, { backgroundColor: theme.colors.primary }]} />
+              ) : null}
             </TouchableOpacity>
           </View>
         </View>
@@ -739,41 +1711,21 @@ export default function HomeScreen() {
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search transactions"
+              placeholder="Search activity, account, amount"
               placeholderTextColor={theme.colors.textSecondary}
               style={[styles.searchInput, { color: theme.colors.text }]}
               autoFocus
             />
           </View>
         ) : null}
-        {showHomeFilterMenu ? (
-          <View style={styles.filterChipsRow}>
-            {HOME_ACTIVITY_FILTERS.map((option) => {
-              const isActive = activityFilter === option.key;
-              return (
-                <TouchableOpacity
-                  key={option.key}
-                  accessibilityRole="button"
-                  style={[
-                    styles.filterChip,
-                    {
-                      backgroundColor: isActive ? theme.colors.primary + '18' : isDark ? theme.colors.card : '#FFFFFF',
-                      borderColor: isActive ? theme.colors.primary + '50' : theme.colors.border,
-                    },
-                  ]}
-                  onPress={() => setActivityFilter(option.key)}
-                >
-                  <Text
-                    style={[
-                      styles.filterChipText,
-                      { color: isActive ? theme.colors.primary : theme.colors.textSecondary },
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+        {hasActiveHomeFilters ? (
+          <View style={styles.filterStatusRow}>
+            <Text style={[styles.filterStatusText, { color: theme.colors.textSecondary }]}>
+              {appliedHomeFilterCount} filters active
+            </Text>
+            <TouchableOpacity accessibilityRole="button" onPress={handleClearHomeFilters}>
+              <Text style={[styles.filterStatusAction, { color: theme.colors.primary }]}>Clear</Text>
+            </TouchableOpacity>
           </View>
         ) : null}
       </View>
@@ -826,14 +1778,15 @@ export default function HomeScreen() {
                   <Text style={[styles.metricValue, { color: '#10B981' }]}>On track</Text>
                 )}
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
-                  {budgetRisk.total} {budgetRisk.total === 1 ? 'active budget' : 'active budgets'}
+                  {budgetRisk.total} {budgetRisk.total === 1 ? 'budget tracked' : 'budgets tracked'}
                 </Text>
+                <Text style={[styles.metricMeta, { color: theme.colors.textSecondary }]}>{selectedMonthContextLabel}</Text>
               </>
             ) : (
               <>
                 <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No budgets</Text>
                 <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>
-                  {budgets.length > 0 ? 'No active budgets' : 'Add a budget'}
+                  {budgets.length > 0 ? 'No budget in ' + selectedMonthLabel : 'Add one in Planning'}
                 </Text>
               </>
             )}
@@ -854,11 +1807,14 @@ export default function HomeScreen() {
             </View>
             <Text style={[styles.metricLabel, { color: theme.colors.textSecondary }]}>Health</Text>
             {hasHealthData ? (
-              <HealthScoreRing score={healthScore} size={38} strokeWidth={4} />
+              <>
+                <HealthScoreRing score={selectedMonthHealthScore} size={38} strokeWidth={4} />
+                <Text style={[styles.metricMeta, { color: theme.colors.textSecondary }]}>{isCurrentSelectedMonth ? '6-mo trend' : 'Trend to ' + selectedMonthLabel}</Text>
+              </>
             ) : (
               <>
                 <Text style={[styles.metricEmpty, { color: theme.colors.text }]}>No data</Text>
-                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>Add transactions</Text>
+                <Text style={[styles.metricSub, { color: theme.colors.textSecondary }]}>{isCurrentSelectedMonth ? 'Add transactions' : 'No activity in ' + selectedMonthLabel}</Text>
               </>
             )}
             {renderMetricTooltip('health')}
@@ -1072,9 +2028,7 @@ export default function HomeScreen() {
                 <Text style={[styles.activityEyebrow, { color: theme.colors.textSecondary }]}>Home Feed</Text>
                 <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Recent Activity</Text>
                 <Text style={[styles.activitySubtitle, { color: theme.colors.textSecondary }]}>
-                  {showHomeSearch || activityFilter !== 'all'
-                    ? selectedMonthLabel + ' | ' + (HOME_ACTIVITY_FILTERS.find((option) => option.key === activityFilter)?.label ?? 'All')
-                    : selectedMonthLabel + ' snapshot'}
+                  {homeFilterContextLabel}
                 </Text>
               </View>
 
@@ -1213,6 +2167,480 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </Animated.View>
 
+
+      <Modal visible={showHomeFilterMenu} animationType="slide" onRequestClose={handleCloseHomeFilter}>
+        <View style={[styles.homeFilterModal, { backgroundColor: homeFilterPalette.modalBackground }]}>
+          <View
+            style={[
+              styles.homeFilterHeader,
+              {
+                backgroundColor: homeFilterPalette.headerBackground,
+                borderBottomColor: theme.colors.border,
+              },
+            ]}
+          >
+            <View style={styles.homeFilterHeaderRow}>
+              <View style={styles.homeFilterHeaderMonthWrap}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous month"
+                  style={styles.homeFilterHeaderIcon}
+                  onPress={() => shiftSelectedMonth(-1)}
+                >
+                  <ChevronLeft size={18} color={theme.colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.homeFilterMonthButton} onPress={() => setShowMonthPicker(true)}>
+                  <Text style={[styles.homeFilterMonthText, { color: theme.colors.text }]}>{selectedMonthLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Next month"
+                  disabled={isCurrentSelectedMonth}
+                  style={[styles.homeFilterHeaderIcon, isCurrentSelectedMonth && styles.toolbarIconDisabled]}
+                  onPress={() => shiftSelectedMonth(1)}
+                >
+                  <ChevronRight size={18} color={theme.colors.text} />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.homeFilterHeaderActions}>
+                {hasActiveHomeFilters ? (
+                  <TouchableOpacity accessibilityRole="button" onPress={handleClearHomeFilters}>
+                    <Text style={[styles.homeFilterClearText, { color: theme.colors.primary }]}>Clear</Text>
+                  </TouchableOpacity>
+                ) : null}
+                <TouchableOpacity accessibilityRole="button" style={styles.homeFilterHeaderIcon} onPress={handleCloseHomeFilter}>
+                  <X size={18} color={theme.colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.homeFilterPromptBar,
+              {
+                backgroundColor: homeFilterPalette.promptBackground,
+                borderBottomColor: theme.colors.border,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+              },
+            ]}
+          >
+            <Text style={[styles.homeFilterPromptText, { color: theme.colors.text }]}>Select items that you want to filter.</Text>
+          </View>
+
+          <View
+            style={[
+              styles.homeFilterSummaryRow,
+              {
+                backgroundColor: homeFilterPalette.sectionBackground,
+                borderBottomColor: theme.colors.border,
+                borderBottomWidth: StyleSheet.hairlineWidth,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.homeFilterSummaryMetric,
+                {
+                  backgroundColor: homeFilterPalette.incomeBackground,
+                  borderColor: theme.colors.info + (isDark ? '28' : '18'),
+                },
+              ]}
+            >
+              <Text style={[styles.homeFilterSummaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+              <View style={[styles.homeFilterCircle, { borderColor: theme.colors.info }]}>
+                <Text style={[styles.homeFilterCircleValue, { color: theme.colors.text }]}>{homeFilterSelectionSummary.incomePercent}%</Text>
+              </View>
+              <AdaptiveAmountText
+                style={[styles.homeFilterSummaryAmount, { color: theme.colors.info }]}
+                minFontSize={10}
+                value={formatCurrency(homeFilterSelectionSummary.incomeAmount)}
+              />
+            </View>
+
+            <View
+              style={[
+                styles.homeFilterSummaryMetric,
+                {
+                  backgroundColor: homeFilterPalette.expenseBackground,
+                  borderColor: theme.colors.error + (isDark ? '24' : '18'),
+                },
+              ]}
+            >
+              <Text style={[styles.homeFilterSummaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+              <View style={[styles.homeFilterCircle, { borderColor: theme.colors.error }]}>
+                <Text style={[styles.homeFilterCircleValue, { color: theme.colors.text }]}>{homeFilterSelectionSummary.expensePercent}%</Text>
+              </View>
+              <AdaptiveAmountText
+                style={[styles.homeFilterSummaryAmount, { color: theme.colors.error }]}
+                minFontSize={10}
+                value={formatCurrency(homeFilterSelectionSummary.expenseAmount)}
+              />
+            </View>
+
+            <View
+              style={[
+                styles.homeFilterSummaryTotal,
+                {
+                  backgroundColor: homeFilterPalette.totalBackground,
+                  borderColor: theme.colors.border,
+                },
+              ]}
+            >
+              <Text style={[styles.homeFilterSummaryLabel, { color: theme.colors.textSecondary }]}>Total</Text>
+              <AdaptiveAmountText
+                style={[styles.homeFilterSummaryTotalValue, { color: theme.colors.text }]}
+                minFontSize={12}
+                value={formatCurrency(homeFilterSelectionSummary.totalAmount)}
+              />
+              <Text style={[styles.homeFilterSummaryMeta, { color: theme.colors.textSecondary }]}>
+                {hasActiveHomeFilters ? appliedHomeFilterCount + ' selected' : 'No filters yet'}
+              </Text>
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.homeFilterTabsRow,
+              {
+                backgroundColor: homeFilterPalette.sectionBackground,
+                borderBottomColor: theme.colors.border,
+              },
+            ]}
+          >
+            {HOME_FILTER_TABS.map((tab) => {
+              const isActive = homeFilterTab === tab.key;
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  accessibilityRole="button"
+                  style={styles.homeFilterTabButton}
+                  onPress={() => setHomeFilterTab(tab.key)}
+                >
+                  <Text
+                    style={[
+                      styles.homeFilterTabText,
+                      { color: isActive ? theme.colors.text : theme.colors.textSecondary },
+                    ]}
+                  >
+                    {tab.label}{homeFilterTabCounts[tab.key] > 0 ? ' (' + homeFilterTabCounts[tab.key] + ')' : ''}
+                  </Text>
+                  <View
+                    style={[
+                      styles.homeFilterTabIndicator,
+                      { backgroundColor: isActive ? theme.colors.primary : 'transparent' },
+                    ]}
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {homeFilterTab === 'account' ? (
+            <View
+              style={[
+                styles.homeFilterScopesRow,
+                {
+                  backgroundColor: homeFilterPalette.sectionBackground,
+                  borderBottomColor: theme.colors.border,
+                },
+              ]}
+            >
+              {HOME_ACCOUNT_FILTER_SCOPES.map((scope) => {
+                const isActive = homeAccountFilterScope === scope.key;
+                return (
+                  <TouchableOpacity
+                    key={scope.key}
+                    accessibilityRole="button"
+                    style={styles.homeFilterScopeButton}
+                    onPress={() => setHomeAccountFilterScope(scope.key)}
+                  >
+                    <Text
+                      style={[
+                        styles.homeFilterScopeText,
+                        { color: isActive ? theme.colors.primary : theme.colors.textSecondary },
+                      ]}
+                    >
+                      {scope.label}{homeFilterScopeCounts[scope.key] > 0 ? ' (' + homeFilterScopeCounts[scope.key] + ')' : ''}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : null}
+
+
+          <View
+            style={[
+              styles.homeFilterSearchRow,
+              {
+                backgroundColor: homeFilterPalette.sectionBackground,
+                borderBottomColor: theme.colors.border,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.homeFilterSearchInput,
+                {
+                  backgroundColor: homeFilterPalette.modalBackground,
+                  borderColor: normalizedHomeFilterQuery ? theme.colors.primary : theme.colors.border,
+                },
+              ]}
+            >
+              <Search size={15} color={normalizedHomeFilterQuery ? theme.colors.primary : theme.colors.textSecondary} />
+              <TextInput
+                value={homeFilterQuery}
+                onChangeText={setHomeFilterQuery}
+                placeholder={homeFilterSearchPlaceholder}
+                placeholderTextColor={theme.colors.textSecondary}
+                style={[styles.homeFilterSearchTextInput, { color: theme.colors.text }]}
+              />
+              {homeFilterQuery ? (
+                <TouchableOpacity accessibilityRole="button" accessibilityLabel="Clear filter search" style={styles.homeFilterSearchClear} onPress={() => setHomeFilterQuery('')}>
+                  <X size={14} color={theme.colors.textSecondary} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          </View>
+
+          <View
+            style={[
+              styles.homeFilterStatusRow,
+              {
+                backgroundColor: homeFilterPalette.sectionBackground,
+                borderBottomColor: theme.colors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.homeFilterStatusText, { color: theme.colors.textSecondary }]}>{homeFilterStatusText}</Text>
+          </View>
+
+          <ScrollView
+            style={[styles.homeFilterScroll, { backgroundColor: homeFilterPalette.modalBackground }]}
+            contentContainerStyle={styles.homeFilterScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {homeFilterTab === 'income' ? (
+              <>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[
+                    styles.homeFilterAllRow,
+                    { borderBottomColor: theme.colors.border },
+                    isIncomeSectionClear && { backgroundColor: theme.colors.primary + (isDark ? '14' : '08') },
+                  ]}
+                  onPress={handleClearIncomeSectionFilters}
+                >
+                  <View
+                    style={[
+                      styles.homeFilterCheckbox,
+                      {
+                        borderColor: homeFilterPalette.checkboxBorder,
+                        backgroundColor: homeFilterPalette.sectionBackground,
+                      },
+                      isIncomeSectionClear && {
+                        backgroundColor: theme.colors.primary,
+                        borderColor: theme.colors.primary,
+                      },
+                    ]}
+                  >
+                    {isIncomeSectionClear ? <Check size={13} color="#FFFFFF" /> : null}
+                  </View>
+                  <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]}>All</Text>
+                  <Text
+                    style={[
+                      styles.homeFilterAllMetaText,
+                      { color: isIncomeSectionClear ? theme.colors.primary : theme.colors.textSecondary },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {isIncomeSectionClear ? selectedMonthContextLabel : incomeSectionSelectedCount + ' selected'}
+                  </Text>
+                </TouchableOpacity>
+
+                {displayedIncomeFilterOptions.length === 0 ? (
+                  <View style={styles.homeFilterEmptyState}>
+                    <Text style={[styles.homeFilterEmptyStateTitle, { color: theme.colors.text }]}>{homeFilterEmptyTitle}</Text>
+                    <Text style={[styles.homeFilterEmptyStateDescription, { color: theme.colors.textSecondary }]}>{homeFilterEmptyDescription}</Text>
+                  </View>
+                ) : displayedIncomeFilterOptions.map((option) => renderHomeCategoryFilterOption(option, 'income'))}
+              </>
+            ) : homeFilterTab === 'expense' ? (
+              <>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[
+                    styles.homeFilterAllRow,
+                    { borderBottomColor: theme.colors.border },
+                    isExpenseSectionClear && { backgroundColor: theme.colors.primary + (isDark ? '14' : '08') },
+                  ]}
+                  onPress={handleClearExpenseSectionFilters}
+                >
+                  <View
+                    style={[
+                      styles.homeFilterCheckbox,
+                      {
+                        borderColor: homeFilterPalette.checkboxBorder,
+                        backgroundColor: homeFilterPalette.sectionBackground,
+                      },
+                      isExpenseSectionClear && {
+                        backgroundColor: theme.colors.primary,
+                        borderColor: theme.colors.primary,
+                      },
+                    ]}
+                  >
+                    {isExpenseSectionClear ? <Check size={13} color="#FFFFFF" /> : null}
+                  </View>
+                  <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]}>All</Text>
+                  <Text
+                    style={[
+                      styles.homeFilterAllMetaText,
+                      { color: isExpenseSectionClear ? theme.colors.primary : theme.colors.textSecondary },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {isExpenseSectionClear ? selectedMonthContextLabel : expenseSectionSelectedCount + ' selected'}
+                  </Text>
+                </TouchableOpacity>
+
+                {displayedExpenseFilterOptions.length === 0 ? (
+                  <View style={styles.homeFilterEmptyState}>
+                    <Text style={[styles.homeFilterEmptyStateTitle, { color: theme.colors.text }]}>{homeFilterEmptyTitle}</Text>
+                    <Text style={[styles.homeFilterEmptyStateDescription, { color: theme.colors.textSecondary }]}>{homeFilterEmptyDescription}</Text>
+                  </View>
+                ) : displayedExpenseFilterOptions.map((option) => renderHomeCategoryFilterOption(option, 'expense'))}
+              </>
+            ) : (
+              <>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[
+                    styles.homeFilterAllRow,
+                    { borderBottomColor: theme.colors.border },
+                    isCurrentAccountScopeClear && { backgroundColor: theme.colors.primary + (isDark ? '14' : '08') },
+                  ]}
+                  onPress={() => handleClearHomeAccountScope(homeAccountFilterScope)}
+                >
+                  <View
+                    style={[
+                      styles.homeFilterCheckbox,
+                      {
+                        borderColor: homeFilterPalette.checkboxBorder,
+                        backgroundColor: homeFilterPalette.sectionBackground,
+                      },
+                      isCurrentAccountScopeClear && {
+                        backgroundColor: theme.colors.primary,
+                        borderColor: theme.colors.primary,
+                      },
+                    ]}
+                  >
+                    {isCurrentAccountScopeClear ? <Check size={13} color="#FFFFFF" /> : null}
+                  </View>
+                  <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]}>All</Text>
+                  <Text
+                    style={[
+                      styles.homeFilterAllMetaText,
+                      { color: isCurrentAccountScopeClear ? theme.colors.primary : theme.colors.textSecondary },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {isCurrentAccountScopeClear ? selectedMonthContextLabel : homeFilterScopeCounts[homeAccountFilterScope] + ' selected'}
+                  </Text>
+                </TouchableOpacity>
+
+                {visibleHomeAccountSections.length === 0 ? (
+                  <View style={styles.homeFilterEmptyState}>
+                    <Text style={[styles.homeFilterEmptyStateTitle, { color: theme.colors.text }]}>{homeFilterEmptyTitle}</Text>
+                    <Text style={[styles.homeFilterEmptyStateDescription, { color: theme.colors.textSecondary }]}>{homeFilterEmptyDescription}</Text>
+                  </View>
+                ) : visibleHomeAccountSections.map((section) => (
+                  <View key={section.key} style={styles.homeFilterAccountSection}>
+                    <Text style={[styles.homeFilterSectionTitle, { color: theme.colors.textSecondary }]}>
+                      {section.label + ' (' + (section.typeRows.length + section.accounts.length) + ')'}
+                    </Text>
+
+                    {section.typeRows.map((definition) => {
+                      const token = makeHomeAccountFilterToken('type', definition.type);
+                      const isSelected = selectedAccountFilterTokens[homeAccountFilterScope].includes(token);
+                      const linkedAccounts = section.accounts.filter((account) => account.type === definition.type);
+                      return (
+                        <TouchableOpacity
+                          key={definition.type}
+                          accessibilityRole="button"
+                          style={[
+                            styles.homeFilterListRow,
+                            styles.homeFilterTypeRow,
+                            { borderBottomColor: theme.colors.border },
+                            isSelected && { backgroundColor: theme.colors.primary + (isDark ? '12' : '08') },
+                          ]}
+                          onPress={() => handleToggleHomeAccountFilter(homeAccountFilterScope, token)}
+                        >
+                          <View
+                            style={[
+                              styles.homeFilterCheckbox,
+                              {
+                                borderColor: homeFilterPalette.checkboxBorder,
+                                backgroundColor: homeFilterPalette.sectionBackground,
+                              },
+                              isSelected && { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+                            ]}
+                          >
+                            {isSelected ? <Check size={13} color="#FFFFFF" /> : null}
+                          </View>
+                          <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]} numberOfLines={1}>
+                            {definition.label}
+                          </Text>
+                          <Text style={[styles.homeFilterRowMeta, { color: theme.colors.textSecondary }]}>{linkedAccounts.length} {linkedAccounts.length === 1 ? 'account' : 'accounts'}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+
+                    {section.accounts.map((account) => {
+                      const token = makeHomeAccountFilterToken('account', account.id);
+                      const isSelected = selectedAccountFilterTokens[homeAccountFilterScope].includes(token);
+                      return (
+                        <TouchableOpacity
+                          key={account.id}
+                          accessibilityRole="button"
+                          style={[
+                            styles.homeFilterListRow,
+                            { borderBottomColor: theme.colors.border },
+                            isSelected && { backgroundColor: theme.colors.primary + (isDark ? '12' : '08') },
+                          ]}
+                          onPress={() => handleToggleHomeAccountFilter(homeAccountFilterScope, token)}
+                        >
+                          <View
+                            style={[
+                              styles.homeFilterCheckbox,
+                              {
+                                borderColor: homeFilterPalette.checkboxBorder,
+                                backgroundColor: homeFilterPalette.sectionBackground,
+                              },
+                              isSelected && { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+                            ]}
+                          >
+                            {isSelected ? <Check size={13} color="#FFFFFF" /> : null}
+                          </View>
+                          <Text style={[styles.homeFilterRowText, { color: theme.colors.text }]} numberOfLines={1}>
+                            {account.name}
+                          </Text>
+                          <AdaptiveAmountText
+                            style={[styles.homeFilterRowAmount, { color: theme.colors.textSecondary }]}
+                            minFontSize={10}
+                            value={formatCurrency(account.balance)}
+                          />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ))}
+              </>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
       <AddTransactionModal
         visible={showAddModal}
         initialType={preferredType ?? undefined}
@@ -1332,6 +2760,404 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700' as const,
   },
+  toolbarIndicatorDot: {
+    position: 'absolute',
+    top: 1,
+    right: 0,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  filterStatusRow: {
+    marginTop: 8,
+    paddingLeft: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  filterStatusText: {
+    fontSize: 11,
+    fontWeight: '600' as const,
+  },
+  filterStatusAction: {
+    fontSize: 11,
+    fontWeight: '700' as const,
+  },
+  homeFilterModal: {
+    flex: 1,
+  },
+  homeFilterHeader: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 12,
+  },
+  homeFilterHeaderMonthWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  homeFilterHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  homeFilterHeaderIcon: {
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeFilterMonthButton: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  homeFilterMonthText: {
+    fontSize: 18,
+    fontWeight: '700' as const,
+    letterSpacing: -0.3,
+  },
+  homeFilterClearText: {
+    fontSize: 13,
+    fontWeight: '700' as const,
+  },
+  homeFilterPromptBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  homeFilterPromptText: {
+    fontSize: 13,
+    fontWeight: '600' as const,
+  },
+  homeFilterSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 14,
+  },
+  homeFilterSummaryMetric: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 132,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+  },
+  homeFilterSummaryLabel: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+    marginBottom: 8,
+  },
+  homeFilterCircle: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    borderWidth: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeFilterCircleValue: {
+    fontSize: 20,
+    fontWeight: '800' as const,
+    letterSpacing: -0.4,
+  },
+  homeFilterSummaryAmount: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+    marginTop: 10,
+    textAlign: 'center' as const,
+  },
+  homeFilterSummaryTotal: {
+    width: 90,
+    gap: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 18,
+    borderWidth: 1,
+  },
+  homeFilterSummaryTotalValue: {
+    fontSize: 16,
+    fontWeight: '800' as const,
+    lineHeight: 20,
+  },
+  homeFilterSummaryMeta: {
+    fontSize: 10,
+    fontWeight: '600' as const,
+  },
+  homeFilterTabsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterTabButton: {
+    minWidth: 74,
+    paddingTop: 10,
+    paddingBottom: 8,
+    alignItems: 'flex-start',
+  },
+  homeFilterTabText: {
+    fontSize: 14,
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+  },
+  homeFilterTabIndicator: {
+    width: '100%',
+    height: 2,
+    borderRadius: 999,
+    marginTop: 8,
+  },
+  homeFilterScopesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterScopeButton: {
+    paddingVertical: 4,
+    paddingRight: 10,
+  },
+  homeFilterScopeText: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+  },
+  homeFilterCategorySectionsRow: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterCategorySectionsContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  homeFilterCategorySectionButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  homeFilterCategorySectionText: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+  },
+  homeFilterSearchRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterSearchInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+  },
+  homeFilterSearchTextInput: {
+    flex: 1,
+    fontSize: 14,
+    paddingVertical: 0,
+  },
+  homeFilterSearchClear: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeFilterStatusRow: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterStatusText: {
+    fontSize: 11,
+    fontWeight: '600' as const,
+    lineHeight: 16,
+  },
+  homeFilterScroll: {
+    flex: 1,
+  },
+  homeFilterScrollContent: {
+    paddingBottom: 32,
+  },
+  homeFilterAllRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterDropdownGroup: {
+    overflow: 'hidden',
+  },
+  homeFilterCategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  homeFilterCategoryCheckboxButton: {
+    width: 52,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterCategoryButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingLeft: 16,
+    paddingRight: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterCategoryButtonOpen: {
+    borderBottomWidth: 0,
+  },
+  homeFilterCategorySwatch: {
+    width: 10,
+    height: 10,
+    borderRadius: 999,
+  },
+  homeFilterCategoryContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  homeFilterCategoryMeta: {
+    marginTop: 2,
+    fontSize: 11,
+    fontWeight: '600' as const,
+  },
+  homeFilterExpandButton: {
+    width: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterExpandIconOpen: {
+    transform: [{ rotate: '180deg' }],
+  },
+  homeFilterSubcategoryList: {
+    paddingBottom: 4,
+  },
+  homeFilterSubcategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingLeft: 52,
+    paddingRight: 16,
+    paddingVertical: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  homeFilterSubcategoryDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  homeFilterSubcategoryText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 14,
+    fontWeight: '600' as const,
+  },
+  homeFilterSubcategoryAmount: {
+    minWidth: 72,
+    fontSize: 11,
+    fontWeight: '700' as const,
+    textAlign: 'right' as const,
+  },
+  homeFilterTypeRow: {
+    paddingLeft: 28,
+  },
+  homeFilterCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  homeFilterRowIcon: {
+    width: 18,
+    fontSize: 16,
+    textAlign: 'center' as const,
+  },
+  homeFilterRowText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600' as const,
+  },
+  homeFilterRowMeta: {
+    minWidth: 68,
+    fontSize: 11,
+    fontWeight: '600' as const,
+    textAlign: 'right' as const,
+  },
+  homeFilterRowAmount: {
+    minWidth: 78,
+    fontSize: 11,
+    fontWeight: '700' as const,
+    textAlign: 'right' as const,
+  },
+  homeFilterAllMetaText: {
+    marginLeft: 'auto',
+    minWidth: 104,
+    flexShrink: 0,
+    fontSize: 12,
+    fontWeight: '700' as const,
+    textAlign: 'right' as const,
+  },
+  homeFilterAccountSection: {
+    paddingTop: 14,
+  },
+  homeFilterSectionTitle: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    fontSize: 12,
+    fontWeight: '700' as const,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.4,
+  },
+  homeFilterEmptyState: {
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    alignItems: 'center',
+  },
+  homeFilterEmptyStateTitle: {
+    fontSize: 16,
+    fontWeight: '800' as const,
+    textAlign: 'center' as const,
+  },
+  homeFilterEmptyStateDescription: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center' as const,
+  },
   skeletonWrap: {
     padding: 16,
   },
@@ -1419,17 +3245,19 @@ const styles = StyleSheet.create({
   },
   metricCard: {
     width: '48%',
-    minHeight: 88,
-    borderRadius: 14,
-    paddingHorizontal: 8,
-    paddingVertical: 10,
+    minHeight: 92,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.18)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
     elevation: 2,
   },
   metricCardActive: {
@@ -1471,17 +3299,17 @@ const styles = StyleSheet.create({
     borderRightColor: 'transparent',
   },
   metricIconBg: {
-    width: 24,
-    height: 24,
+    width: 26,
+    height: 26,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 5,
+    marginBottom: 6,
   },
   metricLabel: {
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '700' as const,
-    marginBottom: 5,
+    marginBottom: 6,
     textTransform: 'uppercase' as const,
     letterSpacing: 0.5,
   },
@@ -1498,9 +3326,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   metricMeta: {
-    fontSize: 8,
+    fontSize: 8.5,
     fontWeight: '600' as const,
-    marginTop: 1,
+    marginTop: 3,
     textAlign: 'center',
   },
   riskBadge: {
@@ -1510,7 +3338,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   metricSub: {
-    fontSize: 8,
+    fontSize: 8.5,
     fontWeight: '500' as const,
     marginTop: 1,
     textAlign: 'center',
@@ -1848,6 +3676,56 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -34,13 +34,31 @@ import { formatDateTimeWithWeekday, formatDateWithWeekday } from '@/utils/date';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 
 type AccountSortMode = 'name' | 'type' | 'balance' | 'newest';
+type AccountSortDirection = 'asc' | 'desc';
 
 const ACCOUNT_SORT_OPTIONS: Array<{ key: AccountSortMode; label: string }> = [
-  { key: 'name', label: 'A-Z' },
+  { key: 'name', label: 'Name' },
   { key: 'type', label: 'Type' },
   { key: 'balance', label: 'Balance' },
   { key: 'newest', label: 'Newest' },
 ];
+
+const ACCOUNT_SORT_DIRECTIONS: Array<{ key: AccountSortDirection; label: string }> = [
+  { key: 'asc', label: 'Ascending' },
+  { key: 'desc', label: 'Descending' },
+];
+
+function getDefaultSortDirection(mode: AccountSortMode): AccountSortDirection {
+  switch (mode) {
+    case 'balance':
+    case 'newest':
+      return 'desc';
+    case 'name':
+    case 'type':
+    default:
+      return 'asc';
+  }
+}
 
 const ACCOUNT_COLOR_OPTIONS = [
   '#2563EB',
@@ -203,6 +221,7 @@ export default function AccountsScreen() {
   const [color, setColor] = useState<string>(() => getDefaultAccountColorForType('checking', accountTypeDefinitions));
   const [isActive, setIsActive] = useState(true);
   const [sortMode, setSortMode] = useState<AccountSortMode>('name');
+  const [sortDirection, setSortDirection] = useState<AccountSortDirection>(() => getDefaultSortDirection('name'));
   const [selectedTypeGroup, setSelectedTypeGroup] = useState<AccountTypeGroup>('cash_bank');
   const [customTypeDraft, setCustomTypeDraft] = useState('');
   const [openingBalanceDate, setOpeningBalanceDate] = useState<Date>(() => new Date());
@@ -240,49 +259,61 @@ export default function AccountsScreen() {
     [selectedTypeGroup, sortedAccountTypeOptions]
   );
 
-  const orderedAccounts = useMemo(() => {
+  const groupedAccounts = useMemo(() => {
+    const groupOrder = new Map(ACCOUNT_TYPE_GROUPS.map((group, index) => [group.key, index]));
+    const directionMultiplier = sortDirection === 'asc' ? 1 : -1;
     const compareNames = (left: Account, right: Account) => left.name.localeCompare(right.name);
     const compareTypeLabels = (left: Account, right: Account) =>
       getAccountTypeDefinition(left.type, accountTypeDefinitions).label.localeCompare(
         getAccountTypeDefinition(right.type, accountTypeDefinitions).label
       );
+    const compareBalances = (left: Account, right: Account) => {
+      const leftIsLiability = isLiabilityAccount(left.type, accountTypeDefinitions);
+      const rightIsLiability = isLiabilityAccount(right.type, accountTypeDefinitions);
+      const leftDisplayBalance = getDisplayAccountBalance(left.balance, leftIsLiability);
+      const rightDisplayBalance = getDisplayAccountBalance(right.balance, rightIsLiability);
 
-    return [...accounts].sort((left, right) => {
+      if (!leftIsLiability && !rightIsLiability) {
+        const positiveDelta = Number(rightDisplayBalance >= 0) - Number(leftDisplayBalance >= 0);
+        if (positiveDelta !== 0) {
+          return positiveDelta;
+        }
+
+        const displayDelta = rightDisplayBalance - leftDisplayBalance;
+        if (displayDelta !== 0) {
+          return displayDelta;
+        }
+      }
+
+      const magnitudeDelta = Math.abs(rightDisplayBalance) - Math.abs(leftDisplayBalance);
+      if (magnitudeDelta !== 0) {
+        return magnitudeDelta;
+      }
+
+      return rightDisplayBalance - leftDisplayBalance;
+    };
+    const compareBySelectedSort = (left: Account, right: Account) => {
+      switch (sortMode) {
+        case 'type':
+          return compareTypeLabels(left, right);
+        case 'balance':
+          return compareBalances(left, right);
+        case 'newest':
+          return right.createdAt.getTime() - left.createdAt.getTime();
+        case 'name':
+        default:
+          return compareNames(left, right);
+      }
+    };
+    const compareAccounts = (left: Account, right: Account) => {
       const activeDelta = Number(right.isActive) - Number(left.isActive);
       if (activeDelta !== 0) {
         return activeDelta;
       }
 
-      if (sortMode === 'type') {
-        const typeDelta = compareTypeLabels(left, right);
-        if (typeDelta !== 0) {
-          return typeDelta;
-        }
-      }
-
-      if (sortMode === 'balance') {
-        const leftBalance = Math.abs(
-          getDisplayAccountBalance(left.balance, isLiabilityAccount(left.type, accountTypeDefinitions))
-        );
-        const rightBalance = Math.abs(
-          getDisplayAccountBalance(right.balance, isLiabilityAccount(right.type, accountTypeDefinitions))
-        );
-        const balanceDelta = rightBalance - leftBalance;
-        if (balanceDelta !== 0) {
-          return balanceDelta;
-        }
-      }
-
-      if (sortMode === 'newest') {
-        const createdAtDelta = right.createdAt.getTime() - left.createdAt.getTime();
-        if (createdAtDelta !== 0) {
-          return createdAtDelta;
-        }
-      }
-
-      const nameDelta = compareNames(left, right);
-      if (nameDelta !== 0) {
-        return nameDelta;
+      const selectedSortDelta = compareBySelectedSort(left, right) * directionMultiplier;
+      if (selectedSortDelta !== 0) {
+        return selectedSortDelta;
       }
 
       const typeDelta = compareTypeLabels(left, right);
@@ -290,15 +321,73 @@ export default function AccountsScreen() {
         return typeDelta;
       }
 
-      return right.createdAt.getTime() - left.createdAt.getTime();
+      const balanceDelta = compareBalances(left, right);
+      if (balanceDelta !== 0) {
+        return balanceDelta;
+      }
+
+      const createdAtDelta = right.createdAt.getTime() - left.createdAt.getTime();
+      if (createdAtDelta !== 0) {
+        return createdAtDelta;
+      }
+
+      return compareNames(left, right);
+    };
+
+    const sections = ACCOUNT_TYPE_GROUPS.map((group) => {
+      const groupIsLiability = isLiabilityGroup(group.key);
+      const accountsForGroup = accounts
+        .filter((account) => getAccountTypeDefinition(account.type, accountTypeDefinitions).group === group.key)
+        .sort(compareAccounts);
+      const displayTotal = roundCurrency(
+        accountsForGroup.reduce(
+          (sum, account) => sum + getDisplayAccountBalance(account.balance, groupIsLiability),
+          0
+        )
+      );
+
+      return {
+        ...group,
+        accounts: accountsForGroup,
+        total: displayTotal,
+        isLiability: groupIsLiability,
+        newestCreatedAt: accountsForGroup.reduce(
+          (latest, account) => Math.max(latest, account.createdAt.getTime()),
+          0
+        ),
+      };
+    }).filter((group) => group.accounts.length > 0);
+
+    const sortedSections = [...sections].sort((left, right) => {
+      if (sortMode === 'balance') {
+        const totalDelta = Math.abs(right.total) - Math.abs(left.total);
+        if (totalDelta !== 0) {
+          return totalDelta * directionMultiplier;
+        }
+      }
+
+      if (sortMode === 'newest') {
+        const newestDelta = right.newestCreatedAt - left.newestCreatedAt;
+        if (newestDelta !== 0) {
+          return newestDelta * directionMultiplier;
+        }
+      }
+
+      return (groupOrder.get(left.key) ?? 99) - (groupOrder.get(right.key) ?? 99);
     });
-  }, [accountTypeDefinitions, accounts, sortMode]);
+
+    return sortedSections.map(({ newestCreatedAt, ...group }) => group);
+  }, [accountTypeDefinitions, accounts, sortDirection, sortMode]);
+
+  const orderedAccounts = useMemo(
+    () => groupedAccounts.flatMap((group) => group.accounts),
+    [groupedAccounts]
+  );
 
   const activeAccounts = useMemo(
     () => orderedAccounts.filter((account) => account.isActive),
     [orderedAccounts]
   );
-
   const accountTypeGroupById = useMemo(
     () =>
       new Map(
@@ -311,7 +400,7 @@ export default function AccountsScreen() {
     () =>
       roundCurrency(
         transactions
-          .filter((transaction) => transaction.type === 'expense' && transaction.debtPayment)
+          .filter((transaction) => transaction.debtPayment)
           .reduce((sum, transaction) => sum + transaction.amount, 0)
       ),
     [transactions]
@@ -429,42 +518,41 @@ export default function AccountsScreen() {
     [theme.colors.primary, theme.isDark]
   );
 
-  const groupedAccounts = useMemo(
-    () =>
-      ACCOUNT_TYPE_GROUPS.map((group) => {
-        const groupIsLiability = isLiabilityGroup(group.key);
-        const accountsForGroup = orderedAccounts.filter(
-          (account) => getAccountTypeDefinition(account.type, accountTypeDefinitions).group === group.key
-        );
-        const displayTotal = roundCurrency(
-          accountsForGroup.reduce(
-            (sum, account) => sum + getDisplayAccountBalance(account.balance, groupIsLiability),
-            0
-          )
-        );
-        return {
-          ...group,
-          accounts: accountsForGroup,
-          total: displayTotal,
-          isLiability: groupIsLiability,
-        };
-      }).filter((group) => group.accounts.length > 0),
-    [accountTypeDefinitions, orderedAccounts]
-  );
+  const sortDirectionLabel = useMemo(() => {
+    switch (sortMode) {
+      case 'balance':
+        return sortDirection === 'asc' ? 'Low-High' : 'High-Low';
+      case 'newest':
+        return sortDirection === 'asc' ? 'Oldest first' : 'Newest first';
+      case 'type':
+        return sortDirection === 'asc' ? 'A-Z' : 'Z-A';
+      case 'name':
+      default:
+        return sortDirection === 'asc' ? 'A-Z' : 'Z-A';
+    }
+  }, [sortDirection, sortMode]);
 
   const sortModeDescription = useMemo(() => {
     switch (sortMode) {
       case 'type':
-        return 'Grouped by family first, then arranged by account type and name.';
+        return sortDirection === 'asc'
+          ? 'Keeps account families together, then orders each family by account type from A to Z.'
+          : 'Keeps account families together, then orders each family by account type from Z to A.';
       case 'balance':
-        return 'Largest balances and debt positions rise to the top inside each family.';
+        return sortDirection === 'asc'
+          ? 'Smaller balances rise first, and smaller account families move to the top.'
+          : 'Largest balances rise first, and the biggest account families move to the top.';
       case 'newest':
-        return 'Most recently created accounts appear first inside each family.';
+        return sortDirection === 'asc'
+          ? 'Older accounts rise first, and families with older accounts move higher too.'
+          : 'Recently created accounts rise first, and families with newer accounts move higher too.';
       case 'name':
       default:
-        return 'Accounts are organized alphabetically inside each family.';
+        return sortDirection === 'asc'
+          ? 'Accounts stay grouped by family and are ordered alphabetically from A to Z inside each section.'
+          : 'Accounts stay grouped by family and are ordered alphabetically from Z to A inside each section.';
     }
-  }, [sortMode]);
+  }, [sortDirection, sortMode]);
 
   const resetForm = () => {
     const initialDefinition = getAccountTypeDefinition('checking', accountTypeDefinitions);
@@ -789,9 +877,11 @@ export default function AccountsScreen() {
         : `Lent to ${counterparty}`;
     }
 
-    if (entry.transaction.type === 'expense' && entry.transaction.debtPayment) {
+    if (entry.transaction.debtPayment) {
       const label = entry.transaction.description.trim();
-      return label ? `Debt payment: ${label}` : 'Debt payment';
+      return entry.transaction.type === 'income'
+        ? (label ? `Debt clearing: ${label}` : 'Debt clearing')
+        : (label ? `Debt payment: ${label}` : 'Debt payment');
     }
 
     if (entry.transaction.type !== 'transfer') {
@@ -1046,7 +1136,12 @@ export default function AccountsScreen() {
                 <TouchableOpacity
                   key={option.key}
                   activeOpacity={0.85}
-                  onPress={() => setSortMode(option.key)}
+                  onPress={() => {
+                    setSortMode(option.key);
+                    if (sortMode !== option.key) {
+                      setSortDirection(getDefaultSortDirection(option.key));
+                    }
+                  }}
                   style={[
                     styles.sortChip,
                     {
@@ -1071,6 +1166,38 @@ export default function AccountsScreen() {
               );
             })}
           </View>
+          <View style={[styles.sortChipsRow, { marginTop: 10 }]}> 
+            {ACCOUNT_SORT_DIRECTIONS.map((direction) => {
+              const isSelected = sortDirection === direction.key;
+              return (
+                <TouchableOpacity
+                  key={direction.key}
+                  activeOpacity={0.85}
+                  onPress={() => setSortDirection(direction.key)}
+                  style={[
+                    styles.sortChip,
+                    {
+                      backgroundColor: isSelected
+                        ? theme.colors.text
+                        : theme.isDark
+                          ? theme.colors.background
+                          : '#FFFFFF',
+                      borderColor: isSelected ? theme.colors.text : theme.colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.sortChipText,
+                      { color: isSelected ? (theme.isDark ? '#0F172A' : '#FFFFFF') : theme.colors.text },
+                    ]}
+                  >
+                    {direction.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
           <View style={styles.sortSummaryRow}>
             <View
               style={[
@@ -1083,7 +1210,7 @@ export default function AccountsScreen() {
             >
               <Text style={[styles.sortSummaryPillLabel, { color: theme.colors.textSecondary }]}>Current sort</Text>
               <Text style={[styles.sortSummaryPillValue, { color: theme.colors.text }]}> 
-                {ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'A-Z'}
+                {(ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'Name') + ' / ' + sortDirectionLabel}
               </Text>
             </View>
             <View

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,6 @@ import {
   TouchableOpacity,
   ScrollView,
   FlatList,
-  Switch,
   Alert,
   Image,
   Platform,
@@ -42,7 +41,12 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Icons from 'lucide-react-native';
 import { Transaction, TransactionCategory } from '@/types/transaction';
-import { createCustomCategory, mergeCategories } from '@/constants/categories';
+import {
+  createCustomCategory,
+  formatCategoryWithSubcategory,
+  getCategorySubcategories,
+  mergeCategories,
+} from '@/constants/categories';
 import { ACCOUNT_TYPE_GROUPS, getAccountTypeDefinition } from '@/constants/account-types';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
@@ -297,6 +301,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   const [description, setDescription] = useState('');
   const [transactionDate, setTransactionDate] = useState<Date | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<TransactionCategory | null>(null);
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [fromAccount, setFromAccount] = useState('');
   const [toAccount, setToAccount] = useState('');
   const [accountSheetTarget, setAccountSheetTarget] = useState<'from' | 'to' | null>(null);
@@ -318,6 +323,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   const [dueDate, setDueDate] = useState<Date | null>(null);
   const [interestRate, setInterestRate] = useState('');
   const [debtPayment, setDebtPayment] = useState(false);
+  const [showRepeatInstallmentOptions, setShowRepeatInstallmentOptions] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<ReceiptAiDraft | null>(null);
   const [sheetMaxHeight, setSheetMaxHeight] = useState<number | undefined>(undefined);
   const [showQuickAccountModal, setShowQuickAccountModal] = useState(false);
@@ -337,9 +343,14 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     expenseCategories,
     formatCurrency,
     incomeCategories,
+    debtCategories,
     merchantProfiles,
     learnMerchantCategory,
     saveCustomCategory,
+    saveCustomSubcategory,
+    customExpenseSubcategories,
+    customIncomeSubcategories,
+    customDebtSubcategories,
     settings,
   } = useTransactionStore();
 
@@ -353,15 +364,57 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       ? []
       : type === 'income'
         ? incomeCategories
-        : expenseCategories;
-  }, [expenseCategories, incomeCategories, type]);
+        : type === 'debt'
+          ? debtCategories
+          : expenseCategories;
+  }, [debtCategories, expenseCategories, incomeCategories, type]);
 
   const filteredCategories = useMemo(
     () => mergeCategories(categories, selectedCategory ? [selectedCategory] : []),
     [categories, selectedCategory]
   );
 
+  const selectedCategoryDisplayValue = useMemo(
+    () => formatCategoryWithSubcategory(selectedCategory, selectedSubcategory),
+    [selectedCategory, selectedSubcategory]
+  );
+
+  const categorySubcategoryMap = useMemo(
+    () => (
+      type === 'income'
+        ? customIncomeSubcategories
+        : type === 'debt'
+          ? customDebtSubcategories
+          : customExpenseSubcategories
+    ),
+    [customDebtSubcategories, customExpenseSubcategories, customIncomeSubcategories, type]
+  );
+
+  const resolveCategorySubcategories = useCallback(
+    (category?: TransactionCategory | null) => getCategorySubcategories(category, categorySubcategoryMap),
+    [categorySubcategoryMap]
+  );
+
+  const selectedCategorySubcategories = useMemo(
+    () => (type === 'transfer' ? [] : resolveCategorySubcategories(selectedCategory)),
+    [resolveCategorySubcategories, selectedCategory, type]
+  );
+
   const displayTransactionDate = transactionDate ?? new Date();
+  const showDebtRepaymentOption = type === 'expense' || type === 'income';
+  const debtRepaymentChipLabel = type === 'income' ? 'Debt Pay' : 'Inst.';
+  const repInstDefaultLabel = type === 'income' ? 'Repeat/Debt' : type === 'expense' ? 'Rep/Inst.' : 'Repeat';
+  const repInstLabel = isRecurring
+    ? showDebtRepaymentOption && debtPayment
+      ? `Repeat + ${debtRepaymentChipLabel}`
+      : 'Repeat'
+    : showDebtRepaymentOption && debtPayment
+      ? debtRepaymentChipLabel
+      : repInstDefaultLabel;
+  const hasRepInstSelection = isRecurring || (showDebtRepaymentOption && debtPayment);
+  const debtCounterpartyPlaceholder = debtDirection === 'borrowed'
+    ? t('addTransaction.lenderPlaceholder')
+    : t('addTransaction.borrowerPlaceholder');
 
   const selectedTypeOption = useMemo(
     () => translatedTypeOptions.find((option) => option.key === type) ?? translatedTypeOptions[0],
@@ -447,12 +500,14 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
   const aiCategoryName = useMemo(() => {
     if (!aiSuggestion) return null;
     const pool = aiSuggestion.debtIntent?.type === 'debt'
-      ? expenseCategories
+      ? debtCategories
       : type === 'income'
         ? incomeCategories
-        : expenseCategories;
+        : type === 'debt'
+          ? debtCategories
+          : expenseCategories;
     return pool.find((category) => category.id === aiSuggestion.categoryId)?.name ?? 'Other';
-  }, [aiSuggestion, expenseCategories, incomeCategories, type]);
+  }, [aiSuggestion, debtCategories, expenseCategories, incomeCategories, type]);
 
   useEffect(() => {
     return () => {
@@ -581,7 +636,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       }
 
       const preferredType = ai.debtIntent?.type === 'debt' ? 'debt' : type;
-      const categoryPool = preferredType === 'income' ? incomeCategories : expenseCategories;
+      const categoryPool = preferredType === 'income' ? incomeCategories : preferredType === 'debt' ? debtCategories : expenseCategories;
       const aiCategory = ai.categoryId
         ? categoryPool.find((category) => category.id === ai.categoryId)
         : null;
@@ -700,8 +755,9 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     setAiSuggestion(null);
   };
 
-  const handleCategorySelect = (category: TransactionCategory) => {
+  const handleCategorySelect = (category: TransactionCategory, subcategory?: string | null) => {
     setSelectedCategory(category);
+    setSelectedSubcategory(subcategory?.trim() ? subcategory.trim() : null);
   };
 
   const handleCreateCategory = (name: string) => {
@@ -711,12 +767,21 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     handleCategorySelect(savedCategory);
   };
 
-    const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
+  const handleCreateSubcategory = (category: TransactionCategory, name: string) => {
+    const categoryType = type === 'income' ? 'income' : type === 'debt' ? 'debt' : 'expense';
+    const savedSubcategory = saveCustomSubcategory(category, name, categoryType);
+    handleCategorySelect(category, savedSubcategory.name);
+  };
+
+  const handleTypeChange = (nextType: 'income' | 'expense' | 'transfer' | 'debt') => {
     setType(nextType);
     setSelectedCategory(null);
+    setSelectedSubcategory(null);
     setFromAccount('');
     setToAccount('');
     setAccountSheetTarget(null);
+    setShowRepeatInstallmentOptions(false);
+    setDebtPayment(false);
     closeSheet();
     setOcrDetections(createEmptyOcrDetections());
   };
@@ -729,6 +794,11 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
 
     if (type !== 'transfer' && !selectedCategory) {
       Alert.alert('Error', 'Please select a category');
+      return;
+    }
+
+    if (type !== 'transfer' && selectedCategorySubcategories.length > 0 && !selectedSubcategory) {
+      Alert.alert('Error', 'Please select a subcategory');
       return;
     }
 
@@ -815,12 +885,13 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       type,
       date: resolvedDate,
       category,
+      subcategory: type !== 'transfer' ? selectedSubcategory ?? undefined : undefined,
       merchant: merchantName || undefined,
       debtDirection: type === 'debt' ? debtDirection : undefined,
       counterparty: type === 'debt' ? (counterparty.trim() || merchantName || undefined) : undefined,
       dueDate: type === 'debt' ? parsedDueDate : undefined,
       interestRate: type === 'debt' ? parsedInterestRate : undefined,
-      debtPayment: type === 'expense' ? debtPayment : undefined,
+      debtPayment: type === 'expense' || type === 'income' ? debtPayment : undefined,
       fromAccount: type === 'expense' || type === 'transfer' ? fromAccount : undefined,
       toAccount: type === 'income' || type === 'transfer' ? toAccount : undefined,
     };
@@ -867,6 +938,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     setDescription('');
     setTransactionDate(null);
     setSelectedCategory(null);
+    setSelectedSubcategory(null);
     setFromAccount('');
     setToAccount('');
     setIsRecurring(false);
@@ -883,6 +955,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     setShowImageActions(false);
     setShowUploadMenu(false);
     setShowQuickAccountModal(false);
+    setShowRepeatInstallmentOptions(false);
     setDebtDirection('borrowed');
     setCounterparty('');
     setDueDate(null);
@@ -943,7 +1016,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     isActive = false,
   }: {
     value?: string;
-    placeholder: string;
+    placeholder?: string;
     onPress: () => void;
     inputRef?: React.RefObject<TextInput | null>;
     isActive?: boolean;
@@ -955,7 +1028,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
         { borderBottomColor: isActive ? theme.colors.primary : theme.colors.border, color: value ? theme.colors.text : theme.colors.textSecondary },
       ]}
       value={value ?? ''}
-      placeholder={placeholder}
+      placeholder={placeholder || undefined}
       placeholderTextColor={theme.colors.textSecondary}
       showSoftInputOnFocus={false}
       caretHidden
@@ -1048,7 +1121,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
           <Text style={[styles.label, { color: theme.colors.text }]}>{label}</Text>
           {renderPickerInputField({
             value: selectedAccount?.name,
-            placeholder: t('addTransaction.selectAccount'),
+            placeholder: '',
             onPress,
             inputRef,
             isActive,
@@ -1316,22 +1389,45 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
             })}
           </View>
           <View style={styles.inputGroup}>
-            <TouchableOpacity
+            <View
               style={[
                 styles.inlineDateField,
                 { borderBottomColor: showTransactionDatePicker ? theme.colors.primary : theme.colors.border },
               ]}
-              onPress={() => {
-                Keyboard.dismiss();
-                setShowTransactionDatePicker(true);
-              }}
-              activeOpacity={0.8}
             >
-              <Text style={[styles.inlineDateLabel, { color: theme.colors.textSecondary }]}>{t('common.date')}</Text>
-              <Text style={[styles.inlineDateValue, { color: theme.colors.text }]} numberOfLines={1}>
-                {formatTransactionDateSummary(displayTransactionDate)}
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.inlineDateMain}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShowTransactionDatePicker(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.inlineDateLabel, { color: theme.colors.textSecondary }]}>{t('common.date')}</Text>
+                <Text style={[styles.inlineDateValue, { color: theme.colors.text }]} numberOfLines={1}>
+                  {formatTransactionDateSummary(displayTransactionDate)}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.inlineRecurringToggle}
+                activeOpacity={0.85}
+                onPress={() => setShowRepeatInstallmentOptions((current) => !current)}
+              >
+                <Text
+                  style={[
+                    styles.inlineRecurringLabel,
+                    { color: hasRepInstSelection ? selectedTypeOption.accent : theme.colors.textSecondary },
+                  ]}
+                >
+                  {repInstLabel}
+                </Text>
+                {showRepeatInstallmentOptions ? (
+                  <ChevronUp size={16} color={hasRepInstSelection ? selectedTypeOption.accent : theme.colors.textSecondary} />
+                ) : (
+                  <ChevronDown size={16} color={hasRepInstSelection ? selectedTypeOption.accent : theme.colors.textSecondary} />
+                )}
+              </TouchableOpacity>
+            </View>
             {showTransactionDatePicker ? (
               <DateTimePicker
                 value={transactionDate ?? new Date()}
@@ -1344,6 +1440,54 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                   }
                 }}
               />
+            ) : null}
+            {showRepeatInstallmentOptions ? (
+              <View style={styles.inlineRepeatInstallmentOptions}>
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  style={[
+                    styles.inlineRepeatInstallmentChip,
+                    {
+                      backgroundColor: isRecurring ? selectedTypeOption.accent + '18' : theme.colors.surface,
+                      borderColor: isRecurring ? selectedTypeOption.accent : theme.colors.border,
+                    },
+                  ]}
+                  onPress={() => setIsRecurring((current) => !current)}
+                >
+                  <Repeat size={14} color={isRecurring ? selectedTypeOption.accent : theme.colors.textSecondary} />
+                  <Text
+                    style={[
+                      styles.inlineRepeatInstallmentChipText,
+                      { color: isRecurring ? selectedTypeOption.accent : theme.colors.textSecondary },
+                    ]}
+                  >
+                    Repeat
+                  </Text>
+                </TouchableOpacity>
+                {showDebtRepaymentOption ? (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    style={[
+                      styles.inlineRepeatInstallmentChip,
+                      {
+                        backgroundColor: debtPayment ? selectedTypeOption.accent + '18' : theme.colors.surface,
+                        borderColor: debtPayment ? selectedTypeOption.accent : theme.colors.border,
+                      },
+                    ]}
+                    onPress={() => setDebtPayment((current) => !current)}
+                  >
+                    <Landmark size={14} color={debtPayment ? selectedTypeOption.accent : theme.colors.textSecondary} />
+                    <Text
+                      style={[
+                        styles.inlineRepeatInstallmentChipText,
+                        { color: debtPayment ? selectedTypeOption.accent : theme.colors.textSecondary },
+                      ]}
+                    >
+                      {debtRepaymentChipLabel}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             ) : null}
           </View>
           <View style={styles.inputGroup}>
@@ -1367,8 +1511,8 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
             <View style={styles.inputGroup}>
               <Text style={[styles.label, { color: theme.colors.text }]}>{t('common.category')}</Text>
               {renderPickerInputField({
-                value: selectedCategory?.name,
-                placeholder: t('addTransaction.selectCategory'),
+                value: selectedCategoryDisplayValue || undefined,
+                placeholder: '',
                 onPress: openCategorySheet,
                 inputRef: categoryFieldRef,
                 isActive: activeSheet === 'category',
@@ -1430,7 +1574,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 style={[styles.input, { borderBottomColor: theme.colors.border, color: theme.colors.text }]}
                 value={counterparty}
                 onChangeText={setCounterparty}
-                placeholder={t('addTransaction.counterparty')}
+                placeholder={debtCounterpartyPlaceholder}
                 placeholderTextColor={theme.colors.textSecondary}
               />
               {renderPickerInputField({
@@ -1456,9 +1600,9 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 style={[styles.input, { borderBottomColor: theme.colors.border, color: theme.colors.text }]}
                 value={interestRate}
                 onChangeText={setInterestRate}
+                keyboardType="decimal-pad"
                 placeholder={t('addTransaction.interestRatePlaceholder')}
                 placeholderTextColor={theme.colors.textSecondary}
-                keyboardType="decimal-pad"
               />
             </View>
           ) : null}
@@ -1494,84 +1638,52 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
               </View>
             ) : null}
           </View>
-          {type === 'expense' ? (
-            <View style={[styles.inputGroup, styles.compactToggleGroup]}>
-              <View style={[styles.recurringRow, styles.compactToggleRow]}>
-                <View style={styles.recurringInfo}>
-                  <Landmark size={20} color={theme.colors.primary} />
-                  <Text style={[styles.label, styles.recurringToggleLabel, { color: theme.colors.text }]}>{t('addTransaction.debtPayment')}</Text>
-                </View>
-                <Switch
-                  value={debtPayment}
-                  onValueChange={setDebtPayment}
-                  trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                  thumbColor={debtPayment ? '#fff' : '#f4f3f4'}
-                />
+{isRecurring ? (
+            <View style={styles.inputGroup}>
+              <View style={styles.frequencySelector}>
+                {(['daily', 'weekly', 'monthly', 'yearly'] as const).map((freq) => (
+                  <TouchableOpacity
+                    key={freq}
+                    style={[
+                      styles.frequencyButton,
+                      { backgroundColor: theme.colors.background },
+                      recurringFrequency === freq && { backgroundColor: theme.colors.primary },
+                    ]}
+                    onPress={() => setRecurringFrequency(freq)}
+                  >
+                    <Text
+                      style={[
+                        styles.frequencyButtonText,
+                        { color: recurringFrequency === freq ? 'white' : theme.colors.textSecondary },
+                      ]}
+                    >
+                      {t(`addTransaction.${freq}`)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
+
+              {renderPickerInputField({
+                value: recurringEndDate ? formatDateDDMMYYYY(recurringEndDate) : undefined,
+                placeholder: t('addTransaction.endDatePlaceholder'),
+                onPress: () => setShowRecurringEndDatePicker(true),
+                isActive: showRecurringEndDatePicker,
+              })}
+              {showRecurringEndDatePicker ? (
+                <DateTimePicker
+                  value={recurringEndDate ?? new Date()}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={(_, selectedDate) => {
+                    setShowRecurringEndDatePicker(false);
+                    if (selectedDate) {
+                      setRecurringEndDate(selectedDate);
+                    }
+                  }}
+                />
+              ) : null}
             </View>
           ) : null}
-
-          <View style={styles.inputGroup}>
-            <View style={[styles.recurringRow, !isRecurring && styles.compactToggleRow]}>
-              <View style={styles.recurringInfo}>
-                <Repeat size={20} color={theme.colors.primary} />
-                <Text style={[styles.label, styles.recurringToggleLabel, { color: theme.colors.text }]}>{t('addTransaction.recurringTransaction')}</Text>
-              </View>
-              <Switch
-                value={isRecurring}
-                onValueChange={setIsRecurring}
-                trackColor={{ false: theme.colors.border, true: theme.colors.primary }}
-                thumbColor={isRecurring ? '#fff' : '#f4f3f4'}
-              />
-            </View>
-
-            {isRecurring && (
-              <>
-                <View style={styles.frequencySelector}>
-                  {(['daily', 'weekly', 'monthly', 'yearly'] as const).map((freq) => (
-                    <TouchableOpacity
-                      key={freq}
-                      style={[
-                        styles.frequencyButton,
-                        { backgroundColor: theme.colors.background },
-                        recurringFrequency === freq && { backgroundColor: theme.colors.primary },
-                      ]}
-                      onPress={() => setRecurringFrequency(freq)}
-                    >
-                      <Text
-                        style={[
-                          styles.frequencyButtonText,
-                          { color: recurringFrequency === freq ? 'white' : theme.colors.textSecondary },
-                        ]}
-                      >
-                        {t(`addTransaction.${freq}`)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-
-                {renderPickerInputField({
-                  value: recurringEndDate ? formatDateDDMMYYYY(recurringEndDate) : undefined,
-                  placeholder: t('addTransaction.endDatePlaceholder'),
-                  onPress: () => setShowRecurringEndDatePicker(true),
-                  isActive: showRecurringEndDatePicker,
-                })}
-                {showRecurringEndDatePicker ? (
-                  <DateTimePicker
-                    value={recurringEndDate ?? new Date()}
-                    mode="date"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={(_, selectedDate) => {
-                      setShowRecurringEndDatePicker(false);
-                      if (selectedDate) {
-                        setRecurringEndDate(selectedDate);
-                      }
-                    }}
-                  />
-                ) : null}
-              </>
-            )}
-          </View>
         </ScrollView>
         <AmountCalculatorSheet
           visible={activeSheet === 'calculator'}
@@ -1590,12 +1702,18 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
           maxHeight={sheetMaxHeight}
           categories={filteredCategories}
           selectedCategoryId={selectedCategory?.id}
-          onSelect={(category) => {
-            handleCategorySelect(category);
+          selectedSubcategory={selectedSubcategory ?? undefined}
+          getSubcategories={type === 'transfer' ? undefined : resolveCategorySubcategories}
+          onSelect={(category, subcategory) => {
+            handleCategorySelect(category, subcategory);
             closeActiveSheet();
           }}
           onCreateCategory={(name) => {
             handleCreateCategory(name);
+            closeActiveSheet();
+          }}
+          onCreateSubcategory={(category, name) => {
+            handleCreateSubcategory(category, name);
             closeActiveSheet();
           }}
           onClose={() => closeActiveSheet()}
@@ -1716,26 +1834,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   inputGroup: {
-    marginBottom: 24,
+    marginBottom: 18,
     position: 'relative',
   },
   compactToggleGroup: {
     marginBottom: 12,
   },
   label: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-    marginBottom: 8,
+    marginBottom: 6,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   input: {
-    minHeight: 42,
+    minHeight: 36,
     paddingHorizontal: 0,
-    paddingTop: 6,
-    paddingBottom: 10,
-    fontSize: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+    fontSize: 15,
     borderBottomWidth: 1,
   },
   inlineDateField: {
@@ -1745,6 +1863,42 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  inlineDateMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  inlineRecurringToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 12,
+    paddingVertical: 4,
+  },
+  inlineRecurringLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  inlineRepeatInstallmentOptions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingTop: 12,
+  },
+  inlineRepeatInstallmentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  inlineRepeatInstallmentChipText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   inlineDateLabel: {
     fontSize: 16,
@@ -1757,18 +1911,19 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   amountField: {
-    minHeight: 38,
+    minHeight: 34,
     paddingHorizontal: 0,
-    paddingTop: 2,
-    paddingBottom: 6,
+    paddingTop: 1,
+    paddingBottom: 5,
     borderBottomWidth: 1,
-    fontSize: 19,
+    fontSize: 18,
     fontWeight: '600',
     textAlign: 'right',
   },
   selectorField: {
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1777,18 +1932,18 @@ const styles = StyleSheet.create({
   selectorLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     flex: 1,
   },
   selectorIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
   selectorValue: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '500',
     flex: 1,
   },
@@ -1848,18 +2003,18 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   selectedCategoryIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
   selectedCategoryText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '500',
   },
   placeholderText: {
-    fontSize: 16,
+    fontSize: 15,
   },
   dropdownContainer: {
     position: 'absolute',
@@ -2349,6 +2504,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
 
 
 

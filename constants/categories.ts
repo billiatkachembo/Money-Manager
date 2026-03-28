@@ -1,5 +1,6 @@
-import { Transaction, TransactionCategory } from '@/types/transaction';
+﻿import { Transaction, TransactionCategory } from '@/types/transaction';
 import { enqueueWrite, STORAGE_KEYS, safeReadJSON, safeWriteJSON } from '@/lib/storage';
+import { findCurrencyOption, type CurrencyOption } from '@/constants/currencies';
 type TextRecognitionModule = {
   recognize: (imageUri: string) => Promise<{ text?: string | null }>;
 };
@@ -20,29 +21,6 @@ async function recognizeReceiptText(imageUri: string): Promise<string> {
       'Receipt OCR requires a development build. Expo Go can open the app, but receipt scanning is unavailable there.'
     );
   }
-}
-
-/* ----------------------------- Currency ----------------------------- */
-export interface CurrencyOption {
-  code: string;
-  symbol: string;
-  name: string;
-}
-
-export const CURRENCY_OPTIONS: CurrencyOption[] = [
-  { code: 'ZMW', symbol: 'K', name: 'Zambian Kwacha' },
-  { code: 'USD', symbol: '$', name: 'US Dollar' },
-  { code: 'EUR', symbol: 'Ã¢â€šÂ¬', name: 'Euro' },
-  { code: 'GBP', symbol: 'Ã‚Â£', name: 'British Pound' },
-  { code: 'KES', symbol: 'KSh', name: 'Kenyan Shilling' },
-  { code: 'NGN', symbol: 'Ã¢â€šÂ¦', name: 'Nigerian Naira' },
-  // add more currencies as needed
-];
-
-export function findCurrencyOption(code?: string | null): CurrencyOption {
-  if (!code) return CURRENCY_OPTIONS[0]; // default ZMW
-  const normalized = code.trim().toUpperCase();
-  return CURRENCY_OPTIONS.find((c) => c.code === normalized) ?? CURRENCY_OPTIONS[0];
 }
 
 /* --------------------------- Receipt OCR --------------------------- */
@@ -153,17 +131,428 @@ export const MODAL_INCOME_CATEGORIES: TransactionCategory[] = [
   { id: 'gift', name: 'Gift', icon: 'Gift', color: '#F43F5E' },
   { id: 'other-income', name: 'Other Income', icon: 'MoreHorizontal', color: '#94A3B8' },
 ];
+export const MODAL_DEBT_CATEGORIES: TransactionCategory[] = [
+  { id: 'personal-loan', name: 'Personal Loan', icon: 'HandCoins', color: '#8B5CF6' },
+  { id: 'business-loan', name: 'Business Loan', icon: 'Building2', color: '#7C3AED' },
+  { id: 'mortgage-loan', name: 'Mortgage', icon: 'Home', color: '#6D28D9' },
+  { id: 'vehicle-loan', name: 'Vehicle Loan', icon: 'Car', color: '#9333EA' },
+  { id: 'student-loan', name: 'Student Loan', icon: 'GraduationCap', color: '#A855F7' },
+  { id: 'salary-advance', name: 'Salary Advance', icon: 'Wallet', color: '#C084FC' },
+  { id: 'credit-card-balance', name: 'Credit Card Balance', icon: 'CreditCard', color: '#7E22CE' },
+  { id: 'overdraft', name: 'Overdraft', icon: 'CircleDollarSign', color: '#6B21A8' },
+  { id: 'supplier-credit', name: 'Supplier Credit', icon: 'ReceiptText', color: '#8B5CF6' },
+  { id: 'installment-plan', name: 'Installment Plan', icon: 'CalendarClock', color: '#A855F7' },
+  { id: 'borrowed-family-friends', name: 'Family & Friends', icon: 'Users', color: '#C084FC' },
+  { id: 'other-debt', name: 'Other Debt', icon: 'Landmark', color: '#94A3B8' },
+];
 
 /** All categories combined for easy import */
 export const ALL_CATEGORIES: TransactionCategory[] = [
   ...MODAL_EXPENSE_CATEGORIES,
   ...MODAL_INCOME_CATEGORIES,
+  ...MODAL_DEBT_CATEGORIES,
 ];
+export interface TransactionSubcategory {
+  id: string;
+  name: string;
+}
+
+export type CustomSubcategoryMap = Record<string, TransactionSubcategory[]>;
+
+const CATEGORY_SUBCATEGORY_PRESETS: Record<string, TransactionSubcategory[]> = {
+  housing: [
+    { id: 'rent', name: 'Rent' },
+    { id: 'mortgage', name: 'Mortgage' },
+    { id: 'repairs', name: 'Repairs' },
+    { id: 'security', name: 'Security' },
+  ],
+  utilities: [
+    { id: 'electricity', name: 'Electricity' },
+    { id: 'water', name: 'Water' },
+    { id: 'gas', name: 'Gas' },
+    { id: 'garbage', name: 'Garbage' },
+  ],
+  groceries: [
+    { id: 'staples', name: 'Staples' },
+    { id: 'produce', name: 'Produce' },
+    { id: 'snacks', name: 'Snacks' },
+    { id: 'household-supplies', name: 'Household Supplies' },
+  ],
+  dining: [
+    { id: 'breakfast', name: 'Breakfast' },
+    { id: 'lunch', name: 'Lunch' },
+    { id: 'dinner', name: 'Dinner' },
+    { id: 'beverages', name: 'Beverages' },
+  ],
+  transport: [
+    { id: 'public-transport', name: 'Public Transport' },
+    { id: 'taxi-ride-hailing', name: 'Taxi & Ride-hailing' },
+    { id: 'school-transport', name: 'School Transport' },
+    { id: 'bus-coach', name: 'Bus & Coach' },
+    { id: 'parking-tolls', name: 'Parking & Tolls' },
+    { id: 'delivery-courier', name: 'Delivery & Courier' },
+    { id: 'motorbike-transport', name: 'Motorbike Transport' },
+    { id: 'bicycle-upkeep', name: 'Bicycle Upkeep' },
+    { id: 'car-rental', name: 'Car Rental' },
+    { id: 'maintenance', name: 'Maintenance' },
+  ],
+  fuel: [
+    { id: 'petrol', name: 'Petrol' },
+    { id: 'diesel', name: 'Diesel' },
+    { id: 'generator-fuel', name: 'Generator Fuel' },
+    { id: 'gas-refill', name: 'Gas Refill' },
+  ],
+  'phone-internet': [
+    { id: 'airtime', name: 'Airtime' },
+    { id: 'mobile-data', name: 'Mobile Data' },
+    { id: 'home-internet', name: 'Home Internet' },
+    { id: 'tv-bundle', name: 'TV Bundle' },
+  ],
+  subscriptions: [
+    { id: 'music', name: 'Music' },
+    { id: 'video-streaming', name: 'Video Streaming' },
+    { id: 'software', name: 'Software' },
+    { id: 'cloud-storage', name: 'Cloud Storage' },
+  ],
+  entertainment: [
+    { id: 'movies', name: 'Movies' },
+    { id: 'events', name: 'Events' },
+    { id: 'games', name: 'Games' },
+    { id: 'recreation', name: 'Recreation' },
+  ],
+  education: [
+    { id: 'tuition', name: 'Tuition' },
+    { id: 'books', name: 'Books' },
+    { id: 'courses', name: 'Courses' },
+    { id: 'school-supplies', name: 'School Supplies' },
+    { id: 'stationery', name: 'Stationery' },
+    { id: 'exam-fees', name: 'Exam Fees' },
+    { id: 'laptop-computer', name: 'Laptop / Computer' },
+    { id: 'computer-accessories', name: 'Computer Accessories' },
+    { id: 'calculator', name: 'Calculator' },
+    { id: 'printing-photocopying', name: 'Printing & Photocopying' },
+    { id: 'research-materials', name: 'Research Materials' },
+    { id: 'student-projects', name: 'Student Projects' },
+  ],
+  clothing: [
+    { id: 'everyday-wear', name: 'Everyday Wear' },
+    { id: 'shoes', name: 'Shoes' },
+    { id: 'uniforms', name: 'Uniforms' },
+    { id: 'accessories', name: 'Accessories' },
+  ],
+  'personal-care': [
+    { id: 'haircare', name: 'Haircare' },
+    { id: 'skincare', name: 'Skincare' },
+    { id: 'cosmetics', name: 'Cosmetics' },
+    { id: 'toiletries', name: 'Toiletries' },
+  ],
+  travel: [
+    { id: 'flights', name: 'Flights' },
+    { id: 'accommodation', name: 'Accommodation' },
+    { id: 'local-transport', name: 'Local Transport' },
+    { id: 'travel-meals', name: 'Travel Meals' },
+  ],
+  family: [
+    { id: 'childcare', name: 'Childcare' },
+    { id: 'school-support', name: 'School Support' },
+    { id: 'family-support', name: 'Family Support' },
+    { id: 'celebrations', name: 'Celebrations' },
+  ],
+  'gifts-donations': [
+    { id: 'gifts', name: 'Gifts' },
+    { id: 'charity', name: 'Charity' },
+    { id: 'tithe', name: 'Tithe' },
+    { id: 'community-support', name: 'Community Support' },
+  ],
+  health: [
+    { id: 'consultation', name: 'Consultation' },
+    { id: 'medication', name: 'Medication' },
+    { id: 'lab-tests', name: 'Lab Tests' },
+    { id: 'hospital-bills', name: 'Hospital Bills' },
+    { id: 'dental-care', name: 'Dental Care' },
+    { id: 'optical-care', name: 'Optical Care' },
+    { id: 'physiotherapy', name: 'Physiotherapy' },
+    { id: 'maternity-care', name: 'Maternity Care' },
+    { id: 'medical-supplies', name: 'Medical Supplies' },
+    { id: 'fitness', name: 'Fitness' },
+  ],
+  insurance: [
+    { id: 'health-cover', name: 'Health Cover' },
+    { id: 'vehicle-cover', name: 'Vehicle Cover' },
+    { id: 'property-cover', name: 'Property Cover' },
+    { id: 'crop-cover', name: 'Crop Cover' },
+  ],
+  'taxes-fees': [
+    { id: 'bank-fees', name: 'Bank Fees' },
+    { id: 'government-fees', name: 'Government Fees' },
+    { id: 'permit-fees', name: 'Permit Fees' },
+    { id: 'tax-payments', name: 'Tax Payments' },
+  ],
+  maintenance: [
+    { id: 'repairs', name: 'Repairs' },
+    { id: 'spare-parts', name: 'Spare Parts' },
+    { id: 'cleaning', name: 'Cleaning' },
+    { id: 'tools', name: 'Tools' },
+    { id: 'furniture', name: 'Furniture' },
+    { id: 'appliances', name: 'Appliances' },
+    { id: 'kitchenware', name: 'Kitchenware' },
+    { id: 'bedding-linen', name: 'Bedding & Linen' },
+    { id: 'home-decor', name: 'Home Decor' },
+    { id: 'storage-organizers', name: 'Storage & Organizers' },
+  ],
+  'farm-labor': [
+    { id: 'casual-labor', name: 'Casual Labor' },
+    { id: 'permanent-staff', name: 'Permanent Staff' },
+    { id: 'harvest-help', name: 'Harvest Help' },
+    { id: 'security', name: 'Security' },
+  ],
+  livestock: [
+    { id: 'feed', name: 'Feed' },
+    { id: 'veterinary', name: 'Veterinary' },
+    { id: 'breeding', name: 'Breeding' },
+    { id: 'housing', name: 'Housing' },
+  ],
+  fertilizers: [
+    { id: 'compound-d', name: 'Compound D' },
+    { id: 'urea', name: 'Urea' },
+    { id: 'organic', name: 'Organic Fertilizer' },
+    { id: 'soil-treatment', name: 'Soil Treatment' },
+  ],
+  seeds: [
+    { id: 'maize-seed', name: 'Maize Seed' },
+    { id: 'vegetable-seed', name: 'Vegetable Seed' },
+    { id: 'seedlings', name: 'Seedlings' },
+    { id: 'fruit-seed', name: 'Fruit Seed' },
+  ],
+  'farm-equipment': [
+    { id: 'tractor-hire', name: 'Tractor Hire' },
+    { id: 'irrigation', name: 'Irrigation' },
+    { id: 'implements', name: 'Implements' },
+    { id: 'equipment-repairs', name: 'Equipment Repairs' },
+  ],
+  debt: [
+    { id: 'loan-repayment', name: 'Loan Repayment' },
+    { id: 'interest-payment', name: 'Interest Payment' },
+    { id: 'service-fee', name: 'Service Fee' },
+    { id: 'penalty', name: 'Penalty' },
+  ],
+  other: [
+    { id: 'miscellaneous', name: 'Miscellaneous' },
+    { id: 'one-off', name: 'One-off' },
+    { id: 'emergency', name: 'Emergency' },
+    { id: 'uncategorized', name: 'Uncategorized' },
+  ],
+  salary: [
+    { id: 'base-pay', name: 'Base Pay' },
+    { id: 'overtime', name: 'Overtime' },
+    { id: 'commission', name: 'Commission' },
+    { id: 'back-pay', name: 'Back Pay' },
+  ],
+  bonus: [
+    { id: 'performance-bonus', name: 'Performance Bonus' },
+    { id: 'referral-bonus', name: 'Referral Bonus' },
+    { id: 'holiday-bonus', name: 'Holiday Bonus' },
+    { id: 'incentive', name: 'Incentive' },
+  ],
+  freelance: [
+    { id: 'consulting', name: 'Consulting' },
+    { id: 'design', name: 'Design' },
+    { id: 'development', name: 'Development' },
+    { id: 'writing', name: 'Writing' },
+  ],
+  business: [
+    { id: 'shop-sales', name: 'Shop Sales' },
+    { id: 'service-income', name: 'Service Income' },
+    { id: 'online-sales', name: 'Online Sales' },
+    { id: 'wholesale', name: 'Wholesale' },
+  ],
+  'farming-income': [
+    { id: 'crop-sales', name: 'Crop Sales' },
+    { id: 'livestock-sales', name: 'Livestock Sales' },
+    { id: 'produce-sales', name: 'Produce Sales' },
+    { id: 'farm-contract', name: 'Farm Contract' },
+  ],
+  sales: [
+    { id: 'retail', name: 'Retail' },
+    { id: 'reseller-margin', name: 'Reseller Margin' },
+    { id: 'direct-sales', name: 'Direct Sales' },
+    { id: 'bulk-orders', name: 'Bulk Orders' },
+  ],
+  'rental-income': [
+    { id: 'house-rent', name: 'House Rent' },
+    { id: 'shop-rent', name: 'Shop Rent' },
+    { id: 'equipment-rent', name: 'Equipment Rent' },
+    { id: 'land-lease', name: 'Land Lease' },
+  ],
+  interest: [
+    { id: 'savings-interest', name: 'Savings Interest' },
+    { id: 'fixed-deposit', name: 'Fixed Deposit' },
+    { id: 'bond-interest', name: 'Bond Interest' },
+    { id: 'mobile-money-interest', name: 'Mobile Money Interest' },
+  ],
+  dividends: [
+    { id: 'cash-dividend', name: 'Cash Dividend' },
+    { id: 'cooperative-payout', name: 'Cooperative Payout' },
+    { id: 'share-profit', name: 'Share Profit' },
+    { id: 'investment-distribution', name: 'Investment Distribution' },
+  ],
+  refund: [
+    { id: 'purchase-refund', name: 'Purchase Refund' },
+    { id: 'tax-refund', name: 'Tax Refund' },
+    { id: 'reimbursement', name: 'Reimbursement' },
+    { id: 'cashback', name: 'Cashback' },
+  ],
+  allowance: [
+    { id: 'meal-allowance', name: 'Meal Allowance' },
+    { id: 'transport-allowance', name: 'Transport Allowance' },
+    { id: 'housing-allowance', name: 'Housing Allowance' },
+    { id: 'school-allowance', name: 'School Allowance' },
+  ],
+  gift: [
+    { id: 'family-gift', name: 'Family Gift' },
+    { id: 'support', name: 'Support' },
+    { id: 'celebration-gift', name: 'Celebration Gift' },
+    { id: 'grant', name: 'Grant' },
+  ],
+  'other-income': [
+    { id: 'side-hustle', name: 'Side Hustle' },
+    { id: 'royalty', name: 'Royalty' },
+    { id: 'windfall', name: 'Windfall' },
+    { id: 'miscellaneous', name: 'Miscellaneous' },
+  ],
+};
+
+const CATEGORY_SUBCATEGORY_ALIASES: Record<string, string> = {
+  food: 'dining',
+  meal: 'dining',
+  meals: 'dining',
+  diningout: 'dining',
+  grocery: 'groceries',
+  groceries: 'groceries',
+  household: 'maintenance',
+  homeitems: 'maintenance',
+  transportation: 'transport',
+  medical: 'health',
+  healthcare: 'health',
+  internet: 'phone-internet',
+  airtime: 'phone-internet',
+  subscription: 'subscriptions',
+  clothes: 'clothing',
+  personalcare: 'personal-care',
+  gifts: 'gifts-donations',
+  donations: 'gifts-donations',
+  taxes: 'taxes-fees',
+  fees: 'taxes-fees',
+  farmlabor: 'farm-labor',
+  fertilizer: 'fertilizers',
+  loan: 'debt',
+  farmingincome: 'farming-income',
+  rentalincome: 'rental-income',
+  otherincome: 'other-income',
+};
+
+function resolveCategorySubcategoryPresetKey(
+  category?: Pick<TransactionCategory, 'id' | 'name'> | null
+): string | null {
+  if (!category) {
+    return null;
+  }
+
+  const candidates = [category.id, category.name]
+    .map((value) => normalizeCategoryLookup(value ?? ''))
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (CATEGORY_SUBCATEGORY_PRESETS[candidate]) {
+      return candidate;
+    }
+
+    const aliasMatch = CATEGORY_SUBCATEGORY_ALIASES[candidate];
+    if (aliasMatch && CATEGORY_SUBCATEGORY_PRESETS[aliasMatch]) {
+      return aliasMatch;
+    }
+  }
+
+  return null;
+}
+
+function mergeSubcategories(
+  ...collections: Array<ReadonlyArray<TransactionSubcategory | null | undefined>>
+): TransactionSubcategory[] {
+  const merged: TransactionSubcategory[] = [];
+  const seen = new Set<string>();
+
+  for (const collection of collections) {
+    for (const subcategory of collection) {
+      if (!subcategory?.id || !subcategory?.name?.trim()) {
+        continue;
+      }
+
+      const normalizedName = normalizeCategoryName(subcategory.name);
+      const lookupKey = normalizeCategoryLookup(subcategory.id) || normalizeCategoryLookup(normalizedName);
+      if (!lookupKey || seen.has(lookupKey)) {
+        continue;
+      }
+
+      merged.push({
+        id: subcategory.id.trim(),
+        name: normalizedName,
+      });
+      seen.add(lookupKey);
+    }
+  }
+
+  return merged;
+}
+
+export function getCategorySubcategories(
+  category?: Pick<TransactionCategory, 'id' | 'name'> | null,
+  customSubcategoryMap: CustomSubcategoryMap = {}
+): TransactionSubcategory[] {
+  const presetKey = resolveCategorySubcategoryPresetKey(category);
+  const presetSubcategories = presetKey ? CATEGORY_SUBCATEGORY_PRESETS[presetKey] ?? [] : [];
+  const customKey = buildCategorySubcategoryKey(category);
+  const customSubcategories = customKey ? customSubcategoryMap[customKey] ?? [] : [];
+
+  return mergeSubcategories(presetSubcategories, customSubcategories);
+}
+
+export function getExpenseSubcategories(
+  category?: Pick<TransactionCategory, 'id' | 'name'> | null
+): TransactionSubcategory[] {
+  return getCategorySubcategories(category);
+}
+
+export function formatCategoryWithSubcategory(
+  category?: Pick<TransactionCategory, 'name'> | null,
+  subcategory?: string | null
+): string {
+  const categoryName = category?.name?.trim() ?? '';
+  const subcategoryName = subcategory?.trim() ?? '';
+
+  if (!categoryName) {
+    return subcategoryName;
+  }
+
+  return subcategoryName ? `${categoryName} / ${subcategoryName}` : categoryName;
+}
 
 export function normalizeCategoryLookup(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+export function buildCategorySubcategoryKey(
+  category?: Pick<TransactionCategory, 'id' | 'name'> | null
+): string | null {
+  if (!category) {
+    return null;
+  }
+
+  const idKey = normalizeCategoryLookup(category.id ?? '');
+  const nameKey = normalizeCategoryLookup(category.name ?? '');
+
+  return idKey || nameKey || null;
+}
 function normalizeCategoryName(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
 }
@@ -232,6 +621,38 @@ export function findMatchingCategory(
   );
 }
 
+export function createCustomSubcategory(
+  name: string,
+  existingSubcategories: ReadonlyArray<TransactionSubcategory> = []
+): TransactionSubcategory {
+  const normalizedName = normalizeCategoryName(name);
+  const normalizedLookup = normalizeCategoryLookup(normalizedName);
+  const existing = existingSubcategories.find((subcategory) =>
+    normalizeCategoryLookup(subcategory.id) === normalizedLookup ||
+    normalizeCategoryLookup(subcategory.name) === normalizedLookup
+  );
+  if (existing) {
+    return existing;
+  }
+
+  const baseSlug = normalizedLookup || 'subcategory';
+  const existingIds = new Set(
+    existingSubcategories.map((subcategory) => normalizeCategoryLookup(subcategory.id)).filter(Boolean)
+  );
+
+  let candidateId = `custom-subcategory-${baseSlug}`;
+  let suffix = 2;
+  while (existingIds.has(normalizeCategoryLookup(candidateId))) {
+    candidateId = `custom-subcategory-${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+
+  return {
+    id: candidateId,
+    name: normalizedName,
+  };
+}
+
 export function createCustomCategory(
   name: string,
   type: 'income' | 'expense' | 'debt',
@@ -286,6 +707,7 @@ export function resolveCanonicalCategory(
 // Backwards-compatible alias for legacy imports.
 export const EXPENSE_CATEGORIES = MODAL_EXPENSE_CATEGORIES;
 export const INCOME_CATEGORIES = MODAL_INCOME_CATEGORIES;
+export const DEBT_CATEGORIES = MODAL_DEBT_CATEGORIES;
 
 /* -------------------- Income/Expense Keyword Detection -------------------- */
 // Keywords that hint at income (case-insensitive)
@@ -385,4 +807,11 @@ export async function importReceipts(
   await updateNetWorth(transactions);
   return { transactions, skipped, errors };
 }
+
+
+
+
+
+
+
 

@@ -70,6 +70,7 @@ Current public env vars used by the app:
 - `EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`
 - `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`
+- `EXPO_PUBLIC_WEB_APP_URL` (optional, used by the `PC Manager` quick action to open your deployed web app)
 - `EXPO_PUBLIC_GOOGLE_EXPO_CLIENT_ID` (optional fallback / legacy path only)
 
 Notes:
@@ -95,6 +96,18 @@ Run a native development build on iOS:
 
 ```powershell
 npx expo run:ios
+```
+
+Run the app in a browser:
+
+```powershell
+npm run web
+```
+
+Export a production web bundle:
+
+```powershell
+npm run export:web
 ```
 
 Validate Expo config:
@@ -158,6 +171,16 @@ npx expo-doctor --verbose
 ```
 
 If you want standalone TypeScript CLI checks with `tsc --noEmit`, add `typescript` to `devDependencies` first. This repo currently relies on Expo / Babel tooling and does not include a local `typescript` package by default.
+
+## Web Notes
+
+The app now exports cleanly for web with Expo Router and React Native Web.
+
+Current browser behavior:
+- Core tabs, analytics, planning, accounts, calendar, notes, and transaction flows bundle for web.
+- Use `npm run web` for local browser access, or deploy the generated `dist/` folder to any static host.
+- Android-only quick-add notifications and reminder notifications are intentionally disabled on web.
+- Some device-specific capabilities such as camera-heavy flows, native sharing targets, and certain Google Drive backup paths may still behave differently in browsers.
 
 ## Troubleshooting
 

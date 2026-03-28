@@ -32,7 +32,10 @@ import {
 } from 'lucide-react-native';
 import { formatDateTimeWithWeekday } from '@/utils/date';
 import { useI18n } from '@/src/i18n';
+import type { CurrencyOption } from '@/constants/currencies';
+import type { SupportedLanguageOption } from '@/constants/languages';
 import type { ThemeMode } from '@/store/theme-store';
+import type { AppNotificationPermissionState } from '@/src/notifications/quick-add-notification';
 import { showAppTooltip } from '@/store/app-tooltip-store';
 
 interface SettingsModalProps {
@@ -47,20 +50,48 @@ interface SettingsModalProps {
   setThemeMode: (mode: ThemeMode) => void;
   onClearData: () => void;
   onBackupRestore: () => void;
+  onOpenPcManager: () => void;
   onPrivacySecurity: () => void;
   onHelpSupport: () => void;
   userProfile: any;
-  currencies: Array<{ code: string; symbol: string; name: string }>;
-  languages: Array<{ code: string; name: string; englishName?: string }>;
+  driveConnected?: boolean;
+  driveAccountLabel?: string;
+  googleDriveAvailable?: boolean;
+  googleDriveUnavailableReason?: string;
+  currencies: CurrencyOption[];
+  languages: SupportedLanguageOption[];
   onShowAutoLockPicker: () => void;
   onQuickAddToggle: (value: boolean) => void | Promise<void>;
   onDailyReminderToggle: (value: boolean) => void | Promise<void>;
+  onAutoBackupToggle: (value: boolean) => void | Promise<void>;
+  notificationPermissionGranted: boolean;
+  notificationPermissionState: AppNotificationPermissionState;
+  onEnableNotifications: () => void | Promise<void>;
   reminderTimeLabel: string;
   onShowReminderTimePicker: () => void;
 }
 
 type InlinePickerTarget = 'appearance' | null;
 type SelectorTarget = 'currency' | 'language' | null;
+type SelectorItem = CurrencyOption | SupportedLanguageOption;
+
+function formatCurrencyValue(currency?: Pick<CurrencyOption, 'code' | 'symbol'> | null): string {
+  if (!currency) {
+    return '';
+  }
+
+  return `${currency.code.toUpperCase()} - ${currency.symbol}`;
+}
+
+function getSelectorBadgeLabel(value: string | undefined, fallback: string): string {
+  const normalizedValue = value?.trim();
+
+  if (!normalizedValue) {
+    return fallback;
+  }
+
+  return normalizedValue.length <= 4 ? normalizedValue : fallback;
+}
 
 function getAutoLockLabel(value: number | undefined, t: (key: string, params?: Record<string, string | number>) => string): string {
   if (value === -1) {
@@ -90,14 +121,23 @@ export function SettingsModal({
   setThemeMode,
   onClearData,
   onBackupRestore,
+  onOpenPcManager,
   onPrivacySecurity,
   onHelpSupport,
   userProfile,
+  driveConnected,
+  driveAccountLabel,
+  googleDriveAvailable = true,
+  googleDriveUnavailableReason,
   currencies,
   languages,
   onShowAutoLockPicker,
   onQuickAddToggle,
   onDailyReminderToggle,
+  onAutoBackupToggle,
+  notificationPermissionGranted,
+  notificationPermissionState,
+  onEnableNotifications,
   reminderTimeLabel,
   onShowReminderTimePicker,
 }: SettingsModalProps) {
@@ -111,8 +151,11 @@ export function SettingsModal({
   };
 
   const selectedLanguageCode = (settings.language ?? languages[0]?.code ?? 'en').toLowerCase();
-  const selectedLanguageLabel =
-    languages.find((language) => language.code.toLowerCase() === selectedLanguageCode)?.name ?? languages[0]?.name ?? 'English';
+  const selectedLanguage = useMemo(
+    () => languages.find((language) => language.code.toLowerCase() === selectedLanguageCode) ?? languages[0] ?? null,
+    [languages, selectedLanguageCode]
+  );
+  const selectedLanguageLabel = selectedLanguage?.name ?? 'English';
   const selectedCurrencyCode = (settings.currency ?? 'ZMW').toUpperCase();
   const selectedCurrency = useMemo(
     () => currencies.find((currency) => currency.code.toUpperCase() === selectedCurrencyCode) ?? null,
@@ -129,6 +172,45 @@ export function SettingsModal({
   const subtleSurface = theme.isDark ? 'rgba(15,23,42,0.72)' : '#F8FAFC';
   const selectorPlaceholderColor = theme.isDark ? '#64748B' : '#94A3B8';
   const selectorTooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showNotificationPermissionPrompt = !notificationPermissionGranted && notificationPermissionState !== 'unsupported';
+  const notificationPermissionPromptText = notificationPermissionState === 'denied'
+    ? Platform.OS !== 'web'
+      ? 'Allow notifications in device settings so reminders and quick actions can work.'
+      : 'Allow browser notifications. Daily reminders remain available on mobile.'
+    : Platform.OS !== 'web'
+      ? 'Enable notifications before turning on quick add and daily reminders.'
+      : 'Enable browser notifications. Daily reminders remain available on mobile.';
+  const quickAddSubtitle = Platform.OS === 'web'
+    ? 'Notification shortcuts are available on Android and iOS.'
+    : !notificationPermissionGranted
+      ? 'Enable notifications first to turn on Quick Add shortcuts.'
+      : t('settings.quickAdd.subtitle');
+  const dailyReminderSubtitle = Platform.OS === 'web'
+    ? 'Scheduled reminders are available on Android and iOS.'
+    : !notificationPermissionGranted
+      ? 'Enable notifications first to turn on daily reminders.'
+      : t('settings.dailyReminder.subtitle');
+  const backupCenterSubtitle = !googleDriveAvailable
+    ? googleDriveUnavailableReason ?? 'Google Drive automation is unavailable in this build.'
+    : driveConnected
+      ? driveAccountLabel ?? 'Google Drive connected'
+      : t('settings.backupCenter.subtitle');
+  const backupCenterValue = !googleDriveAvailable ? 'Unavailable' : driveConnected ? 'Drive' : 'Setup';
+  const autoBackupSubtitle = !googleDriveAvailable
+    ? googleDriveUnavailableReason ?? 'Google Drive automation is unavailable in this build.'
+    : driveConnected
+      ? t('settings.autoBackup.subtitle')
+      : 'Connect Google Drive in Backup Center first.';
+  const autoRestoreValue = !googleDriveAvailable ? 'Unavailable' : driveConnected ? 'Ready' : 'Needs Drive';
+  const automationSummaryText = settings.lastBackupDate
+    ? t('settings.lastBackup', { date: formatDateTimeWithWeekday(new Date(settings.lastBackupDate)) })
+    : !googleDriveAvailable
+      ? googleDriveUnavailableReason ?? 'Google Drive automation is unavailable in this build.'
+      : settings.autoBackup
+        ? 'Automatic backups are on and will sync your next changes.'
+        : driveConnected
+          ? 'Automatic restore is ready when the app opens with no local data.'
+          : 'Connect Google Drive to enable automatic backup and restore.';
 
   const userInitials = useMemo(() => {
     const source = userProfile?.name?.trim() || t('settings.title');
@@ -198,7 +280,7 @@ export function SettingsModal({
     }
 
     return currencies.filter((currency) => {
-      const searchableValue = [currency.code, currency.name, currency.symbol].join(' ').toLowerCase();
+      const searchableValue = [currency.code, currency.name, currency.symbol, currency.region].join(' ').toLowerCase();
       return searchableValue.includes(normalizedSelectorQuery);
     });
   }, [currencies, normalizedSelectorQuery]);
@@ -214,36 +296,60 @@ export function SettingsModal({
     });
   }, [languages, normalizedSelectorQuery]);
 
-  const selectorItems = useMemo(() => {
-    const items = selectorTarget === 'currency' ? filteredCurrencies : filteredLanguages;
-    const selectedCode = selectorTarget === 'currency' ? selectedCurrencyCode : selectedLanguageCode;
-
-    return [...items].sort((left, right) => {
-      const leftSelected = left.code.toUpperCase() === selectedCode.toUpperCase();
-      const rightSelected = right.code.toUpperCase() === selectedCode.toUpperCase();
+  const sortedCurrencies = useMemo(
+    () => [...filteredCurrencies].sort((left, right) => {
+      const leftSelected = left.code.toUpperCase() === selectedCurrencyCode;
+      const rightSelected = right.code.toUpperCase() === selectedCurrencyCode;
       if (leftSelected !== rightSelected) {
         return leftSelected ? -1 : 1;
       }
+
+      if (!!left.isDefault !== !!right.isDefault) {
+        return left.isDefault ? -1 : 1;
+      }
+
+      const regionCompare = left.region.localeCompare(right.region);
+      if (regionCompare !== 0) {
+        return regionCompare;
+      }
+
       return left.name.localeCompare(right.name);
-    });
-  }, [filteredCurrencies, filteredLanguages, selectedCurrencyCode, selectedLanguageCode, selectorTarget]);
+    }),
+    [filteredCurrencies, selectedCurrencyCode]
+  );
+
+  const sortedLanguages = useMemo(
+    () => [...filteredLanguages].sort((left, right) => {
+      const leftSelected = left.code.toLowerCase() === selectedLanguageCode;
+      const rightSelected = right.code.toLowerCase() === selectedLanguageCode;
+      if (leftSelected !== rightSelected) {
+        return leftSelected ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name);
+    }),
+    [filteredLanguages, selectedLanguageCode]
+  );
+
+  const selectorItems: SelectorItem[] = selectorTarget === 'currency' ? sortedCurrencies : sortedLanguages;
 
   const quickActions = [
     { key: 'profile', title: 'Profile', Icon: Edit3, color: '#6366F1', onPress: openEditProfile },
+    { key: 'pc_manager', title: 'PC Manager', Icon: Globe, color: '#2563EB', onPress: onOpenPcManager },
     { key: 'backup', title: 'Backup', Icon: Download, color: '#0EA5E9', onPress: onBackupRestore },
     { key: 'privacy', title: 'Privacy', Icon: Shield, color: '#14B8A6', onPress: onPrivacySecurity },
     { key: 'help', title: 'Help', Icon: HelpCircle, color: '#F59E0B', onPress: onHelpSupport },
-    { key: 'theme', title: 'Appearance', Icon: Moon, color: '#8B5CF6', onPress: () => toggleInlinePicker('appearance') },
     { key: 'lock', title: 'Auto Lock', Icon: Clock, color: '#F97316', onPress: onShowAutoLockPicker },
   ];
 
   const handleCurrencySelect = (currencyCode: string) => {
     const normalizedCurrencyCode = currencyCode.toUpperCase();
+    const currencyName = currencies.find((currency) => currency.code.toUpperCase() === normalizedCurrencyCode)?.name ?? normalizedCurrencyCode;
     updateSettings({ currency: normalizedCurrencyCode });
     closeSelector();
     showSelectorTooltip({
       title: t('settings.currency.title'),
-      message: t('settings.currencyUpdated', { code: normalizedCurrencyCode }),
+      message: t('settings.currencyUpdated', { code: `${normalizedCurrencyCode} (${currencyName})` }),
     });
   };
 
@@ -321,7 +427,7 @@ export function SettingsModal({
     const items = selectorItems;
     const title = isCurrencySelector ? t('settings.currency.title') : t('settings.language.title');
     const subtitle = isCurrencySelector
-      ? 'Search by code, name, or symbol'
+      ? 'Search by name, code, symbol, or region'
       : 'Search by language name or code';
 
     return (
@@ -355,7 +461,7 @@ export function SettingsModal({
                   <TextInput
                     value={selectorQuery}
                     onChangeText={setSelectorQuery}
-                    placeholder={isCurrencySelector ? 'Search currencies' : 'Search languages'}
+                    placeholder={isCurrencySelector ? 'Search currencies, codes, or regions' : 'Search languages'}
                     placeholderTextColor={selectorPlaceholderColor}
                     style={[styles.selectorSearchInput, { color: theme.colors.text }]}
                     autoCorrect={false}
@@ -374,7 +480,7 @@ export function SettingsModal({
                   </Text>
                 </View>
               ) : (
-                <FlatList
+                <FlatList<SelectorItem>
                   data={items}
                   keyExtractor={(item) => item.code}
                   style={styles.selectorList}
@@ -388,12 +494,15 @@ export function SettingsModal({
                     const isSelected = isCurrencySelector
                       ? selectedCurrencyCode === item.code.toUpperCase()
                       : selectedLanguageCode === item.code.toLowerCase();
-                    const primary = isCurrencySelector
-                      ? `${'symbol' in item ? item.symbol : ''} ${item.name}`.trim()
-                      : item.name;
-                    const secondary = isCurrencySelector
-                      ? item.code.toUpperCase()
-                      : `${item.code.toUpperCase()}${'englishName' in item && item.englishName && item.englishName !== item.name ? ` - ${item.englishName}` : ''}`;
+                    const currencyItem = isCurrencySelector ? (item as CurrencyOption) : null;
+                    const languageItem = !isCurrencySelector ? (item as SupportedLanguageOption) : null;
+                    const badgeLabel = currencyItem
+                      ? getSelectorBadgeLabel(currencyItem.symbol, currencyItem.code.toUpperCase())
+                      : item.code.toUpperCase();
+                    const primary = item.name;
+                    const secondary = currencyItem
+                      ? `${currencyItem.code.toUpperCase()} - ${currencyItem.region} - ${currencyItem.symbol}`
+                      : `${item.code.toUpperCase()}${languageItem?.englishName && languageItem.englishName !== languageItem.name ? ` - ${languageItem.englishName}` : ''}`;
 
                     return (
                       <TouchableOpacity
@@ -412,9 +521,29 @@ export function SettingsModal({
                         }}
                         activeOpacity={0.85}
                       >
-                        <View style={styles.selectorItemTextWrap}>
-                          <Text style={[styles.selectorItemTitle, { color: theme.colors.text }]}>{primary}</Text>
-                          <Text style={[styles.selectorItemSubtitle, { color: theme.colors.textSecondary }]}>{secondary}</Text>
+                        <View style={styles.selectorItemMain}>
+                          <View
+                            style={[
+                              styles.selectorItemBadge,
+                              {
+                                backgroundColor: isSelected ? theme.colors.primary + '18' : pickerHighlight,
+                                borderColor: isSelected ? theme.colors.primary + '34' : theme.colors.border,
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.selectorItemBadgeText,
+                                { color: isSelected ? theme.colors.primary : theme.colors.textSecondary },
+                              ]}
+                            >
+                              {badgeLabel}
+                            </Text>
+                          </View>
+                          <View style={styles.selectorItemTextWrap}>
+                            <Text style={[styles.selectorItemTitle, { color: theme.colors.text }]} numberOfLines={1}>{primary}</Text>
+                            <Text style={[styles.selectorItemSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={1}>{secondary}</Text>
+                          </View>
                         </View>
                         {isSelected ? (
                           <CheckCircle size={18} color={theme.colors.primary} />
@@ -468,11 +597,11 @@ export function SettingsModal({
             <View style={styles.settingsMetaRow}>
               <View style={[styles.settingsMetaChip, { backgroundColor: subtleSurface, borderColor: theme.colors.border }]}>
                 <Text style={[styles.settingsMetaLabel, { color: theme.colors.textSecondary }]}>Currency</Text>
-                <Text style={[styles.settingsMetaValue, { color: theme.colors.text }]}>{selectedCurrencyCode}</Text>
+                <Text style={[styles.settingsMetaValue, { color: theme.colors.text }]}>{formatCurrencyValue(selectedCurrency) || selectedCurrencyCode}</Text>
               </View>
               <View style={[styles.settingsMetaChip, { backgroundColor: subtleSurface, borderColor: theme.colors.border }]}>
                 <Text style={[styles.settingsMetaLabel, { color: theme.colors.textSecondary }]}>Language</Text>
-                <Text style={[styles.settingsMetaValue, { color: theme.colors.text }]}>{selectedLanguageCode.toUpperCase()}</Text>
+                <Text style={[styles.settingsMetaValue, { color: theme.colors.text }]}>{selectedLanguage?.name ?? selectedLanguageCode.toUpperCase()}</Text>
               </View>
               <View style={[styles.settingsMetaChip, { backgroundColor: subtleSurface, borderColor: theme.colors.border }]}>
                 <Text style={[styles.settingsMetaLabel, { color: theme.colors.textSecondary }]}>Theme</Text>
@@ -503,6 +632,32 @@ export function SettingsModal({
           <View style={styles.settingsSection}>
             <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Notifications & Reminders</Text>
             <View style={styles.settingsList}>
+              {showNotificationPermissionPrompt ? (
+                <TouchableOpacity
+                  style={[
+                    styles.notificationPermissionPanel,
+                    {
+                      borderColor: theme.colors.primary + '26',
+                      backgroundColor: theme.colors.primary + '0F',
+                    },
+                  ]}
+                  onPress={onEnableNotifications}
+                  activeOpacity={0.85}
+                >
+                  <View style={styles.notificationPermissionPanelInfo}>
+                    <View style={[styles.notificationPermissionPanelIcon, { backgroundColor: theme.colors.primary + '18' }]}>
+                      <Bell size={16} color={theme.colors.primary} />
+                    </View>
+                    <View style={styles.notificationPermissionPanelTextWrap}>
+                      <Text style={[styles.notificationPermissionPanelTitle, { color: theme.colors.text }]}>Enable notifications</Text>
+                      <Text style={[styles.notificationPermissionPanelSubtitle, { color: theme.colors.textSecondary }]}>{notificationPermissionPromptText}</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.notificationPermissionPanelButton, { backgroundColor: theme.colors.primary }]}>
+                    <Text style={styles.notificationPermissionPanelButtonText}>Enable</Text>
+                  </View>
+                </TouchableOpacity>
+              ) : null}
               <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}> 
                 <View style={styles.settingInfo}>
                   <Bell size={20} color="#667eea" />
@@ -523,12 +678,13 @@ export function SettingsModal({
                   <Zap size={20} color="#667eea" />
                   <View style={styles.settingText}>
                     <Text style={[styles.settingTitle, { color: theme.colors.text }]}>{t('settings.quickAdd.title')}</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{t('settings.quickAdd.subtitle')}</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{quickAddSubtitle}</Text>
                   </View>
                 </View>
                 <Switch
                   value={!!settings.quickAddNotificationEnabled}
                   onValueChange={onQuickAddToggle}
+                  disabled={Platform.OS === 'web' || !notificationPermissionGranted}
                   trackColor={{ false: '#e0e0e0', true: '#667eea' }}
                 />
               </View>
@@ -538,17 +694,18 @@ export function SettingsModal({
                   <Bell size={20} color="#667eea" />
                   <View style={styles.settingText}>
                     <Text style={[styles.settingTitle, { color: theme.colors.text }]}>{t('settings.dailyReminder.title')}</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{t('settings.dailyReminder.subtitle')}</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{dailyReminderSubtitle}</Text>
                   </View>
                 </View>
                 <Switch
                   value={!!settings.dailyReminderEnabled}
                   onValueChange={onDailyReminderToggle}
+                  disabled={Platform.OS === 'web' || !notificationPermissionGranted}
                   trackColor={{ false: '#e0e0e0', true: '#667eea' }}
                 />
               </View>
 
-              {settings.dailyReminderEnabled ? (
+              {settings.dailyReminderEnabled && Platform.OS !== 'web' && notificationPermissionGranted ? (
                 <TouchableOpacity
                   style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
                   onPress={onShowReminderTimePicker}
@@ -598,12 +755,14 @@ export function SettingsModal({
                     <DollarSign size={20} color="#667eea" />
                     <View style={styles.settingText}>
                       <Text style={[styles.settingTitle, { color: theme.colors.text }]}>{t('settings.currency.title')}</Text>
-                      <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{t('settings.currency.subtitle')}</Text>
+                      <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>
+                        {selectedCurrency ? `${selectedCurrency.name} - ${selectedCurrency.region}` : t('settings.currency.subtitle')}
+                      </Text>
                     </View>
                   </View>
                   <View style={styles.settingValueWrap}>
                     <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}> 
-                      {selectedCurrency ? `${selectedCurrency.code} - ${selectedCurrency.symbol}` : selectedCurrencyCode}
+                      {formatCurrencyValue(selectedCurrency) || selectedCurrencyCode}
                     </Text>
                     <ChevronRight size={16} color={theme.colors.textSecondary} />
                   </View>
@@ -633,34 +792,58 @@ export function SettingsModal({
           </View>
 
 
-          <View style={styles.settingsSection}>
+                    <View style={styles.settingsSection}>
             <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Backup & Automation</Text>
             <View style={styles.settingsList}>
+              <TouchableOpacity
+                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
+                onPress={onBackupRestore}
+                activeOpacity={0.8}
+              >
+                <View style={styles.settingInfo}>
+                  <Download size={20} color="#667eea" />
+                  <View style={styles.settingText}>
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>{t('settings.backupCenter.title')}</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{backupCenterSubtitle}</Text>
+                  </View>
+                </View>
+                <View style={styles.settingValueWrap}>
+                  <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>{backupCenterValue}</Text>
+                  <ChevronRight size={16} color={theme.colors.textSecondary} />
+                </View>
+              </TouchableOpacity>
               <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}> 
                 <View style={styles.settingInfo}>
                   <Download size={20} color="#667eea" />
                   <View style={styles.settingText}>
                     <Text style={[styles.settingTitle, { color: theme.colors.text }]}>{t('settings.autoBackup.title')}</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{t('settings.autoBackup.subtitle')}</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>{autoBackupSubtitle}</Text>
                   </View>
                 </View>
                 <Switch
                   value={!!settings.autoBackup}
-                  onValueChange={(value) => updateSetting('autoBackup', value)}
+                  onValueChange={onAutoBackupToggle}
+                  disabled={!googleDriveAvailable}
                   trackColor={{ false: '#e0e0e0', true: '#667eea' }}
                 />
               </View>
-              {settings.lastBackupDate ? (
-                <View style={[styles.lastBackupInfo, { borderTopColor: theme.colors.border }]}>
-                  <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>
-                    {t('settings.lastBackup', { date: formatDateTimeWithWeekday(new Date(settings.lastBackupDate)) })}
-                  </Text>
+              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}> 
+                <View style={styles.settingInfo}>
+                  <Clock size={20} color="#667eea" />
+                  <View style={styles.settingText}>
+                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Auto Restore</Text>
+                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Restores the latest Google Drive backup when the app starts empty.</Text>
+                  </View>
                 </View>
-              ) : null}
+                <Text style={[styles.settingValue, { color: theme.colors.textSecondary }]}>{autoRestoreValue}</Text>
+              </View>
+              <View style={[styles.lastBackupInfo, { borderTopColor: theme.colors.border }]}>
+                <Text style={[styles.lastBackupText, { color: theme.colors.textSecondary }]}>{automationSummaryText}</Text>
+              </View>
             </View>
           </View>
 
-          <View style={styles.settingsSection}>
+<View style={styles.settingsSection}>
             <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Danger Zone</Text>
             <View style={styles.settingsList}>
               <TouchableOpacity
@@ -875,6 +1058,55 @@ const styles = StyleSheet.create({
     gap: 6,
     marginLeft: 12,
   },
+  notificationPermissionPanel: {
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 10,
+    gap: 12,
+  },
+  notificationPermissionPanelInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  notificationPermissionPanelIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationPermissionPanelTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  notificationPermissionPanelTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  notificationPermissionPanelSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  notificationPermissionPanelButton: {
+    alignSelf: 'flex-start',
+    minWidth: 84,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 46,
+  },
+  notificationPermissionPanelButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   inlinePicker: {
     position: 'absolute',
     top: '100%',
@@ -1022,8 +1254,30 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderBottomWidth: 1,
   },
+  selectorItemMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 0,
+  },
+  selectorItemBadge: {
+    minWidth: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectorItemBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
   selectorItemTextWrap: {
     flex: 1,
+    minWidth: 0,
   },
   selectorItemTitle: {
     fontSize: 14,

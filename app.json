@@ -4,6 +4,11 @@
     "slug": "money-manager",
     "version": "1.0.0",
     "orientation": "portrait",
+    "platforms": [
+      "android",
+      "ios",
+      "web"
+    ],
     "icon": "./assets/images/icon.png",
     "scheme": [
       "com.billiatkachembo.moneymanager",
@@ -31,6 +36,7 @@
       ]
     },
     "web": {
+      "bundler": "metro",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [

@@ -47,7 +47,7 @@ export function computeDebtPortfolioTotals(
       continue;
     }
 
-    if (transaction.type === 'expense' && transaction.debtPayment) {
+    if (transaction.debtPayment) {
       debtRepayments += transaction.amount;
     }
   }

@@ -7,6 +7,7 @@ import { useTransactionStore } from '@/store/transaction-store';
 import { formatDateDDMMYYYY } from '@/utils/date';
 import * as Icons from 'lucide-react-native';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
+import { formatCategoryWithSubcategory } from '@/constants/categories';
 
 interface TransactionItemProps {
   transaction: Transaction;
@@ -104,7 +105,7 @@ export function TransactionItem({
             ]}
             numberOfLines={1}
           >
-            {transaction.category.name}
+            {formatCategoryWithSubcategory(transaction.category, transaction.subcategory)}
           </Text>
         </View>
 
@@ -356,3 +357,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
   },
 });
+

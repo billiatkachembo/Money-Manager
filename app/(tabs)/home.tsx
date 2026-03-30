@@ -14,7 +14,6 @@ import {
 import {
   Plus,
   AlertTriangle,
-  Info,
   Zap,
   Sprout,
   ChevronRight,
@@ -34,7 +33,6 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { TransactionItem } from '@/components/TransactionItem';
 import { AddTransactionModal } from '@/components/AddTransactionModal';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
-import { SmartInsightsCard } from '@/components/dashboard/SmartInsightsCard';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useQuickActionsStore } from '@/store/quick-actions-store';
@@ -43,7 +41,7 @@ import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { useRouter } from 'expo-router';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
-import { Insight, Transaction, TransactionCategory } from '@/types/transaction';
+import { Transaction, TransactionCategory } from '@/types/transaction';
 import { ACCOUNT_TYPE_GROUPS, getAccountTypeDefinition } from '@/constants/account-types';
 import { computeBudgetSpendingForDate, getActiveBudgets } from '@/src/domain/budgeting';
 import { computeBehaviorMetrics } from '@/src/domain/analytics';
@@ -141,81 +139,6 @@ const HealthScoreRing = React.memo(function HealthScoreRing({
       </Text>
     </Animated.View>
   );
-});
-
-const InsightCard = React.memo(function InsightCard({ insight, isDark, onPress }: { insight: Insight; isDark: boolean; onPress?: () => void }) {
-  const severityConfig = {
-    critical: { icon: AlertTriangle, color: '#EF4444', bg: isDark ? '#2D1B1B' : '#FEF2F2', border: isDark ? '#5C2020' : '#FECACA' },
-    warning: { icon: Zap, color: '#F59E0B', bg: isDark ? '#2D2514' : '#FFFBEB', border: isDark ? '#5C4B14' : '#FDE68A' },
-    info: { icon: Info, color: '#3B82F6', bg: isDark ? '#1B2338' : '#EFF6FF', border: isDark ? '#1E3A5F' : '#BFDBFE' },
-  };
-
-  const config = severityConfig[insight.severity];
-  const Icon = config.icon;
-
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  const onPressIn = useCallback(() => {
-    Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, friction: 8 }).start();
-  }, [scaleAnim]);
-
-  const onPressOut = useCallback(() => {
-    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, friction: 8 }).start();
-  }, [scaleAnim]);
-  return (
-    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-      <TouchableOpacity
-        activeOpacity={0.9}
-        onPress={onPress}
-        onPressIn={onPressIn}
-        onPressOut={onPressOut}
-        style={[insightStyles.card, { backgroundColor: config.bg, borderColor: config.border, borderWidth: 1 }]}
-      >
-        <View style={[insightStyles.iconWrap, { backgroundColor: config.color + '18' }]}>
-          <Icon size={15} color={config.color} />
-        </View>
-        <View style={insightStyles.content}>
-          <Text style={[insightStyles.title, { color: config.color }]} numberOfLines={1}>
-            {insight.title}
-          </Text>
-          <Text style={[insightStyles.message, { color: isDark ? '#A0A0A0' : '#6B7280' }]} numberOfLines={2}>
-            {insight.message}
-          </Text>
-        </View>
-        <ChevronRight size={14} color={config.color} style={{ opacity: 0.5 }} />
-      </TouchableOpacity>
-    </Animated.View>
-  );
-});
-
-const insightStyles = StyleSheet.create({
-  card: {
-    flexDirection: 'row',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 6,
-    alignItems: 'center',
-  },
-  iconWrap: {
-    width: 30,
-    height: 30,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  content: {
-    flex: 1,
-  },
-  title: {
-    fontSize: 12,
-    fontWeight: '700' as const,
-    marginBottom: 1,
-  },
-  message: {
-    fontSize: 11,
-    lineHeight: 15,
-  },
 });
 
 type MetricCardTarget = 'budget' | 'health' | 'goals' | 'savings';
@@ -466,7 +389,6 @@ export default function HomeScreen() {
     debtAccounts,
     getTotalIncome,
     getTotalExpenses,
-    insights,
     budgets,
     incomeCategories,
     expenseCategories,
@@ -834,49 +756,68 @@ export default function HomeScreen() {
       incomeCategoryFilterSet,
     ]
   );
+  const doesTransactionMatchSearchQuery = useCallback(
+    (transaction: Transaction) => {
+      if (!normalizedSearchQuery) {
+        return false;
+      }
+
+      const fromAccountName = homeAccountsById.get(getFromAccountId(transaction) ?? '')?.name ?? transaction.fromAccount;
+      const toAccountName = homeAccountsById.get(getToAccountId(transaction) ?? '')?.name ?? transaction.toAccount;
+      const amountLabel = formatCurrency(Math.abs(transaction.amount));
+      const rawAmountLabel = String(transaction.amount);
+      const categoryWithSubcategory = transaction.subcategory
+        ? transaction.category?.name + ' ' + transaction.subcategory
+        : transaction.category?.name;
+      const transactionTypeLabel = transaction.type === 'debt'
+        ? transaction.debtDirection === 'lent'
+          ? 'lent debt'
+          : 'borrowed debt'
+        : transaction.type;
+      const debtPaymentLabel = transaction.debtPayment ? 'debt payment debt clearing installment' : '';
+
+      const searchFields = [
+        transaction.description,
+        transaction.note,
+        transaction.merchant,
+        transaction.counterparty,
+        transaction.category?.name,
+        transaction.category?.id,
+        transaction.subcategory,
+        categoryWithSubcategory,
+        fromAccountName,
+        toAccountName,
+        transactionTypeLabel,
+        debtPaymentLabel,
+        amountLabel,
+        rawAmountLabel,
+        String(Math.abs(transaction.amount)),
+        String(transaction.id),
+        transaction.date.toISOString(),
+      ];
+
+      return searchFields.some((value) => String(value ?? '').toLowerCase().includes(normalizedSearchQuery));
+    },
+    [formatCurrency, homeAccountsById, normalizedSearchQuery]
+  );
   const recentTransactions = useMemo(() => {
     return [...selectedMonthTransactions]
       .filter((transaction) => doesTransactionMatchHomeFilters(transaction))
-      .filter((transaction) => {
-        if (!normalizedSearchQuery) {
-          return true;
-        }
-
-        const fromAccountName = homeAccountsById.get(getFromAccountId(transaction) ?? '')?.name ?? transaction.fromAccount;
-        const toAccountName = homeAccountsById.get(getToAccountId(transaction) ?? '')?.name ?? transaction.toAccount;
-        const amountLabel = formatCurrency(Math.abs(transaction.amount));
-        const rawAmountLabel = String(transaction.amount);
-        const categoryWithSubcategory = transaction.subcategory
-          ? transaction.category?.name + ' ' + transaction.subcategory
-          : transaction.category?.name;
-        const transactionTypeLabel = transaction.type === 'debt'
-          ? transaction.debtDirection === 'lent'
-            ? 'lent debt'
-            : 'borrowed debt'
-          : transaction.type;
-        const debtPaymentLabel = transaction.debtPayment ? 'debt payment debt clearing installment' : '';
-
-        const searchFields = [
-          transaction.description,
-          transaction.note,
-          transaction.merchant,
-          transaction.counterparty,
-          transaction.category?.name,
-          transaction.subcategory,
-          categoryWithSubcategory,
-          fromAccountName,
-          toAccountName,
-          transactionTypeLabel,
-          debtPaymentLabel,
-          amountLabel,
-          rawAmountLabel,
-        ];
-
-        return searchFields.some((value) => String(value ?? '').toLowerCase().includes(normalizedSearchQuery));
-      })
       .sort((a, b) => b.date.getTime() - a.date.getTime())
       .slice(0, 7);
-  }, [doesTransactionMatchHomeFilters, formatCurrency, homeAccountsById, normalizedSearchQuery, selectedMonthTransactions]);
+  }, [doesTransactionMatchHomeFilters, selectedMonthTransactions]);
+  const searchResults = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return [];
+    }
+
+    return [...transactions]
+      .filter((transaction) => doesTransactionMatchHomeFilters(transaction))
+      .filter((transaction) => doesTransactionMatchSearchQuery(transaction))
+      .sort((a, b) => b.date.getTime() - a.date.getTime())
+      .slice(0, 50);
+  }, [doesTransactionMatchHomeFilters, doesTransactionMatchSearchQuery, normalizedSearchQuery, transactions]);
+  const activityTransactions = showHomeSearch ? searchResults : recentTransactions;
   const homeFilterSelectionSummary = useMemo(() => {
     const hasIncomeSelection = selectedIncomeFilterKeys.length > 0 || selectedAccountFilterTokens.income.length > 0;
     const hasExpenseSelection = selectedExpenseFilterKeys.length > 0 || selectedAccountFilterTokens.expense.length > 0;
@@ -950,6 +891,12 @@ export default function HomeScreen() {
     }
     if (normalizedSearchQuery) {
       tags.push('Search');
+    }
+    if (normalizedSearchQuery && tags.length === 1) {
+      return 'Search results across all activity';
+    }
+    if (normalizedSearchQuery && hasActiveHomeFilters) {
+      return 'Search + filters across all activity';
     }
     if (tags.length === 0) {
       return selectedMonthLabel + ' snapshot';
@@ -1090,8 +1037,6 @@ export default function HomeScreen() {
       ) || selectedMonthActiveBudgets.length > 0,
     [selectedMonthActiveBudgets.length, selectedMonthBehavior]
   );
-
-  const topInsights = useMemo(() => insights.slice(0, 3), [insights]);
 
   const showFarm = useMemo(() => hasFarmActivity(transactions), [transactions]);
 
@@ -1284,9 +1229,6 @@ export default function HomeScreen() {
     return () => clearTimeout(timeout);
   }, [activeMetricTooltip]);
 
-  const handleInsightPress = useCallback((insight: Insight) => {
-    Alert.alert(insight.title, insight.message);
-  }, []);
 
   const isDark = theme.isDark;
   const metricTooltipBackground = isDark ? '#0F172A' : '#1F2937';
@@ -1487,20 +1429,44 @@ export default function HomeScreen() {
         description: 'Use the Add button below to track activity for this month.',
       };
     }
-    if (hasActiveHomeFilters || normalizedSearchQuery) {
+    if (hasActiveHomeFilters) {
       return {
         title: 'No matching transactions',
-        description: 'Try a different search term or clear the current filter section.',
+        description: 'Try a different filter combination or clear the current filter section.',
       };
     }
     return {
       title: 'Nothing new yet',
       description: 'Transactions for ' + selectedMonthLabel + ' will appear here as you add them.',
     };
-  }, [hasActiveHomeFilters, normalizedSearchQuery, selectedMonthLabel, selectedMonthTransactions.length]);
+  }, [hasActiveHomeFilters, selectedMonthLabel, selectedMonthTransactions.length]);
+  const searchEmptyState = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return {
+        title: 'Search all activity',
+        description: 'Start typing to see matching transactions instantly across all activity.',
+      };
+    }
+
+    return {
+      title: 'No search results',
+      description: 'Try a different word, account name, category, note, or amount.',
+    };
+  }, [normalizedSearchQuery]);
+  const activityEmptyState = showHomeSearch ? searchEmptyState : transactionEmptyState;
+  const activityEyebrow = showHomeSearch ? 'Live Search' : 'Home Feed';
+  const activityTitle = showHomeSearch ? 'Search Results' : 'Recent Activity';
+  const activitySubtitle = showHomeSearch
+    ? normalizedSearchQuery
+      ? hasActiveHomeFilters
+        ? 'Results update as you type across all activity with your current filters.'
+        : 'Results update as you type across all activity.'
+      : 'Start typing to search by category, subcategory, account, note, merchant, or amount.'
+    : homeFilterContextLabel;
+  const activityCountLabel = showHomeSearch ? 'results' : 'items';
 
   const recentActivitySummary = useMemo(() => {
-    const counts = recentTransactions.reduce(
+    const counts = activityTransactions.reduce(
       (summary, transaction) => {
         summary[transaction.type] += 1;
         return summary;
@@ -1514,7 +1480,7 @@ export default function HomeScreen() {
     );
 
     return [
-      { label: 'Shown', value: `${recentTransactions.length}`, tone: 'neutral' as const },
+      { label: 'Shown', value: `${activityTransactions.length}`, tone: 'neutral' as const },
       counts.expense > 0 ? { label: 'Expenses', value: `${counts.expense}`, tone: 'negative' as const } : null,
       counts.income > 0 ? { label: 'Income', value: `${counts.income}`, tone: 'positive' as const } : null,
       counts.debt > 0 ? { label: 'Debt', value: `${counts.debt}`, tone: 'warning' as const } : null,
@@ -1524,7 +1490,8 @@ export default function HomeScreen() {
       value: string;
       tone: 'neutral' | 'positive' | 'negative' | 'warning' | 'info';
     }>;
-  }, [recentTransactions]);
+  }, [activityTransactions]);
+
   const homeSummary = (
     <View style={[styles.homeSummaryStrip, { borderBottomColor: theme.colors.border }]}> 
       <View style={styles.homeSummaryTopRow}>
@@ -1586,6 +1553,131 @@ export default function HomeScreen() {
             value={formatCurrency(remainingDebtBalance)}
           />
         </View>
+      </View>
+    </View>
+  );
+
+  const activitySection = (
+    <View style={styles.section}>
+      <View
+        style={[
+          styles.activityCard,
+          {
+            backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
+            borderColor: theme.colors.border,
+            shadowColor: theme.colors.shadow,
+          },
+        ]}
+      >
+        <View style={styles.activityCardHeader}>
+          <View style={styles.activityHeadingWrap}>
+            <Text style={[styles.activityEyebrow, { color: theme.colors.textSecondary }]}>{activityEyebrow}</Text>
+            <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>{activityTitle}</Text>
+            <Text style={[styles.activitySubtitle, { color: theme.colors.textSecondary }]}>
+              {activitySubtitle}
+            </Text>
+          </View>
+
+          <View style={styles.activityHeaderRight}>
+            <View
+              style={[
+                styles.activityCountBadge,
+                { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+              ]}
+            >
+              <Text style={[styles.activityCountValue, { color: theme.colors.text }]}>{activityTransactions.length}</Text>
+              <Text style={[styles.activityCountLabel, { color: theme.colors.textSecondary }]}>{activityCountLabel}</Text>
+            </View>
+            {activityTransactions.length > 0 && !showHomeSearch ? (
+              <TouchableOpacity
+                style={[
+                  styles.activitySeeAllBtn,
+                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                ]}
+                activeOpacity={0.85}
+                onPress={() => router.push('/(tabs)/transactions')}
+              >
+                <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
+                <ChevronRight size={14} color={theme.colors.primary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+
+        {activityTransactions.length === 0 ? (
+          <View
+            style={[
+              styles.activityEmptyState,
+              { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+            ]}
+          >
+            <View style={[styles.activityEmptyIcon, { backgroundColor: isDark ? '#1A332920' : '#F0FDF4' }]}>
+              <Search size={22} color={isDark ? '#34D399' : '#059669'} />
+            </View>
+            <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>{activityEmptyState.title}</Text>
+            <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
+              {activityEmptyState.description}
+            </Text>
+          </View>
+        ) : (
+          <>
+            {(!showHomeSearch || normalizedSearchQuery) ? (
+              <View
+                style={[
+                  styles.activitySummaryRow,
+                  { borderTopColor: theme.colors.border, borderBottomColor: theme.colors.border },
+                ]}
+              >
+                {recentActivitySummary.map((item) => {
+                  const toneStyles =
+                    item.tone === 'positive'
+                      ? { backgroundColor: isDark ? '#14332B' : '#DCFCE7', color: '#16A34A' }
+                      : item.tone === 'negative'
+                        ? { backgroundColor: isDark ? '#3F1D1D' : '#FEE2E2', color: '#DC2626' }
+                        : item.tone === 'warning'
+                          ? { backgroundColor: isDark ? '#3B2A11' : '#FEF3C7', color: '#D97706' }
+                          : item.tone === 'info'
+                            ? { backgroundColor: isDark ? '#1E3A5F' : '#DBEAFE', color: '#2563EB' }
+                            : { backgroundColor: theme.colors.background, color: theme.colors.textSecondary };
+
+                  return (
+                    <View
+                      key={item.label}
+                      style={[
+                        styles.activitySummaryChip,
+                        { backgroundColor: toneStyles.backgroundColor, borderColor: theme.colors.border },
+                      ]}
+                    >
+                      <Text style={[styles.activitySummaryLabel, { color: toneStyles.color }]}>{item.label}</Text>
+                      <Text style={[styles.activitySummaryValue, { color: toneStyles.color }]}>{item.value}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
+
+            <View style={styles.activityFeedList}>
+              {activityTransactions.map((transaction) => (
+                <View
+                  key={transaction.id}
+                  style={[
+                    styles.activityRowShell,
+                    { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
+                  ]}
+                >
+                  <TransactionItem
+                    transaction={transaction}
+                    showActions
+                    compact
+                    variant="activity"
+                    onEdit={() => setEditingTransaction(transaction)}
+                    onDelete={() => confirmDeleteTransaction(transaction)}
+                  />
+                </View>
+              ))}
+            </View>
+          </>
+        )}
       </View>
     </View>
   );
@@ -1714,8 +1806,18 @@ export default function HomeScreen() {
               placeholder="Search activity, account, amount"
               placeholderTextColor={theme.colors.textSecondary}
               style={[styles.searchInput, { color: theme.colors.text }]}
+              autoCapitalize="none"
+              autoCorrect={false}
               autoFocus
             />
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Close search"
+              style={styles.searchBarAction}
+              onPress={handleSearchToggle}
+            >
+              <X size={14} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
           </View>
         ) : null}
         {hasActiveHomeFilters ? (
@@ -1729,20 +1831,36 @@ export default function HomeScreen() {
           </View>
         ) : null}
       </View>
-      {homeSummary}
+      {showHomeSearch ? null : homeSummary}
 
-      <ScrollView
-        style={styles.scrollView}
-        showsVerticalScrollIndicator={false}
-        onScrollBeginDrag={() => {
-          setActiveMetricTooltip(null);
-          setShowQuickAddMenu(false);
-          setShowHomeFilterMenu(false);
-        }}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
-        }
-      >
+      {showHomeSearch ? (
+        <ScrollView
+          style={styles.scrollView}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 8 }}
+          onScrollBeginDrag={() => {
+            setActiveMetricTooltip(null);
+            setShowQuickAddMenu(false);
+            setShowHomeFilterMenu(false);
+          }}
+        >
+          {activitySection}
+          <View style={{ height: 100 }} />
+        </ScrollView>
+      ) : (
+        <ScrollView
+          style={styles.scrollView}
+          showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={() => {
+            setActiveMetricTooltip(null);
+            setShowQuickAddMenu(false);
+            setShowHomeFilterMenu(false);
+          }}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.colors.primary} />
+          }
+        >
 
         <View style={styles.metricsRow}>
           <TouchableOpacity
@@ -1934,32 +2052,6 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {transactions.length > 0 && (
-          <>
-            <SmartInsightsCard
-              balance={netBalance}
-              income={monthlyIncome}
-              expenses={monthlyExpenses}
-            />
-            {topInsights.length > 0 && (
-              <View style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Smart Insights</Text>
-                  {insights.length > 3 && (
-                    <TouchableOpacity style={styles.seeAllBtn}>
-                      <Text style={[styles.seeAll, { color: theme.colors.primary }]}>
-                        +{insights.length - 3} more
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-                {topInsights.map((insight) => (
-                  <InsightCard key={insight.id} insight={insight} isDark={isDark} onPress={() => handleInsightPress(insight)} />
-                ))}
-              </View>
-            )}
-          </>
-        )}
 
         {showFarm && farmSummary && (farmSummary.totalFarmIncome > 0 || farmSummary.totalFarmExpenses > 0) && (
           <View style={[styles.farmCard, {
@@ -2012,129 +2104,11 @@ export default function HomeScreen() {
           </View>
         )}
 
-        <View style={styles.section}>
-          <View
-            style={[
-              styles.activityCard,
-              {
-                backgroundColor: isDark ? theme.colors.card : '#FFFFFF',
-                borderColor: theme.colors.border,
-                shadowColor: theme.colors.shadow,
-              },
-            ]}
-          >
-            <View style={styles.activityCardHeader}>
-              <View style={styles.activityHeadingWrap}>
-                <Text style={[styles.activityEyebrow, { color: theme.colors.textSecondary }]}>Home Feed</Text>
-                <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Recent Activity</Text>
-                <Text style={[styles.activitySubtitle, { color: theme.colors.textSecondary }]}>
-                  {homeFilterContextLabel}
-                </Text>
-              </View>
-
-              <View style={styles.activityHeaderRight}>
-                <View
-                  style={[
-                    styles.activityCountBadge,
-                    { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                  ]}
-                >
-                  <Text style={[styles.activityCountValue, { color: theme.colors.text }]}>{recentTransactions.length}</Text>
-                  <Text style={[styles.activityCountLabel, { color: theme.colors.textSecondary }]}>items</Text>
-                </View>
-                {recentTransactions.length > 0 ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.activitySeeAllBtn,
-                      { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                    ]}
-                    activeOpacity={0.85}
-                    onPress={() => router.push('/(tabs)/transactions')}
-                  >
-                    <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
-                    <ChevronRight size={14} color={theme.colors.primary} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            </View>
-
-            {recentTransactions.length === 0 ? (
-              <View
-                style={[
-                  styles.activityEmptyState,
-                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                ]}
-              >
-                <View style={[styles.activityEmptyIcon, { backgroundColor: isDark ? '#1A332920' : '#F0FDF4' }]}>
-                  <Activity size={22} color={isDark ? '#34D399' : '#059669'} />
-                </View>
-                <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>{transactionEmptyState.title}</Text>
-                <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>
-                  {transactionEmptyState.description}
-                </Text>
-              </View>
-            ) : (
-              <>
-                <View
-                  style={[
-                    styles.activitySummaryRow,
-                    { borderTopColor: theme.colors.border, borderBottomColor: theme.colors.border },
-                  ]}
-                >
-                  {recentActivitySummary.map((item) => {
-                    const toneStyles =
-                      item.tone === 'positive'
-                        ? { backgroundColor: isDark ? '#14332B' : '#DCFCE7', color: '#16A34A' }
-                        : item.tone === 'negative'
-                          ? { backgroundColor: isDark ? '#3F1D1D' : '#FEE2E2', color: '#DC2626' }
-                          : item.tone === 'warning'
-                            ? { backgroundColor: isDark ? '#3B2A11' : '#FEF3C7', color: '#D97706' }
-                            : item.tone === 'info'
-                              ? { backgroundColor: isDark ? '#1E3A5F' : '#DBEAFE', color: '#2563EB' }
-                              : { backgroundColor: theme.colors.background, color: theme.colors.textSecondary };
-
-                    return (
-                      <View
-                        key={item.label}
-                        style={[
-                          styles.activitySummaryChip,
-                          { backgroundColor: toneStyles.backgroundColor, borderColor: theme.colors.border },
-                        ]}
-                      >
-                        <Text style={[styles.activitySummaryLabel, { color: toneStyles.color }]}>{item.label}</Text>
-                        <Text style={[styles.activitySummaryValue, { color: toneStyles.color }]}>{item.value}</Text>
-                      </View>
-                    );
-                  })}
-                </View>
-
-                <View style={styles.activityFeedList}>
-                  {recentTransactions.map((transaction) => (
-                    <View
-                      key={transaction.id}
-                      style={[
-                        styles.activityRowShell,
-                        { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                      ]}
-                    >
-                      <TransactionItem
-                        transaction={transaction}
-                        showActions
-                        compact
-                        variant="activity"
-                        onEdit={() => setEditingTransaction(transaction)}
-                        onDelete={() => confirmDeleteTransaction(transaction)}
-                      />
-                    </View>
-                  ))}
-                </View>
-              </>
-            )}
-          </View>
-        </View>
+        {activitySection}
 
         <View style={{ height: 100 }} />
-      </ScrollView>
+        </ScrollView>
+      )}
 
       <Animated.View style={[styles.fabContainer, { transform: [{ scale: fabScale }] }]}>
         {showQuickAddMenu ? (
@@ -2742,6 +2716,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500' as const,
     paddingVertical: 0,
+  },
+  searchBarAction: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 999,
   },
   filterChipsRow: {
     flexDirection: 'row',

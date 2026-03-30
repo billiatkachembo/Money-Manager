@@ -1,4 +1,4 @@
-import { Insight, InsightSeverity } from '../../types/transaction';
+﻿import { Insight, InsightSeverity } from '../../types/transaction';
 
 export interface InsightContext {
   monthlyIncome: number;
@@ -94,11 +94,11 @@ function getNegativeCashFlowRatio(data: InsightContext): number {
   }
 
   if (data.monthlyIncome > 0) {
-    return Math.abs(data.monthlyNet) / data.monthlyIncome;
+    return Math.min(1, Math.abs(data.monthlyNet) / data.monthlyIncome);
   }
 
   if (data.monthlyExpenses > 0) {
-    return Math.abs(data.monthlyNet) / data.monthlyExpenses;
+    return Math.min(1, Math.abs(data.monthlyNet) / data.monthlyExpenses);
   }
 
   return 0;
@@ -516,4 +516,5 @@ export function computeInsights(data: InsightContext, limit = 5): Insight[] {
     })
     .slice(0, Math.max(1, limit));
 }
+
 

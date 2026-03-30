@@ -311,7 +311,8 @@ function RootLayoutNav() {
       <StatusBar style={theme.isDark ? 'light' : 'dark'} />
       <WebPcManagerHandoffManager />
       <QuickAddNotificationManager />
-      <Stack screenOptions={{ headerBackTitle: 'Back' }}>
+      <Stack initialRouteName="index" screenOptions={{ headerBackTitle: 'Back' }}>
+        <Stack.Screen name="index" options={{ headerShown: false, animation: 'none', gestureEnabled: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       </Stack>
       <AppTooltipHost />
@@ -387,10 +388,6 @@ const styles = StyleSheet.create({
 });
 
 export default function RootLayout() {
-  useEffect(() => {
-    SplashScreen.hideAsync();
-  }, []);
-
   return (
     <ThemeProvider>
       <TransactionProvider>

@@ -5,15 +5,17 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Modal,
   Alert,
 } from 'react-native';
-import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, Landmark } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown, Landmark, X } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
 import { Transaction } from '@/types/transaction';
 import { formatDateDDMMYYYY, formatDateWithWeekday } from '@/utils/date';
 import { TransactionItem } from '@/components/TransactionItem';
 import { EditTransactionModal } from '@/components/EditTransactionModal';
+import { useI18n } from '@/src/i18n';
 
 function toDateKey(date: Date): string {
   return formatDateDDMMYYYY(date);
@@ -46,9 +48,11 @@ function buildCalendarDays(month: Date): Date[] {
 export default function CalendarScreen() {
   const { transactions, formatCurrency, deleteTransaction } = useTransactionStore();
   const { theme } = useTheme();
+  const { t } = useI18n();
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [showSelectedDayCard, setShowSelectedDayCard] = useState(false);
 
   const today = new Date();
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -137,6 +141,7 @@ export default function CalendarScreen() {
     nextMonth.setMonth(currentMonth.getMonth() + (direction === 'next' ? 1 : -1));
     const normalized = new Date(nextMonth.getFullYear(), nextMonth.getMonth(), 1);
     setCurrentMonth(normalized);
+    setShowSelectedDayCard(false);
 
     if (!isSameMonth(selectedDate, normalized)) {
       setSelectedDate(normalized);
@@ -144,7 +149,9 @@ export default function CalendarScreen() {
   };
 
   const selectDate = (date: Date) => {
+    const hasTransactions = (transactionsByDate.get(toDateKey(date))?.transactions.length ?? 0) > 0;
     setSelectedDate(date);
+    setShowSelectedDayCard(hasTransactions);
     if (!isSameMonth(date, currentMonth)) {
       setCurrentMonth(new Date(date.getFullYear(), date.getMonth(), 1));
     }
@@ -154,6 +161,7 @@ export default function CalendarScreen() {
     const normalizedToday = new Date(today.getFullYear(), today.getMonth(), 1);
     setCurrentMonth(normalizedToday);
     setSelectedDate(today);
+    setShowSelectedDayCard(false);
   };
 
   const confirmDeleteTransaction = (transaction: Transaction) => {
@@ -178,17 +186,13 @@ export default function CalendarScreen() {
       <View style={styles.topBar}>
         <View>
           <Text style={[styles.topBarEyebrow, { color: theme.colors.textSecondary }]}>Calendar</Text>
-          <Text style={[styles.topBarTitle, { color: theme.colors.text }]}>{currentMonthLabel}</Text>
-          <Text style={[styles.topBarMeta, { color: theme.colors.textSecondary }]}> 
-            {monthSummary.count} transaction{monthSummary.count === 1 ? '' : 's'} across {monthSummary.activeDays} active day{monthSummary.activeDays === 1 ? '' : 's'}
-          </Text>
         </View>
         <TouchableOpacity
           style={[styles.todayButton, { backgroundColor: primaryTint, borderColor: theme.colors.primary + '26' }]}
           onPress={jumpToToday}
           activeOpacity={0.85}
         >
-          <Text style={[styles.todayButtonText, { color: theme.colors.primary }]}>Today</Text>
+          <Text style={[styles.todayButtonText, { color: theme.colors.primary }]}>{t('common.today')}</Text>
         </TouchableOpacity>
       </View>
 
@@ -329,58 +333,81 @@ export default function CalendarScreen() {
         </View>
       </View>
 
-      <View style={styles.selectedSection}>
-        <View style={styles.selectedHeader}>
-          <View style={styles.selectedHeaderText}>
-            <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}>{formatDateWithWeekday(selectedDate)}</Text>
-            <Text style={[styles.selectedDateMeta, { color: theme.colors.textSecondary }]}> 
-              {selectedDaySummary.transactions.length} item{selectedDaySummary.transactions.length === 1 ? '' : 's'} on this date
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.selectedNetChip,
-              { backgroundColor: selectedDaySummary.net >= 0 ? positiveTint : negativeTint },
-            ]}
-          >
-            <Text
-              style={[
-                styles.selectedNetChipText,
-                { color: selectedDaySummary.net >= 0 ? '#16A34A' : '#DC2626' },
-              ]}
-            >
-              {selectedDaySummary.net >= 0 ? 'Net In' : 'Net Out'}
-            </Text>
-          </View>
-        </View>
+      <Modal
+        visible={showSelectedDayCard && selectedDaySummary.transactions.length > 0}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSelectedDayCard(false)}
+      >
+        <View style={styles.selectedDayModalRoot}>
+          <TouchableOpacity
+            style={styles.selectedDayModalBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowSelectedDayCard(false)}
+          />
+          <View style={[styles.selectedDayModalCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={styles.selectedHeader}>
+              <View style={styles.selectedHeaderText}>
+                <Text style={[styles.selectedDateTitle, { color: theme.colors.text }]}>{formatDateWithWeekday(selectedDate)}</Text>
+                <Text style={[styles.selectedDateMeta, { color: theme.colors.textSecondary }]}>
+                  {selectedDaySummary.transactions.length} item{selectedDaySummary.transactions.length === 1 ? '' : 's'} on this date
+                </Text>
+              </View>
+              <View style={styles.selectedDayModalHeaderRow}>
+                <View
+                  style={[
+                    styles.selectedNetChip,
+                    { backgroundColor: selectedDaySummary.net >= 0 ? positiveTint : negativeTint },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.selectedNetChipText,
+                      { color: selectedDaySummary.net >= 0 ? '#16A34A' : '#DC2626' },
+                    ]}
+                  >
+                    {selectedDaySummary.net >= 0 ? 'Net In' : 'Net Out'}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Close selected day details"
+                  style={[styles.selectedDayModalCloseButton, { borderColor: theme.colors.border }]}
+                  onPress={() => setShowSelectedDayCard(false)}
+                >
+                  <X size={16} color={theme.colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
 
-        {selectedDaySummary.transactions.length > 0 ? (
-          <>
-            <View style={styles.selectedSummaryRow}>
-              <View style={[styles.selectedSummaryItem, { backgroundColor: positiveTint }]}> 
-                <TrendingUp size={15} color="#16A34A" />
-                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                <Text style={[styles.selectedSummaryValue, { color: '#16A34A' }]} numberOfLines={1}>
+            <View style={styles.selectedSummaryInline}>
+              <View style={styles.selectedSummaryInlineItem}>
+                <TrendingUp size={14} color="#16A34A" />
+                <Text style={[styles.selectedSummaryInlineLabel, { color: theme.colors.textSecondary }]}>Income</Text>
+                <Text style={[styles.selectedSummaryInlineValue, { color: '#16A34A' }]} numberOfLines={1}>
                   {formatCurrency(selectedDaySummary.income)}
                 </Text>
               </View>
-              <View style={[styles.selectedSummaryItem, { backgroundColor: negativeTint }]}> 
-                <TrendingDown size={15} color="#DC2626" />
-                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                <Text style={[styles.selectedSummaryValue, { color: '#DC2626' }]} numberOfLines={1}>
+              <View style={styles.selectedSummaryInlineItem}>
+                <TrendingDown size={14} color="#DC2626" />
+                <Text style={[styles.selectedSummaryInlineLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
+                <Text style={[styles.selectedSummaryInlineValue, { color: '#DC2626' }]} numberOfLines={1}>
                   {formatCurrency(selectedDaySummary.expenses)}
                 </Text>
               </View>
-              <View style={[styles.selectedSummaryItem, { backgroundColor: theme.isDark ? 'rgba(147,51,234,0.18)' : '#F5F3FF' }]}> 
-                <Landmark size={15} color="#9333EA" />
-                <Text style={[styles.selectedSummaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
-                <Text style={[styles.selectedSummaryValue, { color: '#9333EA' }]} numberOfLines={1}>
+              <View style={styles.selectedSummaryInlineItem}>
+                <Landmark size={14} color="#9333EA" />
+                <Text style={[styles.selectedSummaryInlineLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
+                <Text style={[styles.selectedSummaryInlineValue, { color: '#9333EA' }]} numberOfLines={1}>
                   {formatCurrency(selectedDaySummary.debt)}
                 </Text>
               </View>
             </View>
 
-            <View style={styles.transactionsList}>
+            <ScrollView
+              style={[styles.selectedDayModalList, { borderTopColor: theme.colors.border }]}
+              showsVerticalScrollIndicator={false}
+            >
               {selectedDaySummary.transactions.map((transaction, index) => (
                 <View
                   key={transaction.id}
@@ -393,20 +420,18 @@ export default function CalendarScreen() {
                     transaction={transaction}
                     showActions
                     compact
-                    onEdit={() => setEditingTransaction(transaction)}
+                    onEdit={() => {
+                      setShowSelectedDayCard(false);
+                      setEditingTransaction(transaction);
+                    }}
                     onDelete={() => confirmDeleteTransaction(transaction)}
                   />
                 </View>
               ))}
-            </View>
-          </>
-        ) : (
-          <View style={[styles.emptyState, { backgroundColor: softSurface, borderColor: theme.colors.border }]}> 
-            <Text style={[styles.emptyStateTitle, { color: theme.colors.text }]}>No activity for this day</Text>
-            <Text style={[styles.emptyStateText, { color: theme.colors.textSecondary }]}>Pick another date or add a transaction to start building your calendar history.</Text>
+            </ScrollView>
           </View>
-        )}
-      </View>
+        </View>
+      </Modal>
 
       {editingTransaction ? (
         <EditTransactionModal
@@ -446,11 +471,6 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '800',
     letterSpacing: -0.6,
-  },
-  topBarMeta: {
-    fontSize: 13,
-    fontWeight: '500',
-    marginTop: 4,
   },
   todayButton: {
     borderWidth: 1,
@@ -548,8 +568,8 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   dayInner: {
-    minHeight: 72,
-    borderRadius: 10,
+    minHeight: 84,
+    borderRadius: 12,
     borderWidth: 1,
     paddingHorizontal: 7,
     paddingTop: 7,
@@ -562,7 +582,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   dayText: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
   },
   dayCountBadge: {
@@ -578,9 +598,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   dayNetPreview: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
-    lineHeight: 12,
+    lineHeight: 13,
   },
   dayPlaceholder: {
     height: 12,
@@ -617,28 +637,58 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  selectedSummaryRow: {
+  selectedSummaryInline: {
     flexDirection: 'row',
-    gap: 8,
+    flexWrap: 'wrap',
+    gap: 12,
     marginBottom: 14,
   },
-  selectedSummaryItem: {
-    flex: 1,
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 12,
+  selectedSummaryInlineItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
-  selectedSummaryLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.35,
-    marginTop: 8,
-    marginBottom: 6,
+  selectedSummaryInlineLabel: {
+    fontSize: 12,
+    fontWeight: '600',
   },
-  selectedSummaryValue: {
-    fontSize: 13,
+  selectedSummaryInlineValue: {
+    fontSize: 12,
     fontWeight: '800',
+  },
+  selectedDayModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    padding: 16,
+  },
+  selectedDayModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15,23,42,0.28)',
+  },
+  selectedDayModalCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    maxHeight: '72%',
+  },
+  selectedDayModalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selectedDayModalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectedDayModalList: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    maxHeight: 320,
   },
   transactionsList: {
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -665,3 +715,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+

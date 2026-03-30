@@ -269,29 +269,36 @@ export function CategorySelectorSheet({
                   </Text>
                   <Text style={[styles.subcategoryHint, { color: theme.colors.textSecondary }]}>
                     {activeCategoryAllSubcategories.length > 0
-                      ? 'Choose a subcategory'
+                      ? 'Choose a subcategory or use this category directly.'
                       : canCreateSubcategory
                         ? 'Create a custom subcategory for this category.'
                         : 'Search to add a custom subcategory or select this category directly.'}
                   </Text>
                 </View>
-                {activeCategoryAllSubcategories.length === 0 ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.subcategoryRow,
-                      { borderColor: theme.colors.border, backgroundColor: theme.colors.card ?? theme.colors.surface },
-                      pressed && styles.categoryRowPressed,
-                    ]}
-                    onPress={() => onSelect(activeCategory)}
-                  >
-                    <Text style={[styles.subcategoryLabel, { color: theme.colors.text }]} numberOfLines={1}>
-                      Use {activeCategory.name}
-                    </Text>
-                    {activeCategory.id === selectedCategoryId && !selectedSubcategory ? (
-                      <Icons.Check size={16} color={theme.colors.primary} />
-                    ) : null}
-                  </Pressable>
-                ) : null}
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.subcategoryRow,
+                    {
+                      backgroundColor:
+                        activeCategory.id === selectedCategoryId && !selectedSubcategory
+                          ? theme.colors.primary + '12'
+                          : theme.colors.card ?? theme.colors.surface,
+                      borderColor:
+                        activeCategory.id === selectedCategoryId && !selectedSubcategory
+                          ? theme.colors.primary
+                          : theme.colors.border,
+                    },
+                    pressed && styles.categoryRowPressed,
+                  ]}
+                  onPress={() => onSelect(activeCategory)}
+                >
+                  <Text style={[styles.subcategoryLabel, { color: theme.colors.text }]} numberOfLines={1}>
+                    Use {activeCategory.name}
+                  </Text>
+                  {activeCategory.id === selectedCategoryId && !selectedSubcategory ? (
+                    <Icons.Check size={16} color={theme.colors.primary} />
+                  ) : null}
+                </Pressable>
                 {canCreateSubcategory ? (
                   <Pressable
                     style={[

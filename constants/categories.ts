@@ -1,4 +1,4 @@
-﻿import { Transaction, TransactionCategory } from '@/types/transaction';
+import { Transaction, TransactionCategory } from '@/types/transaction';
 import { enqueueWrite, STORAGE_KEYS, safeReadJSON, safeWriteJSON } from '@/lib/storage';
 import { findCurrencyOption, type CurrencyOption } from '@/constants/currencies';
 type TextRecognitionModule = {
@@ -128,6 +128,8 @@ export const MODAL_INCOME_CATEGORIES: TransactionCategory[] = [
   { id: 'dividends', name: 'Dividends', icon: 'TrendingUp', color: '#6366F1' },
   { id: 'refund', name: 'Refund', icon: 'RotateCcw', color: '#14B8A6' },
   { id: 'allowance', name: 'Allowance', icon: 'Wallet', color: '#EAB308' },
+  { id: 'scholarship-bursary', name: 'Scholarship / Bursary', icon: 'GraduationCap', color: '#2563EB' },
+  { id: 'student-stipend', name: 'Student Stipend', icon: 'NotebookPen', color: '#7C3AED' },
   { id: 'gift', name: 'Gift', icon: 'Gift', color: '#F43F5E' },
   { id: 'other-income', name: 'Other Income', icon: 'MoreHorizontal', color: '#94A3B8' },
 ];
@@ -223,15 +225,25 @@ const CATEGORY_SUBCATEGORY_PRESETS: Record<string, TransactionSubcategory[]> = {
   education: [
     { id: 'tuition', name: 'Tuition' },
     { id: 'books', name: 'Books' },
+    { id: 'bookshop-supplies', name: 'Bookshop Supplies' },
     { id: 'courses', name: 'Courses' },
+    { id: 'course-registration', name: 'Course Registration' },
     { id: 'school-supplies', name: 'School Supplies' },
     { id: 'stationery', name: 'Stationery' },
     { id: 'exam-fees', name: 'Exam Fees' },
+    { id: 'lab-fees', name: 'Lab Fees' },
+    { id: 'library-fees', name: 'Library Fees' },
+    { id: 'hostel-fees', name: 'Hostel Fees' },
     { id: 'laptop-computer', name: 'Laptop / Computer' },
     { id: 'computer-accessories', name: 'Computer Accessories' },
     { id: 'calculator', name: 'Calculator' },
+    { id: 'internet-bundles', name: 'Internet Bundles' },
     { id: 'printing-photocopying', name: 'Printing & Photocopying' },
     { id: 'research-materials', name: 'Research Materials' },
+    { id: 'field-trips', name: 'Field Trips' },
+    { id: 'internship-placement', name: 'Internship Placement' },
+    { id: 'thesis-dissertation', name: 'Thesis / Dissertation' },
+    { id: 'graduation-fees', name: 'Graduation Fees' },
     { id: 'student-projects', name: 'Student Projects' },
   ],
   clothing: [
@@ -404,9 +416,26 @@ const CATEGORY_SUBCATEGORY_PRESETS: Record<string, TransactionSubcategory[]> = {
   ],
   allowance: [
     { id: 'meal-allowance', name: 'Meal Allowance' },
+    { id: 'book-allowance', name: 'Book Allowance' },
     { id: 'transport-allowance', name: 'Transport Allowance' },
     { id: 'housing-allowance', name: 'Housing Allowance' },
     { id: 'school-allowance', name: 'School Allowance' },
+    { id: 'exam-allowance', name: 'Exam Allowance' },
+    { id: 'research-allowance', name: 'Research Allowance' },
+    { id: 'internship-allowance', name: 'Internship Allowance' },
+    { id: 'pocket-money', name: 'Pocket Money' },
+  ],
+  'scholarship-bursary': [
+    { id: 'scholarship-payment', name: 'Scholarship Payment' },
+    { id: 'bursary-disbursement', name: 'Bursary Disbursement' },
+    { id: 'tuition-support', name: 'Tuition Support' },
+    { id: 'book-support', name: 'Book Support' },
+  ],
+  'student-stipend': [
+    { id: 'monthly-stipend', name: 'Monthly Stipend' },
+    { id: 'internship-stipend', name: 'Internship Stipend' },
+    { id: 'attachment-allowance', name: 'Attachment Allowance' },
+    { id: 'research-stipend', name: 'Research Stipend' },
   ],
   gift: [
     { id: 'family-gift', name: 'Family Gift' },
@@ -807,6 +836,7 @@ export async function importReceipts(
   await updateNetWorth(transactions);
   return { transactions, skipped, errors };
 }
+
 
 
 

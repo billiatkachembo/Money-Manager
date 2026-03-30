@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -256,28 +256,6 @@ export default function TransactionsScreen() {
     setExpandedMonths(new Set([grouped.mostRecentKey]));
   }, [filter, grouped.mostRecentKey, isSearching]);
 
-  const totals = useMemo(
-    () => ({
-      income: searchedTransactions
-        .filter((transaction) => transaction.type === 'income')
-        .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
-      expenses: searchedTransactions
-        .filter((transaction) => transaction.type === 'expense')
-        .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
-      transfers: searchedTransactions
-        .filter((transaction) => transaction.type === 'transfer')
-        .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0),
-      debt: searchedTransactions
-        .filter((transaction) => transaction.type === 'debt')
-        .reduce((sum, transaction) => {
-          const direction = transaction.debtDirection === 'lent' ? -1 : 1;
-          return sum + Math.abs(transaction.amount) * direction;
-        }, 0),
-    }),
-    [searchedTransactions]
-  );
-
-  const netFlow = totals.income - totals.expenses;
   const activeFilterLabel = FILTER_OPTIONS.find((option) => option.key === filter)?.label ?? 'All';
   const headerSubtitle = isSearching
     ? 'Showing matches for "' + searchQuery.trim() + '"'
@@ -422,7 +400,7 @@ export default function TransactionsScreen() {
             { backgroundColor: theme.colors.surface, borderColor: theme.colors.border },
           ]}
         >
-          <Search size={16} color={theme.colors.textSecondary} />
+          <Search size={13} color={theme.colors.textSecondary} />
           <TextInput
             ref={searchInputRef}
             style={[styles.searchInput, { color: theme.colors.text }]}
@@ -468,45 +446,8 @@ export default function TransactionsScreen() {
             );
           })}
         </View>
-
-        <View style={styles.summaryGrid}>
-          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-            <Text style={[styles.summaryValue, styles.incomeText]} numberOfLines={1}>{formatCurrency(totals.income)}</Text>
-          </View>
-          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-            <Text style={[styles.summaryValue, styles.expenseText]} numberOfLines={1}>{formatCurrency(totals.expenses)}</Text>
-          </View>
-          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Net Flow</Text>
-            <Text
-              style={[
-                styles.summaryValue,
-                { color: netFlow >= 0 ? theme.colors.success : theme.colors.error },
-              ]}
-              numberOfLines={1}
-            >
-              {netFlow >= 0 ? '+' : '-'}{formatCurrency(Math.abs(netFlow))}
-            </Text>
-          </View>
-          <View style={[styles.summaryCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Filter</Text>
-            <Text style={[styles.summaryValue, { color: theme.colors.text }]} numberOfLines={1}>{activeFilterLabel}</Text>
-          </View>
-        </View>
-
-        <View style={styles.auxSummaryRow}>
-          <View style={[styles.auxSummaryChip, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.auxSummaryLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
-            <Text style={[styles.auxSummaryValue, { color: theme.colors.primary }]}>{formatCurrency(totals.transfers)}</Text>
-          </View>
-          <View style={[styles.auxSummaryChip, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-            <Text style={[styles.auxSummaryLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
-            <Text style={[styles.auxSummaryValue, styles.debtText]}>{formatCurrency(totals.debt)}</Text>
-          </View>
-        </View>
       </View>
+
 
       {isSearching ? (
         <View style={styles.resultsInfo}>
@@ -795,6 +736,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 });
+
 
 
 

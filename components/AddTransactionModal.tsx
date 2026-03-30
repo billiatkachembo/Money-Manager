@@ -43,6 +43,7 @@ import * as Icons from 'lucide-react-native';
 import { Transaction, TransactionCategory } from '@/types/transaction';
 import {
   createCustomCategory,
+  findMatchingCategory,
   formatCategoryWithSubcategory,
   getCategorySubcategories,
   mergeCategories,
@@ -281,22 +282,17 @@ interface AddTransactionModalProps {
   visible: boolean;
   onClose: () => void;
   initialType?: 'income' | 'expense' | 'transfer' | 'debt';
+  transaction?: Transaction | null;
+  onSave?: () => void;
 }
 
-export function AddTransactionModal({ visible, onClose, initialType }: AddTransactionModalProps) {
+export function AddTransactionModal({ visible, onClose, initialType, transaction = null, onSave }: AddTransactionModalProps) {
   const { theme } = useTheme();
   const { t } = useI18n();
   const router = useRouter();
   const { activeSheet, openSheet, closeSheet } = useBottomSheetController<'calculator' | 'accounts' | 'category'>();
   const [type, setType] = useState<'income' | 'expense' | 'transfer' | 'debt'>('expense');
 
-  useEffect(() => {
-    if (!visible) {
-      return;
-    }
-
-    setType(initialType ?? 'expense');
-  }, [initialType, visible]);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [transactionDate, setTransactionDate] = useState<Date | null>(null);
@@ -346,6 +342,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     debtCategories,
     merchantProfiles,
     learnMerchantCategory,
+    updateTransaction,
     saveCustomCategory,
     saveCustomSubcategory,
     customExpenseSubcategories,
@@ -420,6 +417,134 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     () => translatedTypeOptions.find((option) => option.key === type) ?? translatedTypeOptions[0],
     [translatedTypeOptions, type]
   );
+
+  const isEditing = Boolean(transaction);
+  const submitButtonLabel = isEditing ? t('common.save') : t('addTransaction.addButton');
+
+  const resetFormState = useCallback(
+    (nextType: 'income' | 'expense' | 'transfer' | 'debt' = initialType ?? 'expense') => {
+      ocrRequestIdRef.current += 1;
+      ocrInFlightRef.current = false;
+      closeSheet();
+      setType(nextType);
+      setAmount('');
+      setDescription('');
+      setTransactionDate(null);
+      setSelectedCategory(null);
+      setSelectedSubcategory(null);
+      setFromAccount('');
+      setToAccount('');
+      setAccountSheetTarget(null);
+      setIsRecurring(false);
+      setRecurringFrequency('monthly');
+      setRecurringEndDate(null);
+      setShowTransactionDatePicker(false);
+      setShowDueDatePicker(false);
+      setShowRecurringEndDatePicker(false);
+      setCalculatorDraft('');
+      setReceiptImage(null);
+      setIsScanning(false);
+      setOcrExtracted(false);
+      setOcrDetections(createEmptyOcrDetections());
+      setShowImageActions(false);
+      setShowUploadMenu(false);
+      setDebtDirection('borrowed');
+      setCounterparty('');
+      setDueDate(null);
+      setInterestRate('');
+      setDebtPayment(false);
+      setShowRepeatInstallmentOptions(false);
+      setAiSuggestion(null);
+      setSheetMaxHeight(undefined);
+      setShowQuickAccountModal(false);
+    },
+    [closeSheet, initialType]
+  );
+
+  const populateFormFromTransaction = useCallback(
+    (sourceTransaction: Transaction) => {
+      const nextType = sourceTransaction.type;
+      const categoryPool =
+        nextType === 'income'
+          ? incomeCategories
+          : nextType === 'debt'
+            ? debtCategories
+            : nextType === 'expense'
+              ? expenseCategories
+              : [];
+      const mergedCategories = sourceTransaction.category
+        ? mergeCategories(categoryPool, [sourceTransaction.category])
+        : categoryPool;
+      const matchedCategory =
+        nextType === 'transfer'
+          ? null
+          : findMatchingCategory(mergedCategories, sourceTransaction.category) ?? sourceTransaction.category ?? null;
+      const parsedTransactionDate = new Date(sourceTransaction.date);
+      const parsedDueDate = sourceTransaction.dueDate ? new Date(sourceTransaction.dueDate) : null;
+      const parsedRecurringEndDate = sourceTransaction.recurringEndDate ? new Date(sourceTransaction.recurringEndDate) : null;
+      const nextFromAccount = sourceTransaction.fromAccountId ?? sourceTransaction.fromAccount ?? '';
+      const nextToAccount = sourceTransaction.toAccountId ?? sourceTransaction.toAccount ?? '';
+      const nextIsRecurring = Boolean(sourceTransaction.isRecurring);
+      const nextDebtPayment = Boolean(sourceTransaction.debtPayment);
+
+      ocrRequestIdRef.current += 1;
+      ocrInFlightRef.current = false;
+      closeSheet();
+      setType(nextType);
+      setAmount(Number.isFinite(sourceTransaction.amount) ? sourceTransaction.amount.toString() : '');
+      setDescription(sourceTransaction.description ?? '');
+      setTransactionDate(Number.isNaN(parsedTransactionDate.getTime()) ? new Date() : parsedTransactionDate);
+      setSelectedCategory(matchedCategory);
+      setSelectedSubcategory(sourceTransaction.subcategory?.trim() ? sourceTransaction.subcategory.trim() : null);
+      setFromAccount(nextFromAccount);
+      setToAccount(nextToAccount);
+      setAccountSheetTarget(null);
+      setIsRecurring(nextIsRecurring);
+      setRecurringFrequency(sourceTransaction.recurringFrequency ?? 'monthly');
+      setRecurringEndDate(
+        parsedRecurringEndDate && !Number.isNaN(parsedRecurringEndDate.getTime()) ? parsedRecurringEndDate : null
+      );
+      setShowTransactionDatePicker(false);
+      setShowDueDatePicker(false);
+      setShowRecurringEndDatePicker(false);
+      setCalculatorDraft(Number.isFinite(sourceTransaction.amount) ? sourceTransaction.amount.toString() : '');
+      setReceiptImage(sourceTransaction.receiptImage ?? null);
+      setIsScanning(false);
+      setOcrExtracted(false);
+      setOcrDetections(createEmptyOcrDetections());
+      setShowImageActions(Boolean(sourceTransaction.receiptImage));
+      setShowUploadMenu(false);
+      setDebtDirection(sourceTransaction.debtDirection ?? 'borrowed');
+      setCounterparty(sourceTransaction.counterparty ?? '');
+      setDueDate(parsedDueDate && !Number.isNaN(parsedDueDate.getTime()) ? parsedDueDate : null);
+      setInterestRate(
+        sourceTransaction.interestRate !== undefined && sourceTransaction.interestRate !== null
+          ? sourceTransaction.interestRate.toString()
+          : ''
+      );
+      setDebtPayment(nextDebtPayment);
+      setShowRepeatInstallmentOptions(
+        nextIsRecurring || ((nextType === 'expense' || nextType === 'income') && nextDebtPayment)
+      );
+      setAiSuggestion(null);
+      setSheetMaxHeight(undefined);
+      setShowQuickAccountModal(false);
+    },
+    [closeSheet, debtCategories, expenseCategories, incomeCategories]
+  );
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    if (transaction) {
+      populateFormFromTransaction(transaction);
+      return;
+    }
+
+    resetFormState(initialType ?? 'expense');
+  }, [initialType, populateFormFromTransaction, resetFormState, transaction, visible]);
 
   const accountLabel = t('common.account');
   const accountSheetTitle = useMemo(() => {
@@ -797,11 +922,6 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       return;
     }
 
-    if (type !== 'transfer' && selectedCategorySubcategories.length > 0 && !selectedSubcategory) {
-      Alert.alert('Error', 'Please select a subcategory');
-      return;
-    }
-
     if (type === 'expense' && !fromAccount) {
       Alert.alert('Error', 'Please select the account used for this expense');
       return;
@@ -841,7 +961,6 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     }
 
     const resolvedDate = transactionDate ?? new Date();
-
     const parsedDueDate = type === 'debt' ? dueDate ?? undefined : undefined;
 
     let parsedInterestRate: number | undefined;
@@ -879,6 +998,65 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     const trimmedDescription = description.trim();
     const merchantName =
       type === 'debt' ? (counterparty.trim() || trimmedDescription) : trimmedDescription;
+    const resolvedFromAccount =
+      type === 'debt'
+        ? debtDirection === 'lent'
+          ? fromAccount
+          : ''
+        : type === 'expense' || type === 'transfer'
+          ? fromAccount
+          : '';
+    const resolvedToAccount =
+      type === 'debt'
+        ? debtDirection === 'borrowed'
+          ? toAccount
+          : ''
+        : type === 'income' || type === 'transfer'
+          ? toAccount
+          : '';
+
+    let persistedReceiptImage: string | undefined;
+    if (receiptImage) {
+      try {
+        persistedReceiptImage = await persistReceiptImage(receiptImage);
+      } catch (error) {
+        console.error('Failed to persist receipt image:', error);
+        Alert.alert('Error', 'Failed to save receipt image. Please try again.');
+        return;
+      }
+    }
+
+    if (isEditing && transaction) {
+      const updatedTransaction: Transaction = {
+        ...transaction,
+        amount: numAmount,
+        description: trimmedDescription,
+        type,
+        date: resolvedDate,
+        category,
+        subcategory: type !== 'transfer' ? selectedSubcategory ?? undefined : undefined,
+        merchant: merchantName || undefined,
+        debtDirection: type === 'debt' ? debtDirection : undefined,
+        counterparty: type === 'debt' ? (counterparty.trim() || merchantName || undefined) : undefined,
+        dueDate: type === 'debt' ? parsedDueDate : undefined,
+        interestRate: type === 'debt' ? parsedInterestRate : undefined,
+        debtPayment: type === 'expense' || type === 'income' ? debtPayment : undefined,
+        fromAccount: resolvedFromAccount || undefined,
+        toAccount: resolvedToAccount || undefined,
+        fromAccountId: resolvedFromAccount || undefined,
+        toAccountId: resolvedToAccount || undefined,
+        isRecurring: isRecurring || undefined,
+        recurringFrequency: isRecurring ? recurringFrequency : undefined,
+        recurringEndDate: isRecurring ? parsedRecurringEndDate : undefined,
+        recurringId: isRecurring ? transaction.recurringId : undefined,
+        receiptImage: persistedReceiptImage,
+      };
+
+      updateTransaction(updatedTransaction);
+      handleFinish();
+      return;
+    }
+
     const transactionData: NewTransactionInput = {
       amount: numAmount,
       description: trimmedDescription,
@@ -892,24 +1070,14 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
       dueDate: type === 'debt' ? parsedDueDate : undefined,
       interestRate: type === 'debt' ? parsedInterestRate : undefined,
       debtPayment: type === 'expense' || type === 'income' ? debtPayment : undefined,
-      fromAccount: type === 'expense' || type === 'transfer' ? fromAccount : undefined,
-      toAccount: type === 'income' || type === 'transfer' ? toAccount : undefined,
+      fromAccount: resolvedFromAccount || undefined,
+      toAccount: resolvedToAccount || undefined,
+      fromAccountId: resolvedFromAccount || undefined,
+      toAccountId: resolvedToAccount || undefined,
     };
 
-    if (type === 'debt') {
-      transactionData.fromAccount = debtDirection === 'lent' ? fromAccount : undefined;
-      transactionData.toAccount = debtDirection === 'borrowed' ? toAccount : undefined;
-    }
-
-    // Add receipt image if exists
-    if (receiptImage) {
-      try {
-        transactionData.receiptImage = await persistReceiptImage(receiptImage);
-      } catch (error) {
-        console.error('Failed to persist receipt image:', error);
-        Alert.alert('Error', 'Failed to save receipt image. Please try again.');
-        return;
-      }
+    if (persistedReceiptImage) {
+      transactionData.receiptImage = persistedReceiptImage;
     }
 
     if (isRecurring) {
@@ -925,44 +1093,17 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     if (merchantName && type !== 'transfer') {
       learnMerchantCategory(merchantName, category.id);
     }
-    handleClose();
+    handleFinish();
+  };
+
+  const handleFinish = () => {
+    resetFormState();
+    onSave?.();
+    onClose();
   };
 
   const handleClose = () => {
-    ocrRequestIdRef.current += 1;
-    ocrInFlightRef.current = false;
-    closeSheet();
-    setAccountSheetTarget(null);
-    setSheetMaxHeight(undefined);
-    setAmount('');
-    setDescription('');
-    setTransactionDate(null);
-    setSelectedCategory(null);
-    setSelectedSubcategory(null);
-    setFromAccount('');
-    setToAccount('');
-    setIsRecurring(false);
-    setRecurringFrequency('monthly');
-    setRecurringEndDate(null);
-    setShowTransactionDatePicker(false);
-    setShowDueDatePicker(false);
-    setShowRecurringEndDatePicker(false);
-    setCalculatorDraft('');
-    setReceiptImage(null);
-    setIsScanning(false);
-    setOcrExtracted(false);
-    setOcrDetections(createEmptyOcrDetections());
-    setShowImageActions(false);
-    setShowUploadMenu(false);
-    setShowQuickAccountModal(false);
-    setShowRepeatInstallmentOptions(false);
-    setDebtDirection('borrowed');
-    setCounterparty('');
-    setDueDate(null);
-    setInterestRate('');
-    setDebtPayment(false);
-    setAiSuggestion(null);
-    setSheetMaxHeight(undefined);
+    resetFormState();
     onClose();
   };
 
@@ -971,6 +1112,8 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     setAccountSheetTarget(null);
     setSheetMaxHeight(undefined);
   };
+
+  const shouldUseCalculatorSheet = Platform.OS === 'ios';
 
   const openCalculatorSheet = () => {
     Keyboard.dismiss();
@@ -983,8 +1126,19 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
     closeActiveSheet();
   };
 
+  const handleAmountInputChange = useCallback((nextValue: string) => {
+    const sanitized = sanitizeAmountInput(nextValue);
+    setAmount(sanitized);
+    if (activeSheet !== 'calculator') {
+      setCalculatorDraft(sanitized);
+    }
+  }, [activeSheet]);
+
   const amountEntryValue = (activeSheet === 'calculator' ? calculatorDraft : amount).replace(/\*/g, 'x');
-  const amountFieldFontSize = useMemo(() => getAdaptiveAmountFontSize(amountEntryValue || '0', 19, 14), [amountEntryValue]);
+  const amountFieldFontSize = useMemo(
+    () => getAdaptiveAmountFontSize(amountEntryValue || '0', Platform.OS === 'android' ? 16 : 17, Platform.OS === 'android' ? 12 : 13),
+    [amountEntryValue]
+  );
 
   const openAnchoredSheet = (
     sheetName: 'category' | 'accounts',
@@ -1499,11 +1653,13 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
                 { borderBottomColor: activeSheet === 'calculator' ? theme.colors.primary : theme.colors.border, color: amountEntryValue ? theme.colors.text : theme.colors.textSecondary },
               ]}
               value={amountEntryValue}
+              onChangeText={handleAmountInputChange}
               placeholderTextColor={theme.colors.textSecondary}
-              showSoftInputOnFocus={false}
-              caretHidden
-              contextMenuHidden
-              onPressIn={openCalculatorSheet}
+              keyboardType="decimal-pad"
+              showSoftInputOnFocus={!shouldUseCalculatorSheet}
+              caretHidden={shouldUseCalculatorSheet}
+              contextMenuHidden={shouldUseCalculatorSheet}
+              onPressIn={shouldUseCalculatorSheet ? openCalculatorSheet : undefined}
             />
           </View>
 
@@ -1609,7 +1765,7 @@ export function AddTransactionModal({ visible, onClose, initialType }: AddTransa
 
           <View style={[styles.actionRow, { borderTopColor: theme.colors.border }]}>
             <TouchableOpacity style={[styles.submitButton, { backgroundColor: selectedTypeOption.accent }]} onPress={handleSubmit}>
-              <Text style={styles.submitButtonText}>{t('addTransaction.addButton')}</Text>
+              <Text style={styles.submitButtonText}>{submitButtonLabel}</Text>
             </TouchableOpacity>
             {type !== 'transfer' ? (
               <View style={styles.footerCameraAnchor}>
@@ -1834,26 +1990,26 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   inputGroup: {
-    marginBottom: 18,
+    marginBottom: 14,
     position: 'relative',
   },
   compactToggleGroup: {
     marginBottom: 12,
   },
   label: {
-    fontSize: 15,
+    fontSize: Platform.OS === 'android' ? 13 : 14,
     fontWeight: '600',
-    marginBottom: 6,
+    marginBottom: Platform.OS === 'android' ? 4 : 5,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   input: {
-    minHeight: 36,
+    minHeight: Platform.OS === 'android' ? 30 : 32,
     paddingHorizontal: 0,
-    paddingTop: 4,
-    paddingBottom: 8,
-    fontSize: 15,
+    paddingTop: Platform.OS === 'android' ? 1 : 2,
+    paddingBottom: Platform.OS === 'android' ? 5 : 6,
+    fontSize: Platform.OS === 'android' ? 13 : 14,
     borderBottomWidth: 1,
   },
   inlineDateField: {
@@ -1911,19 +2067,19 @@ const styles = StyleSheet.create({
     textAlign: 'right',
   },
   amountField: {
-    minHeight: 34,
+    minHeight: Platform.OS === 'android' ? 28 : 30,
     paddingHorizontal: 0,
     paddingTop: 1,
-    paddingBottom: 5,
+    paddingBottom: Platform.OS === 'android' ? 3 : 4,
     borderBottomWidth: 1,
-    fontSize: 18,
+    fontSize: Platform.OS === 'android' ? 15 : 16,
     fontWeight: '600',
     textAlign: 'right',
   },
   selectorField: {
     borderRadius: 12,
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingVertical: Platform.OS === 'android' ? 9 : 11,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',

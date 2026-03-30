@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -261,6 +261,7 @@ export default function AccountsScreen() {
 
   const groupedAccounts = useMemo(() => {
     const groupOrder = new Map(ACCOUNT_TYPE_GROUPS.map((group, index) => [group.key, index]));
+    const groupLabels = new Map(ACCOUNT_TYPE_GROUPS.map((group) => [group.key, group.label]));
     const directionMultiplier = sortDirection === 'asc' ? 1 : -1;
     const compareNames = (left: Account, right: Account) => left.name.localeCompare(right.name);
     const compareTypeLabels = (left: Account, right: Account) =>
@@ -274,23 +275,23 @@ export default function AccountsScreen() {
       const rightDisplayBalance = getDisplayAccountBalance(right.balance, rightIsLiability);
 
       if (!leftIsLiability && !rightIsLiability) {
-        const positiveDelta = Number(rightDisplayBalance >= 0) - Number(leftDisplayBalance >= 0);
+        const positiveDelta = Number(leftDisplayBalance >= 0) - Number(rightDisplayBalance >= 0);
         if (positiveDelta !== 0) {
           return positiveDelta;
         }
 
-        const displayDelta = rightDisplayBalance - leftDisplayBalance;
+        const displayDelta = leftDisplayBalance - rightDisplayBalance;
         if (displayDelta !== 0) {
           return displayDelta;
         }
       }
 
-      const magnitudeDelta = Math.abs(rightDisplayBalance) - Math.abs(leftDisplayBalance);
+      const magnitudeDelta = Math.abs(leftDisplayBalance) - Math.abs(rightDisplayBalance);
       if (magnitudeDelta !== 0) {
         return magnitudeDelta;
       }
 
-      return rightDisplayBalance - leftDisplayBalance;
+      return leftDisplayBalance - rightDisplayBalance;
     };
     const compareBySelectedSort = (left: Account, right: Account) => {
       switch (sortMode) {
@@ -299,7 +300,7 @@ export default function AccountsScreen() {
         case 'balance':
           return compareBalances(left, right);
         case 'newest':
-          return right.createdAt.getTime() - left.createdAt.getTime();
+          return left.createdAt.getTime() - right.createdAt.getTime();
         case 'name':
         default:
           return compareNames(left, right);
@@ -355,28 +356,49 @@ export default function AccountsScreen() {
           (latest, account) => Math.max(latest, account.createdAt.getTime()),
           0
         ),
+        hasActiveAccounts: accountsForGroup.some((account) => account.isActive),
+        leadingAccount: accountsForGroup[0] ?? null,
       };
     }).filter((group) => group.accounts.length > 0);
 
     const sortedSections = [...sections].sort((left, right) => {
+      const activeDelta = Number(right.hasActiveAccounts) - Number(left.hasActiveAccounts);
+      if (activeDelta !== 0) {
+        return activeDelta;
+      }
+
+      if (left.leadingAccount && right.leadingAccount) {
+        const leadingDelta = compareBySelectedSort(left.leadingAccount, right.leadingAccount);
+        if (leadingDelta !== 0) {
+          return leadingDelta * directionMultiplier;
+        }
+      }
+
       if (sortMode === 'balance') {
-        const totalDelta = Math.abs(right.total) - Math.abs(left.total);
+        const totalDelta = Math.abs(left.total) - Math.abs(right.total);
         if (totalDelta !== 0) {
           return totalDelta * directionMultiplier;
         }
       }
 
       if (sortMode === 'newest') {
-        const newestDelta = right.newestCreatedAt - left.newestCreatedAt;
+        const newestDelta = left.newestCreatedAt - right.newestCreatedAt;
         if (newestDelta !== 0) {
           return newestDelta * directionMultiplier;
+        }
+      }
+
+      if (sortMode === 'name' || sortMode === 'type') {
+        const groupLabelDelta = (groupLabels.get(left.key) ?? left.key).localeCompare(groupLabels.get(right.key) ?? right.key);
+        if (groupLabelDelta !== 0) {
+          return groupLabelDelta * directionMultiplier;
         }
       }
 
       return (groupOrder.get(left.key) ?? 99) - (groupOrder.get(right.key) ?? 99);
     });
 
-    return sortedSections.map(({ newestCreatedAt, ...group }) => group);
+    return sortedSections.map(({ newestCreatedAt, hasActiveAccounts, leadingAccount, ...group }) => group);
   }, [accountTypeDefinitions, accounts, sortDirection, sortMode]);
 
   const orderedAccounts = useMemo(
@@ -536,21 +558,21 @@ export default function AccountsScreen() {
     switch (sortMode) {
       case 'type':
         return sortDirection === 'asc'
-          ? 'Keeps account families together, then orders each family by account type from A to Z.'
-          : 'Keeps account families together, then orders each family by account type from Z to A.';
+          ? 'Active accounts stay first, then sections and accounts sort by account type from A to Z.'
+          : 'Active accounts stay first, then sections and accounts sort by account type from Z to A.';
       case 'balance':
         return sortDirection === 'asc'
-          ? 'Smaller balances rise first, and smaller account families move to the top.'
-          : 'Largest balances rise first, and the biggest account families move to the top.';
+          ? 'Active accounts stay first, then smaller balances rise before larger ones across the whole list.'
+          : 'Active accounts stay first, then larger balances rise before smaller ones across the whole list.';
       case 'newest':
         return sortDirection === 'asc'
-          ? 'Older accounts rise first, and families with older accounts move higher too.'
-          : 'Recently created accounts rise first, and families with newer accounts move higher too.';
+          ? 'Active accounts stay first, then older accounts appear before newer ones across the whole list.'
+          : 'Active accounts stay first, then newer accounts appear before older ones across the whole list.';
       case 'name':
       default:
         return sortDirection === 'asc'
-          ? 'Accounts stay grouped by family and are ordered alphabetically from A to Z inside each section.'
-          : 'Accounts stay grouped by family and are ordered alphabetically from Z to A inside each section.';
+          ? 'Active accounts stay first, then sections and account names sort from A to Z.'
+          : 'Active accounts stay first, then sections and account names sort from Z to A.';
     }
   }, [sortDirection, sortMode]);
 
@@ -1042,85 +1064,93 @@ export default function AccountsScreen() {
       <View style={[styles.actionPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
         <View style={styles.actionPanelHeader}>
           <View style={styles.actionPanelTitleWrap}>
-            <Text style={[styles.actionPanelEyebrow, { color: theme.colors.primary }]}>Workspace</Text>
             <Text style={[styles.actionPanelTitle, { color: theme.colors.text }]}>Manage accounts</Text>
-            <Text style={[styles.actionPanelMeta, { color: theme.colors.textSecondary }]}>Open new accounts, keep your account types organized, and export the full list when needed.</Text>
+            <Text style={[styles.actionPanelMeta, { color: theme.colors.textSecondary }]}> 
+              {orderedAccounts.length} tracked | {activeAccounts.length} visible
+              {hiddenAccountsCount > 0 ? ` | ${hiddenAccountsCount} hidden` : ''}
+            </Text>
           </View>
+        </View>
+        <View style={styles.actionPanelTagRow}>
           <View
             style={[
-              styles.actionPanelBadge,
+              styles.actionPanelTag,
               {
                 backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
                 borderColor: theme.colors.border,
               },
             ]}
           >
-            <Text style={[styles.actionPanelBadgeValue, { color: theme.colors.text }]}>{orderedAccounts.length}</Text>
-            <Text style={[styles.actionPanelBadgeLabel, { color: theme.colors.textSecondary }]}>tracked</Text>
+            <Text style={[styles.actionPanelTagText, { color: theme.colors.textSecondary }]}>Sort keeps visible accounts first</Text>
           </View>
+          {customAccountTypeCount > 0 ? (
+            <View
+              style={[
+                styles.actionPanelTag,
+                {
+                  backgroundColor: withAlphaColor(theme.colors.primary, theme.isDark ? '22' : '12'),
+                  borderColor: withAlphaColor(theme.colors.primary, '38'),
+                },
+              ]}
+            >
+              <Text style={[styles.actionPanelTagText, { color: theme.colors.primary }]}>{customAccountTypeCount} custom type{customAccountTypeCount === 1 ? '' : 's'}</Text>
+            </View>
+          ) : null}
+          {debtPortfolioSummary.trackedPositions > 0 ? (
+            <View
+              style={[
+                styles.actionPanelTag,
+                {
+                  backgroundColor: withAlphaColor(theme.colors.error, theme.isDark ? '22' : '10'),
+                  borderColor: withAlphaColor(theme.colors.error, '34'),
+                },
+              ]}
+            >
+              <Text style={[styles.actionPanelTagText, { color: theme.colors.error }]}>{debtPortfolioSummary.trackedPositions} debt record{debtPortfolioSummary.trackedPositions === 1 ? '' : 's'}</Text>
+            </View>
+          ) : null}
         </View>
         <View style={styles.actionButtonsRow}>
           <TouchableOpacity style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]} onPress={() => openCreateAccount()}>
             <Plus size={18} color="white" />
             <View style={styles.actionButtonTextWrap}>
               <Text style={styles.primaryButtonText}>Add Account</Text>
-              <Text style={styles.primaryButtonSubtext}>Checking, cash, credit, or investment</Text>
+              <Text style={styles.primaryButtonSubtext}>Cash, bank, debt, or investment</Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Export accounts as CSV"
+            activeOpacity={0.85}
+            style={[
+              styles.secondaryButton,
+              {
+                backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+                borderColor: theme.colors.border,
+                opacity: isExportingAccounts || orderedAccounts.length === 0 ? 0.62 : 1,
+              },
+            ]}
+            onPress={handleExportAccountsCsv}
+            disabled={isExportingAccounts || orderedAccounts.length === 0}
+          >
+            <Download
+              size={18}
+              color={
+                isExportingAccounts || orderedAccounts.length === 0
+                  ? theme.colors.textSecondary
+                  : theme.colors.primary
+              }
+            />
+            <View style={styles.actionButtonTextWrap}>
+              <Text style={[styles.secondaryButtonText, { color: theme.colors.text }]}> 
+                {isExportingAccounts ? 'Preparing CSV...' : 'Export CSV'}
+              </Text>
+              <Text style={[styles.secondaryButtonSubtext, { color: theme.colors.textSecondary }]}> 
+                {orderedAccounts.length === 0 ? 'Need at least one account' : 'Download or share your list'}
+              </Text>
             </View>
           </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel="Export accounts as CSV"
-          activeOpacity={0.85}
-          style={[
-            styles.exportButton,
-            {
-              backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
-              borderColor: theme.colors.border,
-              opacity: isExportingAccounts || orderedAccounts.length === 0 ? 0.62 : 1,
-            },
-          ]}
-          onPress={handleExportAccountsCsv}
-          disabled={isExportingAccounts || orderedAccounts.length === 0}
-        >
-          <Download
-            size={18}
-            color={
-              isExportingAccounts || orderedAccounts.length === 0
-                ? theme.colors.textSecondary
-                : theme.colors.primary
-            }
-          />
-          <View style={styles.actionButtonTextWrap}>
-            <Text style={[styles.exportButtonText, { color: theme.colors.text }]}>
-              {isExportingAccounts ? 'Preparing CSV...' : 'Export Accounts CSV'}
-            </Text>
-            <Text style={[styles.exportButtonSubtext, { color: theme.colors.textSecondary }]}>
-              {orderedAccounts.length === 0
-                ? 'Add at least one account before exporting.'
-                : 'Download or share your account list as a CSV file.'}
-            </Text>
-          </View>
-        </TouchableOpacity>
-        <View style={styles.managementStatsRow}>
-          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.managementStatValue, { color: theme.colors.text }]}>{activeAccounts.length}</Text>
-            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Visible</Text>
-          </View>
-          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.managementStatValue, { color: theme.colors.primary }]}>{customAccountTypeCount}</Text>
-            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Custom Types</Text>
-          </View>
-          <View style={[styles.managementStatCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}> 
-            <Text style={[styles.managementStatValue, { color: theme.colors.error }]}>{debtPortfolioSummary.trackedPositions}</Text>
-            <Text style={[styles.managementStatLabel, { color: theme.colors.textSecondary }]}>Debt Records</Text>
-          </View>
-        </View>
-        <Text style={[styles.actionNote, { color: theme.colors.textSecondary }]}> 
-          {hiddenAccountsCount > 0
-            ? `${hiddenAccountsCount} account${hiddenAccountsCount === 1 ? '' : 's'} hidden from totals. Sort keeps visible accounts first.`
-            : 'All accounts are currently included in totals and visible accounts always stay first.'}
-        </Text>
       </View>
 
       {orderedAccounts.length > 0 ? (
@@ -1129,7 +1159,12 @@ export default function AccountsScreen() {
             <Text style={[styles.sortPanelTitle, { color: theme.colors.text }]}>Organize Accounts</Text>
             <Text style={[styles.sortPanelMeta, { color: theme.colors.textSecondary }]}>Active accounts stay first</Text>
           </View>
-          <View style={styles.sortChipsRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.sortChipsScroller}
+            contentContainerStyle={styles.sortChipsRow}
+          >
             {ACCOUNT_SORT_OPTIONS.map((option) => {
               const isSelected = sortMode === option.key;
               return (
@@ -1165,8 +1200,7 @@ export default function AccountsScreen() {
                 </TouchableOpacity>
               );
             })}
-          </View>
-          <View style={[styles.sortChipsRow, { marginTop: 10 }]}> 
+            
             {ACCOUNT_SORT_DIRECTIONS.map((direction) => {
               const isSelected = sortDirection === direction.key;
               return (
@@ -1197,37 +1231,12 @@ export default function AccountsScreen() {
                 </TouchableOpacity>
               );
             })}
-          </View>
-          <View style={styles.sortSummaryRow}>
-            <View
-              style={[
-                styles.sortSummaryPill,
-                {
-                  backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
-                  borderColor: theme.colors.border,
-                },
-              ]}
-            >
-              <Text style={[styles.sortSummaryPillLabel, { color: theme.colors.textSecondary }]}>Current sort</Text>
-              <Text style={[styles.sortSummaryPillValue, { color: theme.colors.text }]}> 
-                {(ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'Name') + ' / ' + sortDirectionLabel}
-              </Text>
-            </View>
-            <View
-              style={[
-                styles.sortSummaryPill,
-                {
-                  backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
-                  borderColor: theme.colors.border,
-                },
-              ]}
-            >
-              <Text style={[styles.sortSummaryPillLabel, { color: theme.colors.textSecondary }]}>How it works</Text>
-              <Text style={[styles.sortSummaryPillValue, { color: theme.colors.text }]} numberOfLines={2}>
-                {sortModeDescription}
-              </Text>
-            </View>
-          </View>
+          </ScrollView>
+          <Text style={[styles.sortPanelHint, { color: theme.colors.textSecondary }]}> 
+            {(ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'Name') + ' / ' + sortDirectionLabel}
+            {' | '}
+            {sortModeDescription}
+          </Text>
         </View>
       ) : null}
 
@@ -1245,16 +1254,14 @@ export default function AccountsScreen() {
             <View key={group.key} style={[styles.groupPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
               <View style={styles.groupPanelHeader}>
                 <View style={styles.groupPanelCopy}>
-                  <Text style={[styles.groupPanelEyebrow, { color: theme.colors.textSecondary }]}>{group.label}</Text>
-                  <Text style={[styles.groupPanelTitle, { color: theme.colors.text }]}>
+                  <Text style={[styles.groupPanelTitle, { color: theme.colors.text }]}>{group.label}</Text>
+                  <Text style={[styles.groupPanelMeta, { color: theme.colors.textSecondary }]}> 
                     {group.accounts.length} account{group.accounts.length === 1 ? '' : 's'}
-                  </Text>
-                  <Text style={[styles.groupPanelMeta, { color: theme.colors.textSecondary }]}>
-                    {group.isLiability
-                      ? 'Credit and borrowing balances are shown as liabilities.'
-                      : group.accounts.some((account) => !account.isActive)
-                        ? `${group.accounts.filter((account) => !account.isActive).length} hidden from totals`
-                        : 'All accounts visible in totals'}
+                    {group.accounts.some((account) => !account.isActive)
+                      ? ` | ${group.accounts.filter((account) => !account.isActive).length} hidden`
+                      : group.isLiability
+                        ? ' | Liability group'
+                        : ' | Visible in totals'}
                   </Text>
                 </View>
                 <View
@@ -1320,9 +1327,6 @@ export default function AccountsScreen() {
                             </View>
                             <View style={styles.accountMeta}>
                               <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
-                              <Text style={[styles.accountDescription, { color: theme.colors.textSecondary }]}>
-                                {typeMeta.description ?? 'Track this account balance over time.'}
-                              </Text>
                               <View style={styles.accountTagRow}>
                                 <View
                                   style={[
@@ -1952,60 +1956,48 @@ const styles = StyleSheet.create({
   actionPanelHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
     gap: 12,
   },
   actionPanelTitleWrap: {
     flex: 1,
   },
-  actionPanelEyebrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
   actionPanelTitle: {
     fontSize: 20,
     fontWeight: '800',
-    marginTop: 6,
   },
   actionPanelMeta: {
     fontSize: 13,
     lineHeight: 19,
     marginTop: 6,
-    maxWidth: 320,
   },
-  actionPanelBadge: {
-    minWidth: 82,
-    borderRadius: 18,
+  actionPanelTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  actionPanelTag: {
+    borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
-  actionPanelBadgeValue: {
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  actionPanelBadgeLabel: {
+  actionPanelTagText: {
     fontSize: 11,
     fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 2,
   },
   actionButtonsRow: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 16,
+    marginTop: 14,
   },
   primaryButton: {
     flex: 1,
     borderRadius: 18,
     padding: 14,
-    minHeight: 92,
+    minHeight: 78,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 10,
   },
   primaryButtonText: {
@@ -2023,9 +2015,9 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 18,
     padding: 14,
-    minHeight: 92,
+    minHeight: 78,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 10,
     borderWidth: 1,
   },
@@ -2038,57 +2030,8 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginTop: 4,
   },
-  exportButton: {
-    marginTop: 12,
-    borderRadius: 18,
-    padding: 14,
-    minHeight: 84,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    borderWidth: 1,
-  },
-  exportButtonText: {
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  exportButtonSubtext: {
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 4,
-  },
   actionButtonTextWrap: {
     flex: 1,
-  },
-  actionNote: {
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 12,
-  },
-  managementStatsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-  managementStatCard: {
-    flex: 1,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-  },
-  managementStatValue: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  managementStatLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 4,
-    textAlign: 'center',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
   },
   sortPanel: {
     marginHorizontal: 16,
@@ -2113,35 +2056,32 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  sortChipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
+  sortChipsScroller: {
     marginTop: 14,
   },
-  sortSummaryRow: {
+  sortChipsRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 12,
+    paddingRight: 4,
   },
-  sortSummaryPill: {
-    flex: 1,
-    borderRadius: 16,
+  sortDivider: {
+    borderRadius: 999,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  sortSummaryPillLabel: {
-    fontSize: 10,
-    fontWeight: '700',
+  sortDividerText: {
+    fontSize: 11,
+    fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
   },
-  sortSummaryPillValue: {
+  sortPanelHint: {
     fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 17,
-    marginTop: 5,
+    lineHeight: 18,
+    marginTop: 12,
   },
   sortChip: {
     minWidth: 72,
@@ -2196,28 +2136,21 @@ const styles = StyleSheet.create({
   groupPanelHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   groupPanelCopy: {
     flex: 1,
   },
-  groupPanelEyebrow: {
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.7,
-  },
   groupPanelTitle: {
-    fontSize: 20,
+    fontSize: 17,
     fontWeight: '800',
-    marginTop: 4,
   },
   groupPanelMeta: {
     fontSize: 12,
     lineHeight: 18,
-    marginTop: 6,
+    marginTop: 4,
   },
   groupPanelTotalWrap: {
     minWidth: 108,
@@ -2287,17 +2220,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '800',
   },
-  accountDescription: {
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 4,
-  },
   accountTagRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8,
-    marginTop: 10,
+    marginTop: 6,
   },
   accountTypeChip: {
     borderRadius: 999,
@@ -2612,6 +2540,7 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 });
+
 
 
 

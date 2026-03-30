@@ -97,6 +97,20 @@ function buildMonthWindow(months: number, referenceDate: Date): string[] {
   });
 }
 
+function buildMonthRangeWindow(startDate: Date, endDate: Date): string[] {
+  const start = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+  const end = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+  const monthCount = Math.max(
+    1,
+    (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth()) + 1
+  );
+
+  return Array.from({ length: monthCount }, (_, index) => {
+    const date = new Date(start.getFullYear(), start.getMonth() + index, 1);
+    return monthKey(date);
+  });
+}
+
 function parseMonthKey(key: string): { year: number; month: number } {
   const [yearPart, monthPart] = key.split('-');
   return {
@@ -271,7 +285,31 @@ export function computeNetWorthProgress(
   const normalizedMonths = Number.isFinite(months) ? Math.floor(months) : 6;
   const safeMonths = Math.max(1, Math.min(24, normalizedMonths || 1));
   const activeAccounts = accounts.filter((account) => account.isActive !== false);
-  const monthKeys = buildMonthWindow(safeMonths, referenceDate);
+  const defaultWindowStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth() - (safeMonths - 1), 1);
+
+  const earliestTransactionDate = transactions.length > 0
+    ? transactions.reduce(
+        (earliest, transaction) => (transaction.date.getTime() < earliest.getTime() ? transaction.date : earliest),
+        transactions[0].date
+      )
+    : null;
+  const earliestAccountDate = activeAccounts.length > 0
+    ? activeAccounts.reduce(
+        (earliest, account) => (account.createdAt.getTime() < earliest.getTime() ? account.createdAt : earliest),
+        activeAccounts[0].createdAt
+      )
+    : null;
+
+  const candidateStartTimes = [earliestTransactionDate?.getTime(), earliestAccountDate?.getTime()].filter(
+    (value): value is number => typeof value === 'number' && Number.isFinite(value)
+  );
+  const firstRecordedDate = candidateStartTimes.length > 0 ? new Date(Math.min(...candidateStartTimes)) : defaultWindowStart;
+  const firstRecordedMonthStart = new Date(firstRecordedDate.getFullYear(), firstRecordedDate.getMonth(), 1);
+  const effectiveWindowStart = firstRecordedMonthStart.getTime() > defaultWindowStart.getTime()
+    ? firstRecordedMonthStart
+    : defaultWindowStart;
+
+  const monthKeys = buildMonthRangeWindow(effectiveWindowStart, referenceDate);
   const labels = monthKeys.map((key) => {
     const { year, month } = parseMonthKey(key);
     return formatShortMonthLabel(new Date(year, month - 1, 1));

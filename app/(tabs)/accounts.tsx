@@ -18,7 +18,7 @@ import * as Sharing from 'expo-sharing';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { BarChart3, ChevronLeft, ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { FinanceGroupedBarChart, FinanceLineChart } from '@/components/charts/FinanceCharts';
+import { AccountModalSkiaBoundary } from '@/components/charts/AccountModalSkiaBoundary';
 import { Account, AccountTypeDefinition, AccountTypeGroup, Transaction } from '@/types/transaction';
 import {
   ACCOUNT_TYPE_GROUPS,
@@ -34,8 +34,7 @@ import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { exportAccountsToCsv } from '@/lib/account-csv';
 import { formatDateTimeWithWeekday, formatDateWithWeekday } from '@/utils/date';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
-import { CategoryDistributionPanel, type DistributionSection } from '@/components/analytics/CategoryDistributionPanel';
-import { computeCategoryBreakdown, computeCategoryDistribution, computeNetWorthProgress } from '@/src/domain/analytics';
+import { computeNetWorthProgress } from '@/src/domain/analytics';
 
 type AccountSortMode = 'name' | 'type' | 'balance' | 'newest';
 type AccountSortDirection = 'asc' | 'desc';
@@ -594,31 +593,6 @@ export default function AccountsScreen() {
     () => roundCurrency(accountAnalyticsIncome - accountAnalyticsExpenses),
     [accountAnalyticsExpenses, accountAnalyticsIncome]
   );
-  const accountAnalyticsExpenseBreakdown = useMemo(
-    () => computeCategoryBreakdown(accountAnalyticsTransactions, 'expense'),
-    [accountAnalyticsTransactions]
-  );
-  const accountAnalyticsIncomeBreakdown = useMemo(
-    () => computeCategoryBreakdown(accountAnalyticsTransactions, 'income'),
-    [accountAnalyticsTransactions]
-  );
-  const accountAnalyticsSections = useMemo<DistributionSection[]>(
-    () => [
-      {
-        key: 'expense',
-        label: 'Expenses',
-        total: accountAnalyticsExpenses,
-        items: computeCategoryDistribution(accountAnalyticsExpenseBreakdown, 5),
-      },
-      {
-        key: 'income',
-        label: 'Income',
-        total: accountAnalyticsIncome,
-        items: computeCategoryDistribution(accountAnalyticsIncomeBreakdown, 5),
-      },
-    ],
-    [accountAnalyticsExpenseBreakdown, accountAnalyticsExpenses, accountAnalyticsIncome, accountAnalyticsIncomeBreakdown]
-  );
   const accountAnalyticsMonthLabel = useMemo(
     () => formatMonthYearLabel(analyticsMonthCursor),
     [analyticsMonthCursor]
@@ -628,15 +602,7 @@ export default function AccountsScreen() {
     () => computeNetWorthProgress(accounts, transactions, 6, accountAnalyticsMonthEnd),
     [accountAnalyticsMonthEnd, accounts, transactions]
   );
-  const accountAnalyticsNetWorthPoints = useMemo(
-    () =>
-      accountAnalyticsTrend.points.map((point, index) => ({
-        x: index + 1,
-        y: point.netWorth,
-        label: point.label,
-      })),
-    [accountAnalyticsTrend.points]
-  );
+
   const accountAnalyticsIncomeExpenseSeries = useMemo(() => {
     const months = accountAnalyticsTrend.points.map((point) => point.month);
     const labels = accountAnalyticsTrend.points.map((point) => point.label);
@@ -666,108 +632,21 @@ export default function AccountsScreen() {
       };
     });
   }, [accountAnalyticsTrend.points, transactions]);
-  const accountAnalyticsNetWorthDomain = useMemo(() => {
-    const values = accountAnalyticsNetWorthPoints.map((point) => point.y);
-    if (values.length === 0) {
-      return [-1, 1] as [number, number];
-    }
 
-    const min = Math.min(...values, 0);
-    const max = Math.max(...values, 0);
-    const span = Math.max(1, max - min);
-    const padding = Math.max(span * 0.14, 1);
-    return [roundCurrency(min - padding), roundCurrency(max + padding)] as [number, number];
-  }, [accountAnalyticsNetWorthPoints]);
-  const accountAnalyticsBarDomain = useMemo(() => {
-    const values = accountAnalyticsIncomeExpenseSeries.flatMap((entry) => [entry.income, entry.expenses]);
-    const max = Math.max(1, ...values);
-    return [0, roundCurrency(max * 1.18)] as [number, number];
-  }, [accountAnalyticsIncomeExpenseSeries]);
-  const accountAnalyticsLineTicks = useMemo(
-    () => accountAnalyticsNetWorthPoints.map((point, index) => ({ index, label: point.label })),
-    [accountAnalyticsNetWorthPoints]
-  );
-  const accountAnalyticsLineSeries = useMemo(
-    () => [
-      {
-        key: 'balance',
-        values: accountAnalyticsNetWorthPoints.map((point) => point.y),
-        color: '#EF6B63',
-        strokeWidth: 2.4,
-        showDots: true,
-        dotRadius: 4,
-        dotFill: '#EF6B63',
-        dotStroke: theme.colors.surface,
-        activeIndex:
-          accountAnalyticsFocusedPointIndex ??
-          (accountAnalyticsNetWorthPoints.length > 0 ? accountAnalyticsNetWorthPoints.length - 1 : null),
-        activeRadius: 4.6,
-        activeFill: '#EF6B63',
-        activeStroke: theme.colors.surface,
-      },
-    ],
-    [accountAnalyticsFocusedPointIndex, accountAnalyticsNetWorthPoints, theme.colors.surface]
-  );
-  const accountAnalyticsFocusedPoint = useMemo(
-    () =>
-      accountAnalyticsFocusedPointIndex !== null && accountAnalyticsTrend.points[accountAnalyticsFocusedPointIndex]
-        ? accountAnalyticsTrend.points[accountAnalyticsFocusedPointIndex]
-        : accountAnalyticsTrend.points[accountAnalyticsTrend.points.length - 1] ?? null,
-    [accountAnalyticsFocusedPointIndex, accountAnalyticsTrend.points]
-  );
-  const accountAnalyticsBarEntries = useMemo(
-    () =>
-      accountAnalyticsIncomeExpenseSeries.map((entry) => ({
-        key: String(entry.x),
-        label: entry.label,
-        income: entry.income,
-        expenses: entry.expenses,
-      })),
+  const accountAnalyticsSkiaData = useMemo(
+    () => ({
+      months: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.label),
+      income: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.income),
+      expenses: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.expenses),
+    }),
     [accountAnalyticsIncomeExpenseSeries]
   );
-  const accountAnalyticsFocusedBucket = useMemo(
-    () =>
-      accountAnalyticsBarEntries.find((entry) => entry.key === accountAnalyticsFocusedBucketKey) ??
-      accountAnalyticsBarEntries.find((entry) => entry.income > 0 || entry.expenses > 0) ??
-      accountAnalyticsBarEntries[accountAnalyticsBarEntries.length - 1] ??
-      null,
-    [accountAnalyticsBarEntries, accountAnalyticsFocusedBucketKey]
-  );
 
-  useEffect(() => {
-    setAccountAnalyticsFocusedBucketKey((current) => {
-      if (accountAnalyticsBarEntries.length === 0) {
-        return null;
-      }
-      if (current && accountAnalyticsBarEntries.some((entry) => entry.key === current)) {
-        return current;
-      }
-      return (
-        accountAnalyticsBarEntries.find((entry) => entry.income > 0 || entry.expenses > 0)?.key ??
-        accountAnalyticsBarEntries[accountAnalyticsBarEntries.length - 1]?.key ??
-        null
-      );
-    });
-  }, [accountAnalyticsBarEntries]);
-
-  useEffect(() => {
-    setAccountAnalyticsFocusedPointIndex((current) => {
-      if (accountAnalyticsTrend.points.length === 0) {
-        return null;
-      }
-      if (current !== null && accountAnalyticsTrend.points[current]) {
-        return current;
-      }
-      return accountAnalyticsTrend.points.length - 1;
-    });
-  }, [accountAnalyticsTrend.points]);
-  const accountAnalyticsChartWidth = useMemo(
-    () => Math.max(screenWidth - 48, 280),
-    [screenWidth]
-  );
   const accountAnalyticsHasData = useMemo(
-    () => accountAnalyticsTrend.points.length > 0 || accountAnalyticsSections.some((section) => section.items.length > 0),
-    [accountAnalyticsSections, accountAnalyticsTrend.points.length]
+    () =>
+      accountAnalyticsSkiaData.months.length > 0 &&
+      (accountAnalyticsSkiaData.income.some((value) => value > 0) || accountAnalyticsSkiaData.expenses.some((value) => value > 0)),
+    [accountAnalyticsSkiaData]
   );
 
   const heroGradientColors = useMemo<readonly [string, string, string]>(
@@ -1792,87 +1671,13 @@ export default function AccountsScreen() {
             <ScrollView style={styles.analyticsModalScroll} contentContainerStyle={styles.analyticsModalScrollContent} showsVerticalScrollIndicator={false}>
               <View style={[styles.analyticsPanelCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
                 <Text style={[styles.analyticsMiniEyebrow, { color: theme.colors.textSecondary }]}>Balance</Text>
-                <AdaptiveAmountText style={[styles.analyticsHeadlineValue, { color: theme.colors.text }]} minFontSize={18} value={formatCurrency(accountAnalyticsTrend.currentNetWorth)} />
-                <View style={[styles.analyticsChartCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-                  {accountAnalyticsFocusedPoint ? (
-                    <View
-                      style={[
-                        styles.analyticsFocusPill,
-                        {
-                          backgroundColor: theme.isDark ? theme.colors.surface : '#FFFFFF',
-                          borderColor: theme.colors.border,
-                        },
-                      ]}
-                    >
-                      <Text style={[styles.analyticsFocusTitle, { color: theme.colors.text }]}>
-                        {accountAnalyticsFocusedPoint.label}
-                      </Text>
-                      <View style={styles.analyticsFocusMetrics}>
-                        <Text style={[styles.analyticsFocusIncome, { color: '#EF6B63' }]}>Balance {formatCurrency(accountAnalyticsFocusedPoint.netWorth)}</Text>
-                      </View>
-                    </View>
-                  ) : null}
-                  <FinanceLineChart
-                    width={accountAnalyticsChartWidth}
-                    height={220}
-                    domain={accountAnalyticsNetWorthDomain}
-                    ticks={accountAnalyticsLineTicks}
-                    series={accountAnalyticsLineSeries}
-                    gridColor={theme.colors.border}
-                    labelColor={theme.colors.textSecondary}
-                    zeroLineColor={theme.colors.border}
-                    padding={{ top: 18, bottom: 40, left: 40, right: 16 }}
-                    onSelectIndex={setAccountAnalyticsFocusedPointIndex}
-                  />
-                </View>
-
-                <View style={[styles.analyticsChartCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
-                  {accountAnalyticsFocusedBucket ? (
-                    <View
-                      style={[
-                        styles.analyticsFocusPill,
-                        {
-                          backgroundColor: theme.isDark ? theme.colors.surface : '#FFFFFF',
-                          borderColor: theme.colors.border,
-                        },
-                      ]}
-                    >
-                      <Text style={[styles.analyticsFocusTitle, { color: theme.colors.text }]}>
-                        {accountAnalyticsFocusedBucket.label}
-                      </Text>
-                      <View style={styles.analyticsFocusMetrics}>
-                        <Text style={[styles.analyticsFocusIncome, { color: '#2F80ED' }]}>Income {formatCurrency(accountAnalyticsFocusedBucket.income)}</Text>
-                        <Text style={[styles.analyticsFocusExpense, { color: '#D97A5F' }]}>Expenses {formatCurrency(accountAnalyticsFocusedBucket.expenses)}</Text>
-                      </View>
-                    </View>
-                  ) : null}
-                  <FinanceGroupedBarChart
-                    width={accountAnalyticsChartWidth}
-                    height={260}
-                    domain={accountAnalyticsBarDomain}
-                    entries={accountAnalyticsBarEntries}
-                    incomeColor={'#2F80ED'}
-                    expenseColor={'#D97A5F'}
-                    gridColor={theme.colors.border}
-                    labelColor={theme.colors.textSecondary}
-                    zeroLineColor={theme.colors.border}
-                    focusedKey={accountAnalyticsFocusedBucket?.key ?? null}
-                    onSelect={setAccountAnalyticsFocusedBucketKey}
-                    showNetLine={false}
-                    padding={{ top: 18, bottom: 40, left: 40, right: 16 }}
-                  />
-                </View>
-              </View>
-
-              <View style={[styles.analyticsPanelCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-                <Text style={[styles.analyticsPanelTitle, { color: theme.colors.text }]}>Income & Expense Distribution</Text>
-                <Text style={[styles.analyticsPanelMeta, { color: theme.colors.textSecondary }]}>A monthly view of where money came from and where it went.</Text>
-                <CategoryDistributionPanel
-                  sections={accountAnalyticsSections}
-                  formatCurrency={formatCurrency}
-                  emptyMessage="There is no income or expense data in this month yet."
-                  initialSectionKey={accountAnalyticsSections[0]?.items.length ? 'expense' : 'income'}
+                <AdaptiveAmountText
+                  style={[styles.analyticsHeadlineValue, { color: theme.colors.text }]}
+                  minFontSize={18}
+                  value={formatCurrency(accountAnalyticsTrend.currentNetWorth)}
                 />
+                <Text style={[styles.analyticsPanelMeta, { color: theme.colors.textSecondary }]}>Skia account analytics using your shared chart component.</Text>
+                <AccountModalSkiaBoundary data={accountAnalyticsSkiaData} />
               </View>
             </ScrollView>
           ) : (

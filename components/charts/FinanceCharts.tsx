@@ -13,6 +13,7 @@ export interface LineChartSeries {
   color: string;
   strokeWidth?: number;
   dashed?: boolean;
+  smooth?: boolean;
   fillColor?: string;
   showDots?: boolean;
   dotRadius?: number;
@@ -192,7 +193,7 @@ function getY(value: number, domain: [number, number], plotTop: number, plotHeig
   return plotTop + plotHeight - ratio * plotHeight;
 }
 
-function buildLinePath(points: Array<{ x: number; y: number }>): string {
+function buildLinearLinePath(points: Array<{ x: number; y: number }>): string {
   if (points.length === 0) {
     return '';
   }
@@ -200,17 +201,42 @@ function buildLinePath(points: Array<{ x: number; y: number }>): string {
   return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
 }
 
-function buildAreaPath(points: Array<{ x: number; y: number }>, baselineY: number): string {
+function buildSmoothLinePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) {
+    return '';
+  }
+
+  if (points.length === 1) {
+    return `M ${points[0].x} ${points[0].y}`;
+  }
+
+  const commands = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const midX = (previous.x + current.x) / 2;
+    commands.push(`C ${midX} ${previous.y}, ${midX} ${current.y}, ${current.x} ${current.y}`);
+  }
+
+  return commands.join(' ');
+}
+
+function buildLinePath(points: Array<{ x: number; y: number }>, smooth: boolean = true): string {
+  return smooth ? buildSmoothLinePath(points) : buildLinearLinePath(points);
+}
+
+function buildAreaPath(points: Array<{ x: number; y: number }>, baselineY: number, smooth: boolean): string {
   if (points.length === 0) {
     return '';
   }
 
   const start = points[0];
   const end = points[points.length - 1];
+  const linePath = smooth ? buildSmoothLinePath(points).replace(/^M [^ ]+ [^ ]+/, `L ${start.x} ${start.y}`) : points.slice(1).map((point) => `L ${point.x} ${point.y}`).join(' ');
   return [
     `M ${start.x} ${baselineY}`,
     `L ${start.x} ${start.y}`,
-    ...points.slice(1).map((point) => `L ${point.x} ${point.y}`),
+    linePath,
     `L ${end.x} ${baselineY}`,
     'Z',
   ].join(' ');
@@ -366,8 +392,9 @@ export function FinanceLineChart({
             x: getX(index, maxLength, plotLeft, plotWidth),
             y: getY(value, domain, plotTop, plotHeight),
           }));
-          const path = buildLinePath(points);
-          const areaPath = entry.fillColor ? buildAreaPath(points, baselineY) : '';
+          const smoothPath = entry.smooth ?? true;
+          const path = buildLinePath(points, smoothPath);
+          const areaPath = entry.fillColor ? buildAreaPath(points, baselineY, smoothPath) : '';
 
           return (
             <React.Fragment key={entry.key}>
@@ -466,8 +493,8 @@ export function FinanceGroupedBarChart({
   const { plotLeft, plotTop, plotWidth, plotHeight } = getChartMetrics(width, height, padding);
   const zeroY = getY(domain[0] <= 0 && domain[1] >= 0 ? 0 : domain[0], domain, plotTop, plotHeight);
   const groupWidth = entries.length > 0 ? plotWidth / entries.length : plotWidth;
-  const barWidth = Math.min(20, Math.max(10, groupWidth * 0.32));
-  const barGap = Math.max(2, groupWidth * 0.03);
+  const barWidth = Math.min(24, Math.max(12, groupWidth * 0.38));
+  const barGap = Math.max(1.5, groupWidth * 0.018);
   const gridLines = Array.from({ length: 4 }, (_, index) => plotTop + plotHeight * (index / 3));
   const linePoints = entries.map((entry, index) => ({
     key: entry.key,
@@ -638,7 +665,7 @@ export function FinanceVerticalBarChart({
 }: FinanceVerticalBarChartProps) {
   const { plotLeft, plotTop, plotWidth, plotHeight } = getChartMetrics(width, height, padding);
   const groupWidth = entries.length > 0 ? plotWidth / entries.length : plotWidth;
-  const barWidth = Math.min(20, groupWidth * 0.44);
+  const barWidth = Math.min(24, Math.max(12, groupWidth * 0.5));
   const zeroY = getY(domain[0] <= 0 && domain[1] >= 0 ? 0 : domain[0], domain, plotTop, plotHeight);
   const benchmarkY = benchmarkValue !== undefined ? getY(benchmarkValue, domain, plotTop, plotHeight) : null;
   const gridLines = Array.from({ length: 4 }, (_, index) => plotTop + plotHeight * (index / 3));

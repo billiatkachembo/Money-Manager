@@ -110,10 +110,22 @@ Export a production web bundle:
 npm run export:web
 ```
 
+Run the main project quality checks:
+
+```powershell
+npm run quality
+```
+
+Run focused finance-domain correctness tests:
+
+```powershell
+npm run test:domain
+```
+
 Validate Expo config:
 
 ```powershell
-npx expo config --json
+npm run check:expo-config
 npx expo-doctor --verbose
 ```
 
@@ -166,11 +178,20 @@ Google Drive backups are uploaded into a `Money Manager Backups` folder and stor
 Good local checks for this repo:
 
 ```powershell
-npx expo config --json
+npm run typecheck
+npm run test:domain
+npm run check:expo-config
+npm run check:web-export
 npx expo-doctor --verbose
 ```
 
-If you want standalone TypeScript CLI checks with `tsc --noEmit`, add `typescript` to `devDependencies` first. This repo currently relies on Expo / Babel tooling and does not include a local `typescript` package by default.
+There is also a combined quality gate:
+
+```powershell
+npm run quality
+```
+
+The repo now includes a GitHub Actions workflow at `.github/workflows/quality.yml` that runs the same baseline automatically on pushes and pull requests.
 
 ## Web Notes
 

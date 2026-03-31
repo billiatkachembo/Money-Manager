@@ -55,7 +55,14 @@ import { formatDateTimeWithWeekday, formatDateWithWeekday, parseDateValue } from
 import { ALL_CATEGORIES } from '@/constants/categories';
 import { CURRENCY_OPTIONS } from '@/constants/currencies';
 import { SUPPORTED_LANGUAGES } from '@/constants/languages';
-import { exportTransactionsToCsv, parseTransactionsFromCsv } from '@/lib/transaction-csv';
+import { parseTransactionsFromCsv } from '@/lib/transaction-csv';
+import {
+  exportTransactionsReportCsv,
+  exportTransactionsReportExcel,
+  TRANSACTION_EXPORT_PRESET_OPTIONS,
+  type TransactionExportFormat,
+  type TransactionExportPreset,
+} from '@/lib/transaction-export';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { BackupRestoreModal, type BackupHistoryItem } from '@/components/BackupRestoreModal';
@@ -612,7 +619,9 @@ export default function ProfileScreen() {
               ? 'public.comma-separated-values-text'
               : mimeType === 'application/json'
                 ? 'public.json'
-                : undefined,
+                : mimeType === 'application/vnd.ms-excel'
+                  ? 'com.microsoft.excel.xls'
+                  : undefined,
         });
       }
 
@@ -667,34 +676,78 @@ export default function ProfileScreen() {
     );
   };
 
-  const handleExportCsv = async () => {
-    setBackupStatus('backingup');
-    setBackupMessage('Preparing CSV export...');
-
+  const handleExportTransactionReport = async (preset: TransactionExportPreset, format: TransactionExportFormat) => {
     const exportedAt = new Date();
-    const csvString = exportTransactionsToCsv(transactions);
-    const timestamp = exportedAt.toISOString().replace(/[:.]/g, '-');
-    const backupFileName = `money-manager-transactions-${timestamp}.csv`;
+    const isExcel = format === 'excel';
+    const content = isExcel
+      ? exportTransactionsReportExcel(transactions, preset, exportedAt)
+      : exportTransactionsReportCsv(transactions, preset, exportedAt);
+    const fileName = isExcel ? 'Money Manager-Excel.xls' : 'Money Manager-CSV.csv';
+    const mimeType = isExcel ? 'application/vnd.ms-excel' : 'text/csv';
+
+    setBackupStatus('backingup');
+    setBackupMessage(`Preparing ${isExcel ? 'Excel' : 'CSV'} export...`);
+
     await shareFilePayload(
-      'Money Manager Transactions CSV',
-      backupFileName,
-      csvString,
-      'text/csv',
-      'CSV file exported successfully.',
+      isExcel ? 'Money Manager Transactions Excel' : 'Money Manager Transactions CSV',
+      fileName,
+      content,
+      mimeType,
+      `${isExcel ? 'Excel' : 'CSV'} file exported successfully.`,
       () => {
         updateSettings({ lastBackupDate: exportedAt });
         setBackupHistory((previous) => [
-          { timestamp: exportedAt.getTime(), filename: backupFileName },
+          { timestamp: exportedAt.getTime(), filename: fileName },
           ...previous,
         ].slice(0, 5));
       }
     );
   };
 
+  const buildTransactionExportWindowMessage = () =>
+    TRANSACTION_EXPORT_PRESET_OPTIONS.map((option) => `- ${option.label}: ${option.description}`).join('\n');
+
+  const promptTransactionExportFormat = (preset: TransactionExportPreset) => {
+    const presetOption = TRANSACTION_EXPORT_PRESET_OPTIONS.find((option) => option.key === preset);
+    Alert.alert(
+      'Export Format',
+      `${presetOption?.label ?? 'Selected window'}${presetOption?.description ? `\n${presetOption.description}` : ''}
+
+Choose the file format.
+CSV file name: Money Manager-CSV.csv
+Excel file name: Money Manager-Excel.xls`,
+      [
+        { text: 'CSV', onPress: () => void handleExportTransactionReport(preset, 'csv') },
+        { text: 'Excel', onPress: () => void handleExportTransactionReport(preset, 'excel') },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  const openTransactionExportPrompt = () => {
+    Alert.alert(
+      'Export Transactions',
+      `Choose which data to export.
+
+${buildTransactionExportWindowMessage()}`,
+      [
+        ...TRANSACTION_EXPORT_PRESET_OPTIONS.map((option) => ({
+          text: option.label,
+          onPress: () => promptTransactionExportFormat(option.key),
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]
+    );
+  };
+
+  const handleExportCsv = () => {
+    openTransactionExportPrompt();
+  };
+
   const openExportPrompt = () => {
     Alert.alert('Export Data', 'Choose an export format.', [
       { text: 'Full Backup (JSON)', onPress: handleExportData },
-      { text: 'Transactions CSV', onPress: handleExportCsv },
+      { text: 'Transactions CSV / Excel', onPress: openTransactionExportPrompt },
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
@@ -1898,6 +1951,7 @@ export default function ProfileScreen() {
         currencies={currencies}
         languages={languages}
         onShowAutoLockPicker={() => openSettingsDestination(() => setShowAutoLockPicker(true))}
+        onExportTransactions={() => openSettingsDestination(openTransactionExportPrompt)}
         onQuickAddToggle={handleQuickAddToggle}
         onDailyReminderToggle={handleDailyReminderToggle}
         driveConnected={driveConnected}

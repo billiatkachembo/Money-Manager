@@ -29,7 +29,7 @@ export interface BudgetSummary {
   risk: number;
 }
 
-export interface ExpenseCategoryBreakdown {
+export interface CategoryBreakdown {
   categoryId: string;
   categoryName: string;
   color: string;
@@ -38,12 +38,16 @@ export interface ExpenseCategoryBreakdown {
   transactionCount: number;
 }
 
-export interface ExpenseDistributionSlice {
+export interface CategoryDistributionSlice {
   name: string;
   amount: number;
   color: string;
   share: number;
 }
+
+export interface ExpenseCategoryBreakdown extends CategoryBreakdown {}
+
+export interface ExpenseDistributionSlice extends CategoryDistributionSlice {}
 
 export interface AnalyticsQuickStats {
   transactionCount: number;
@@ -392,14 +396,15 @@ export function computeNetWorthProgress(
   };
 }
 
-export function computeExpenseCategoryBreakdown(
-  transactions: Transaction[]
-): ExpenseCategoryBreakdown[] {
-  const expenseTransactions = transactions.filter((transaction) => transaction.type === 'expense');
-  const totalExpenses = expenseTransactions.reduce((sum, transaction) => sum + transaction.amount, 0);
-  const grouped = new Map<string, ExpenseCategoryBreakdown>();
+export function computeCategoryBreakdown(
+  transactions: Transaction[],
+  type: 'income' | 'expense'
+): CategoryBreakdown[] {
+  const matchingTransactions = transactions.filter((transaction) => transaction.type === type);
+  const totalAmount = matchingTransactions.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const grouped = new Map<string, CategoryBreakdown>();
 
-  for (const transaction of expenseTransactions) {
+  for (const transaction of matchingTransactions) {
     const categoryId = transaction.category?.id?.trim() || 'uncategorized';
     const current = grouped.get(categoryId);
 
@@ -422,21 +427,27 @@ export function computeExpenseCategoryBreakdown(
   return Array.from(grouped.values())
     .map((entry) => ({
       ...entry,
-      share: ratio(entry.amount, totalExpenses),
+      share: ratio(entry.amount, totalAmount),
     }))
     .sort((left, right) => right.amount - left.amount);
 }
 
-export function computeExpenseDistribution(
-  breakdown: ExpenseCategoryBreakdown[],
+export function computeExpenseCategoryBreakdown(
+  transactions: Transaction[]
+): ExpenseCategoryBreakdown[] {
+  return computeCategoryBreakdown(transactions, 'expense');
+}
+
+export function computeCategoryDistribution(
+  breakdown: CategoryBreakdown[],
   limit = 5
-): ExpenseDistributionSlice[] {
+): CategoryDistributionSlice[] {
   if (breakdown.length === 0) {
     return [];
   }
 
   const safeLimit = Math.max(1, limit);
-  const totalExpenses = breakdown.reduce((sum, entry) => sum + entry.amount, 0);
+  const totalAmount = breakdown.reduce((sum, entry) => sum + entry.amount, 0);
   const topCategories = breakdown.slice(0, safeLimit).map((entry) => ({
     name: entry.categoryName,
     amount: entry.amount,
@@ -457,9 +468,16 @@ export function computeExpenseDistribution(
       name: 'Other',
       amount: otherAmount,
       color: '#94A3B8',
-      share: ratio(otherAmount, totalExpenses),
+      share: ratio(otherAmount, totalAmount),
     },
   ];
+}
+
+export function computeExpenseDistribution(
+  breakdown: ExpenseCategoryBreakdown[],
+  limit = 5
+): ExpenseDistributionSlice[] {
+  return computeCategoryDistribution(breakdown, limit);
 }
 
 export function computeQuickStats(

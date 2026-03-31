@@ -15,10 +15,10 @@ import Animated, {
 
 const SPLASH_BACKGROUND = '#667eea';
 const LOGO_SOURCE = require('../assets/images/splash-logo-white.png');
-const LOGO_HOLD_MS = 180;
-const LOGO_PULSE_MS = 260;
-const LOGO_SETTLE_MS = 240;
-const NAVIGATE_MS = 1100;
+const LOGO_HOLD_MS = 320;
+const LOGO_PULSE_MS = 320;
+const LOGO_SETTLE_MS = 320;
+const NAVIGATE_MS = 1800;
 
 export default function SplashScreen() {
   const router = useRouter();

@@ -54,7 +54,12 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "export:web": "expo export --platform web"
+    "export:web": "expo export --platform web",
+    "typecheck": "node .\\node_modules\\typescript\\bin\\tsc --noEmit --pretty false --project .\\tsconfig.json",
+    "check:expo-config": "npx expo config --json",
+    "check:web-export": "npx expo export --platform web",
+    "quality": "npm run typecheck && npm run test:domain && npm run check:expo-config && npm run check:web-export",
+    "test:domain": "node .\\scripts\\run-domain-tests.mjs"
   },
   "expo": {
     "doctor": {

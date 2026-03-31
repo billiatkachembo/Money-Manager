@@ -9,7 +9,7 @@
       "ios",
       "web"
     ],
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/splash-logo-white.png",
     "scheme": [
       "com.billiatkachembo.moneymanager",
       "moneymanager"
@@ -17,8 +17,6 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/splash-logo-white.png",
-      "resizeMode": "contain",
       "backgroundColor": "#667eea"
     },
     "ios": {
@@ -28,7 +26,7 @@
     "android": {
       "package": "com.billiatkachembo.moneymanager",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/splash-logo-white.png",
         "backgroundColor": "#F7EEE4"
       },
       "permissions": [
@@ -36,8 +34,7 @@
       ]
     },
     "web": {
-      "bundler": "metro",
-      "favicon": "./assets/images/favicon.png"
+      "bundler": "metro"
     },
     "plugins": [
       "expo-router",

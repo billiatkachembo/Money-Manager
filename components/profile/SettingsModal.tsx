@@ -23,6 +23,7 @@ import {
   Bell,
   Clock,
   DollarSign,
+  FileText,
   Zap,
   HelpCircle,
   CheckCircle,
@@ -61,6 +62,7 @@ interface SettingsModalProps {
   currencies: CurrencyOption[];
   languages: SupportedLanguageOption[];
   onShowAutoLockPicker: () => void;
+  onExportTransactions: () => void;
   onQuickAddToggle: (value: boolean) => void | Promise<void>;
   onDailyReminderToggle: (value: boolean) => void | Promise<void>;
   onAutoBackupToggle: (value: boolean) => void | Promise<void>;
@@ -132,6 +134,7 @@ export function SettingsModal({
   currencies,
   languages,
   onShowAutoLockPicker,
+  onExportTransactions,
   onQuickAddToggle,
   onDailyReminderToggle,
   onAutoBackupToggle,
@@ -337,9 +340,9 @@ export function SettingsModal({
     { key: 'profile', title: 'Profile', Icon: Edit3, color: '#6366F1', onPress: openEditProfile },
     { key: 'pc_manager', title: 'PC Manager', Icon: Globe, color: '#2563EB', onPress: onOpenPcManager },
     { key: 'backup', title: 'Backup', Icon: Download, color: '#0EA5E9', onPress: onBackupRestore },
+    { key: 'export', title: 'Export', Icon: FileText, color: '#F97316', onPress: onExportTransactions },
     { key: 'privacy', title: 'Privacy', Icon: Shield, color: '#14B8A6', onPress: onPrivacySecurity },
     { key: 'help', title: 'Help', Icon: HelpCircle, color: '#F59E0B', onPress: onHelpSupport },
-    { key: 'lock', title: 'Auto Lock', Icon: Clock, color: '#F97316', onPress: onShowAutoLockPicker },
   ];
 
   const handleCurrencySelect = (currencyCode: string) => {

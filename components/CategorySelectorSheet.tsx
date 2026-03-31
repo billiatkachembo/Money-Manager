@@ -196,8 +196,10 @@ export function CategorySelectorSheet({
             <FlatList
               data={filteredCategories}
               keyExtractor={(item) => item.id}
+              style={styles.paneList}
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={styles.categoryPaneContent}
+              showsVerticalScrollIndicator={false}
               renderItem={({ item }) => {
                 const IconComponent = (Icons as any)[item.icon] || Icons.Circle;
                 const itemSubcategories = getSubcategories?.(item) ?? [];
@@ -327,8 +329,10 @@ export function CategorySelectorSheet({
                   <FlatList
                     data={activeSubcategories}
                     keyExtractor={(item) => item.id}
+                    style={styles.paneList}
                     keyboardShouldPersistTaps="handled"
                     contentContainerStyle={styles.subcategoryContent}
+                    showsVerticalScrollIndicator={false}
                     renderItem={({ item }) => {
                       const isSelected =
                         activeCategory.id === selectedCategoryId &&
@@ -455,6 +459,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   splitContainer: {
+    flex: 1,
     flexDirection: 'row',
     gap: 12,
     paddingBottom: 12,
@@ -462,12 +467,15 @@ const styles = StyleSheet.create({
   },
   categoryPane: {
     flex: 1,
+    minWidth: 0,
     borderWidth: 1,
     borderRadius: 16,
     overflow: 'hidden',
   },
   categoryPaneContent: {
+    flexGrow: 1,
     padding: 8,
+    paddingBottom: 18,
   },
   categoryRow: {
     flexDirection: 'row',
@@ -504,6 +512,7 @@ const styles = StyleSheet.create({
   },
   subcategoryPane: {
     flex: 1,
+    minWidth: 0,
     borderWidth: 1,
     borderRadius: 16,
     paddingHorizontal: 10,
@@ -521,8 +530,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
+  paneList: {
+    flex: 1,
+    minHeight: 0,
+  },
   subcategoryContent: {
-    paddingBottom: 8,
+    flexGrow: 1,
+    paddingBottom: 28,
   },
   subcategoryRow: {
     flexDirection: 'row',

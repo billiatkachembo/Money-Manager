@@ -288,20 +288,5 @@ try {
   $splashCanvas.Bitmap.Dispose()
 }
 
-$iconImage = [System.Drawing.Image]::FromFile((Join-Path $assetsPath 'icon.png'))
-try {
-  $favicon = New-Object System.Drawing.Bitmap 64, 64
-  $faviconGraphics = [System.Drawing.Graphics]::FromImage($favicon)
-  try {
-    Set-GraphicsQuality $faviconGraphics
-    $faviconGraphics.DrawImage($iconImage, 0, 0, 64, 64)
-    Save-Png $favicon (Join-Path $assetsPath 'favicon.png')
-  } finally {
-    $faviconGraphics.Dispose()
-    $favicon.Dispose()
-  }
-} finally {
-  $iconImage.Dispose()
-}
 
 Write-Host 'Brand assets generated.'

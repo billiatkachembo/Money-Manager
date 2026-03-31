@@ -235,13 +235,13 @@ export const BackupRestoreModal = memo(function BackupRestoreModal({
             textColor={theme.colors.primary}
           />
 
-          <Text style={[styles.sectionTitle, styles.sectionSpacing, { color: theme.colors.text }]}>Transactions CSV</Text>
+          <Text style={[styles.sectionTitle, styles.sectionSpacing, { color: theme.colors.text }]}>Transactions Export</Text>
           <Text style={[styles.sectionHint, { color: theme.colors.textSecondary }]}>
-            Supports expense, income, transfer, and debt with accounts, timestamps, totals, and tags.
+            Export month-to-date, last month, year-to-date, last year, or totals only as CSV or Excel.
           </Text>
           <BackupActionButton
             icon={<Download size={20} color={theme.colors.primary} />}
-            label="Export Transactions CSV"
+            label="Export Transactions CSV / Excel"
             onPress={onExportCsv}
             disabled={isProcessing}
             containerStyle={{ backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border }}

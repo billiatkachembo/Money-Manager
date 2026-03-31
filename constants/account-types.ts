@@ -1,14 +1,4 @@
-import {
-  Briefcase,
-  CreditCard,
-  Landmark,
-  PiggyBank,
-  Shield,
-  Smartphone,
-  TrendingUp,
-  Wallet,
-  LucideIcon,
-} from 'lucide-react-native';
+import type { LucideIcon } from 'lucide-react-native';
 import {
   AccountType,
   AccountTypeDefinition,
@@ -243,16 +233,37 @@ export const BUILT_IN_ACCOUNT_TYPE_DEFINITIONS: AccountTypeDefinition[] = [
   },
 ];
 
-const ACCOUNT_TYPE_ICON_COMPONENTS: Record<string, LucideIcon> = {
-  wallet: Wallet,
-  landmark: Landmark,
-  piggybank: PiggyBank,
-  'credit-card': CreditCard,
-  'trending-up': TrendingUp,
-  smartphone: Smartphone,
-  shield: Shield,
-  briefcase: Briefcase,
-};
+let accountTypeIconComponents: Record<string, LucideIcon> | null = null;
+
+function getAccountTypeIconComponents(): Record<string, LucideIcon> {
+  if (accountTypeIconComponents) {
+    return accountTypeIconComponents;
+  }
+
+  const {
+    Briefcase,
+    CreditCard,
+    Landmark,
+    PiggyBank,
+    Shield,
+    Smartphone,
+    TrendingUp,
+    Wallet,
+  } = require('lucide-react-native') as typeof import('lucide-react-native');
+
+  accountTypeIconComponents = {
+    wallet: Wallet,
+    landmark: Landmark,
+    piggybank: PiggyBank,
+    'credit-card': CreditCard,
+    'trending-up': TrendingUp,
+    smartphone: Smartphone,
+    shield: Shield,
+    briefcase: Briefcase,
+  };
+
+  return accountTypeIconComponents;
+}
 
 function normalizeIconKey(value?: string): string {
   return (value ?? '').trim().toLowerCase();
@@ -377,14 +388,16 @@ export function getAccountTypeIcon(
   typeOrIcon: AccountType | string | undefined,
   fallbackTypeOrIcon?: AccountType | string | undefined
 ): LucideIcon {
+  const iconComponents = getAccountTypeIconComponents();
+  const walletIcon = iconComponents.wallet;
   const iconKey = normalizeIconKey(typeOrIcon);
-  if (ACCOUNT_TYPE_ICON_COMPONENTS[iconKey]) {
-    return ACCOUNT_TYPE_ICON_COMPONENTS[iconKey];
+  if (iconComponents[iconKey]) {
+    return iconComponents[iconKey];
   }
 
   const fallbackKey = normalizeIconKey(fallbackTypeOrIcon);
-  if (ACCOUNT_TYPE_ICON_COMPONENTS[fallbackKey]) {
-    return ACCOUNT_TYPE_ICON_COMPONENTS[fallbackKey];
+  if (iconComponents[fallbackKey]) {
+    return iconComponents[fallbackKey];
   }
 
   const definition = BUILT_IN_ACCOUNT_TYPE_DEFINITIONS.find(
@@ -392,10 +405,10 @@ export function getAccountTypeIcon(
   );
 
   if (definition) {
-    return ACCOUNT_TYPE_ICON_COMPONENTS[normalizeIconKey(definition.icon)] ?? Wallet;
+    return iconComponents[normalizeIconKey(definition.icon)] ?? walletIcon;
   }
 
-  return Wallet;
+  return walletIcon;
 }
 
 export function getAccountTypeGroupLabel(group: AccountTypeGroup): string {

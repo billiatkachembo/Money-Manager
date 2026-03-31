@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "isolatedModules": false,
+    "outDir": ".tmp-tests",
+    "rootDir": ".",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "tests/domain/**/*.ts",
+    "src/domain/**/*.ts",
+    "types/**/*.ts",
+    "constants/account-types.ts",
+    "utils/date.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "app",
+    "components",
+    "screens",
+    "store",
+    "lib"
+  ]
+}

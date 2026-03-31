@@ -1,4 +1,4 @@
-﻿import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -11,12 +11,14 @@ import {
   Alert,
   Switch,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
+import { BarChart3, ChevronLeft, ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { FinanceGroupedBarChart, FinanceLineChart } from '@/components/charts/FinanceCharts';
 import { Account, AccountTypeDefinition, AccountTypeGroup, Transaction } from '@/types/transaction';
 import {
   ACCOUNT_TYPE_GROUPS,
@@ -32,6 +34,8 @@ import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { exportAccountsToCsv } from '@/lib/account-csv';
 import { formatDateTimeWithWeekday, formatDateWithWeekday } from '@/utils/date';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
+import { CategoryDistributionPanel, type DistributionSection } from '@/components/analytics/CategoryDistributionPanel';
+import { computeCategoryBreakdown, computeCategoryDistribution, computeNetWorthProgress } from '@/src/domain/analytics';
 
 type AccountSortMode = 'name' | 'type' | 'balance' | 'newest';
 type AccountSortDirection = 'asc' | 'desc';
@@ -125,6 +129,22 @@ function startOfMonth(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), 1);
 }
 
+function endOfMonth(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function formatMonthYearLabel(value: Date): string {
+  return value.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+function formatShortMonthLabel(value: Date): string {
+  return value.toLocaleDateString(undefined, { month: 'short' });
+}
+
+function monthKey(value: Date): string {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+}
+
 function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -198,6 +218,7 @@ const EMPTY_ACCOUNT_ACTIVITY: AccountActivitySummary = {
 
 export default function AccountsScreen() {
   const { theme } = useTheme();
+  const { width: screenWidth } = useWindowDimensions();
   const openAccountComposerAt = useTabNavigationStore((state) => state.openAccountComposerAt);
   const consumeAccountsComposer = useTabNavigationStore((state) => state.consumeAccountsComposer);
   const {
@@ -228,6 +249,10 @@ export default function AccountsScreen() {
   const [showOpeningBalanceDatePicker, setShowOpeningBalanceDatePicker] = useState(false);
   const [detailAccount, setDetailAccount] = useState<Account | null>(null);
   const [isExportingAccounts, setIsExportingAccounts] = useState(false);
+  const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
+  const [analyticsMonthCursor, setAnalyticsMonthCursor] = useState<Date>(() => new Date());
+  const [accountAnalyticsFocusedBucketKey, setAccountAnalyticsFocusedBucketKey] = useState<string | null>(null);
+  const [accountAnalyticsFocusedPointIndex, setAccountAnalyticsFocusedPointIndex] = useState<number | null>(null);
 
   const sortedAccountTypeOptions = useMemo(
     () => getSortedAccountTypeOptions(accountTypeDefinitions),
@@ -531,6 +556,219 @@ export default function AccountsScreen() {
   );
 
   const hiddenAccountsCount = orderedAccounts.length - activeAccounts.length;
+
+  const accountAnalyticsMonthStart = useMemo(() => startOfMonth(analyticsMonthCursor), [analyticsMonthCursor]);
+  const accountAnalyticsMonthEnd = useMemo(() => endOfMonth(analyticsMonthCursor), [analyticsMonthCursor]);
+  const currentMonthBoundary = useMemo(() => startOfMonth(new Date()), []);
+  const canAdvanceAnalyticsMonth = accountAnalyticsMonthStart.getTime() < currentMonthBoundary.getTime();
+  const accountAnalyticsTransactions = useMemo(
+    () =>
+      transactions.filter((transaction) => {
+        if (transaction.date < accountAnalyticsMonthStart || transaction.date > accountAnalyticsMonthEnd) {
+          return false;
+        }
+
+        return transaction.type === 'income' || transaction.type === 'expense';
+      }),
+    [accountAnalyticsMonthEnd, accountAnalyticsMonthStart, transactions]
+  );
+  const accountAnalyticsIncome = useMemo(
+    () =>
+      roundCurrency(
+        accountAnalyticsTransactions
+          .filter((transaction) => transaction.type === 'income')
+          .reduce((sum, transaction) => sum + transaction.amount, 0)
+      ),
+    [accountAnalyticsTransactions]
+  );
+  const accountAnalyticsExpenses = useMemo(
+    () =>
+      roundCurrency(
+        accountAnalyticsTransactions
+          .filter((transaction) => transaction.type === 'expense')
+          .reduce((sum, transaction) => sum + transaction.amount, 0)
+      ),
+    [accountAnalyticsTransactions]
+  );
+  const accountAnalyticsNet = useMemo(
+    () => roundCurrency(accountAnalyticsIncome - accountAnalyticsExpenses),
+    [accountAnalyticsExpenses, accountAnalyticsIncome]
+  );
+  const accountAnalyticsExpenseBreakdown = useMemo(
+    () => computeCategoryBreakdown(accountAnalyticsTransactions, 'expense'),
+    [accountAnalyticsTransactions]
+  );
+  const accountAnalyticsIncomeBreakdown = useMemo(
+    () => computeCategoryBreakdown(accountAnalyticsTransactions, 'income'),
+    [accountAnalyticsTransactions]
+  );
+  const accountAnalyticsSections = useMemo<DistributionSection[]>(
+    () => [
+      {
+        key: 'expense',
+        label: 'Expenses',
+        total: accountAnalyticsExpenses,
+        items: computeCategoryDistribution(accountAnalyticsExpenseBreakdown, 5),
+      },
+      {
+        key: 'income',
+        label: 'Income',
+        total: accountAnalyticsIncome,
+        items: computeCategoryDistribution(accountAnalyticsIncomeBreakdown, 5),
+      },
+    ],
+    [accountAnalyticsExpenseBreakdown, accountAnalyticsExpenses, accountAnalyticsIncome, accountAnalyticsIncomeBreakdown]
+  );
+  const accountAnalyticsMonthLabel = useMemo(
+    () => formatMonthYearLabel(analyticsMonthCursor),
+    [analyticsMonthCursor]
+  );
+
+  const accountAnalyticsTrend = useMemo(
+    () => computeNetWorthProgress(accounts, transactions, 6, accountAnalyticsMonthEnd),
+    [accountAnalyticsMonthEnd, accounts, transactions]
+  );
+  const accountAnalyticsNetWorthPoints = useMemo(
+    () =>
+      accountAnalyticsTrend.points.map((point, index) => ({
+        x: index + 1,
+        y: point.netWorth,
+        label: point.label,
+      })),
+    [accountAnalyticsTrend.points]
+  );
+  const accountAnalyticsIncomeExpenseSeries = useMemo(() => {
+    const months = accountAnalyticsTrend.points.map((point) => point.month);
+    const labels = accountAnalyticsTrend.points.map((point) => point.label);
+    const monthMap = new Map(months.map((key, index) => [key, { key, label: labels[index] ?? key, income: 0, expenses: 0 }]));
+
+    for (const transaction of transactions) {
+      const key = monthKey(transaction.date);
+      const target = monthMap.get(key);
+      if (!target) {
+        continue;
+      }
+
+      if (transaction.type === 'income') {
+        target.income += transaction.amount;
+      } else if (transaction.type === 'expense') {
+        target.expenses += transaction.amount;
+      }
+    }
+
+    return months.map((key, index) => {
+      const target = monthMap.get(key) ?? { key, label: labels[index] ?? key, income: 0, expenses: 0 };
+      return {
+        x: index + 1,
+        label: target.label,
+        income: roundCurrency(target.income),
+        expenses: roundCurrency(target.expenses),
+      };
+    });
+  }, [accountAnalyticsTrend.points, transactions]);
+  const accountAnalyticsNetWorthDomain = useMemo(() => {
+    const values = accountAnalyticsNetWorthPoints.map((point) => point.y);
+    if (values.length === 0) {
+      return [-1, 1] as [number, number];
+    }
+
+    const min = Math.min(...values, 0);
+    const max = Math.max(...values, 0);
+    const span = Math.max(1, max - min);
+    const padding = Math.max(span * 0.14, 1);
+    return [roundCurrency(min - padding), roundCurrency(max + padding)] as [number, number];
+  }, [accountAnalyticsNetWorthPoints]);
+  const accountAnalyticsBarDomain = useMemo(() => {
+    const values = accountAnalyticsIncomeExpenseSeries.flatMap((entry) => [entry.income, entry.expenses]);
+    const max = Math.max(1, ...values);
+    return [0, roundCurrency(max * 1.18)] as [number, number];
+  }, [accountAnalyticsIncomeExpenseSeries]);
+  const accountAnalyticsLineTicks = useMemo(
+    () => accountAnalyticsNetWorthPoints.map((point, index) => ({ index, label: point.label })),
+    [accountAnalyticsNetWorthPoints]
+  );
+  const accountAnalyticsLineSeries = useMemo(
+    () => [
+      {
+        key: 'balance',
+        values: accountAnalyticsNetWorthPoints.map((point) => point.y),
+        color: '#EF6B63',
+        strokeWidth: 2.4,
+        showDots: true,
+        dotRadius: 4,
+        dotFill: '#EF6B63',
+        dotStroke: theme.colors.surface,
+        activeIndex:
+          accountAnalyticsFocusedPointIndex ??
+          (accountAnalyticsNetWorthPoints.length > 0 ? accountAnalyticsNetWorthPoints.length - 1 : null),
+        activeRadius: 4.6,
+        activeFill: '#EF6B63',
+        activeStroke: theme.colors.surface,
+      },
+    ],
+    [accountAnalyticsFocusedPointIndex, accountAnalyticsNetWorthPoints, theme.colors.surface]
+  );
+  const accountAnalyticsFocusedPoint = useMemo(
+    () =>
+      accountAnalyticsFocusedPointIndex !== null && accountAnalyticsTrend.points[accountAnalyticsFocusedPointIndex]
+        ? accountAnalyticsTrend.points[accountAnalyticsFocusedPointIndex]
+        : accountAnalyticsTrend.points[accountAnalyticsTrend.points.length - 1] ?? null,
+    [accountAnalyticsFocusedPointIndex, accountAnalyticsTrend.points]
+  );
+  const accountAnalyticsBarEntries = useMemo(
+    () =>
+      accountAnalyticsIncomeExpenseSeries.map((entry) => ({
+        key: String(entry.x),
+        label: entry.label,
+        income: entry.income,
+        expenses: entry.expenses,
+      })),
+    [accountAnalyticsIncomeExpenseSeries]
+  );
+  const accountAnalyticsFocusedBucket = useMemo(
+    () =>
+      accountAnalyticsBarEntries.find((entry) => entry.key === accountAnalyticsFocusedBucketKey) ??
+      accountAnalyticsBarEntries.find((entry) => entry.income > 0 || entry.expenses > 0) ??
+      accountAnalyticsBarEntries[accountAnalyticsBarEntries.length - 1] ??
+      null,
+    [accountAnalyticsBarEntries, accountAnalyticsFocusedBucketKey]
+  );
+
+  useEffect(() => {
+    setAccountAnalyticsFocusedBucketKey((current) => {
+      if (accountAnalyticsBarEntries.length === 0) {
+        return null;
+      }
+      if (current && accountAnalyticsBarEntries.some((entry) => entry.key === current)) {
+        return current;
+      }
+      return (
+        accountAnalyticsBarEntries.find((entry) => entry.income > 0 || entry.expenses > 0)?.key ??
+        accountAnalyticsBarEntries[accountAnalyticsBarEntries.length - 1]?.key ??
+        null
+      );
+    });
+  }, [accountAnalyticsBarEntries]);
+
+  useEffect(() => {
+    setAccountAnalyticsFocusedPointIndex((current) => {
+      if (accountAnalyticsTrend.points.length === 0) {
+        return null;
+      }
+      if (current !== null && accountAnalyticsTrend.points[current]) {
+        return current;
+      }
+      return accountAnalyticsTrend.points.length - 1;
+    });
+  }, [accountAnalyticsTrend.points]);
+  const accountAnalyticsChartWidth = useMemo(
+    () => Math.max(screenWidth - 48, 280),
+    [screenWidth]
+  );
+  const accountAnalyticsHasData = useMemo(
+    () => accountAnalyticsTrend.points.length > 0 || accountAnalyticsSections.some((section) => section.items.length > 0),
+    [accountAnalyticsSections, accountAnalyticsTrend.points.length]
+  );
 
   const heroGradientColors = useMemo<readonly [string, string, string]>(
     () =>
@@ -1070,6 +1308,13 @@ export default function AccountsScreen() {
               {hiddenAccountsCount > 0 ? ` | ${hiddenAccountsCount} hidden` : ''}
             </Text>
           </View>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setShowAnalyticsModal(true)}
+            style={[styles.analyticsTriggerButton, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}
+          >
+            <BarChart3 size={18} color={theme.colors.primary} />
+          </TouchableOpacity>
         </View>
         <View style={styles.actionPanelTagRow}>
           <View
@@ -1501,6 +1746,143 @@ export default function AccountsScreen() {
           ))}
         </View>
       )}
+      <Modal
+        visible={showAnalyticsModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowAnalyticsModal(false)}
+      >
+        <View style={[styles.analyticsModal, { backgroundColor: theme.colors.background }]}>
+          <View style={styles.rowBetween}>
+            <TouchableOpacity onPress={() => setShowAnalyticsModal(false)}>
+              <Text style={[styles.modalButton, { color: theme.colors.textSecondary }]}>Close</Text>
+            </TouchableOpacity>
+            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Total Stats</Text>
+            <View style={styles.modalSpacer} />
+          </View>
+
+          <View style={[styles.analyticsNavigator, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => setAnalyticsMonthCursor((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}
+              style={[styles.analyticsNavigatorButton, { borderColor: theme.colors.border }]}
+            >
+              <ChevronLeft size={16} color={theme.colors.text} />
+            </TouchableOpacity>
+            <View style={styles.analyticsNavigatorCopy}>
+              <Text style={[styles.analyticsNavigatorEyebrow, { color: theme.colors.textSecondary }]}>Monthly view</Text>
+              <Text style={[styles.analyticsNavigatorTitle, { color: theme.colors.text }]}>{accountAnalyticsMonthLabel}</Text>
+            </View>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => {
+                if (!canAdvanceAnalyticsMonth) {
+                  return;
+                }
+                setAnalyticsMonthCursor((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1));
+              }}
+              disabled={!canAdvanceAnalyticsMonth}
+              style={[styles.analyticsNavigatorButton, { borderColor: theme.colors.border, opacity: canAdvanceAnalyticsMonth ? 1 : 0.45 }]}
+            >
+              <ChevronRight size={16} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          {accountAnalyticsHasData ? (
+            <ScrollView style={styles.analyticsModalScroll} contentContainerStyle={styles.analyticsModalScrollContent} showsVerticalScrollIndicator={false}>
+              <View style={[styles.analyticsPanelCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                <Text style={[styles.analyticsMiniEyebrow, { color: theme.colors.textSecondary }]}>Balance</Text>
+                <AdaptiveAmountText style={[styles.analyticsHeadlineValue, { color: theme.colors.text }]} minFontSize={18} value={formatCurrency(accountAnalyticsTrend.currentNetWorth)} />
+                <View style={[styles.analyticsChartCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+                  {accountAnalyticsFocusedPoint ? (
+                    <View
+                      style={[
+                        styles.analyticsFocusPill,
+                        {
+                          backgroundColor: theme.isDark ? theme.colors.surface : '#FFFFFF',
+                          borderColor: theme.colors.border,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.analyticsFocusTitle, { color: theme.colors.text }]}>
+                        {accountAnalyticsFocusedPoint.label}
+                      </Text>
+                      <View style={styles.analyticsFocusMetrics}>
+                        <Text style={[styles.analyticsFocusIncome, { color: '#EF6B63' }]}>Balance {formatCurrency(accountAnalyticsFocusedPoint.netWorth)}</Text>
+                      </View>
+                    </View>
+                  ) : null}
+                  <FinanceLineChart
+                    width={accountAnalyticsChartWidth}
+                    height={220}
+                    domain={accountAnalyticsNetWorthDomain}
+                    ticks={accountAnalyticsLineTicks}
+                    series={accountAnalyticsLineSeries}
+                    gridColor={theme.colors.border}
+                    labelColor={theme.colors.textSecondary}
+                    zeroLineColor={theme.colors.border}
+                    padding={{ top: 18, bottom: 40, left: 40, right: 16 }}
+                    onSelectIndex={setAccountAnalyticsFocusedPointIndex}
+                  />
+                </View>
+
+                <View style={[styles.analyticsChartCard, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}>
+                  {accountAnalyticsFocusedBucket ? (
+                    <View
+                      style={[
+                        styles.analyticsFocusPill,
+                        {
+                          backgroundColor: theme.isDark ? theme.colors.surface : '#FFFFFF',
+                          borderColor: theme.colors.border,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.analyticsFocusTitle, { color: theme.colors.text }]}>
+                        {accountAnalyticsFocusedBucket.label}
+                      </Text>
+                      <View style={styles.analyticsFocusMetrics}>
+                        <Text style={[styles.analyticsFocusIncome, { color: '#2F80ED' }]}>Income {formatCurrency(accountAnalyticsFocusedBucket.income)}</Text>
+                        <Text style={[styles.analyticsFocusExpense, { color: '#D97A5F' }]}>Expenses {formatCurrency(accountAnalyticsFocusedBucket.expenses)}</Text>
+                      </View>
+                    </View>
+                  ) : null}
+                  <FinanceGroupedBarChart
+                    width={accountAnalyticsChartWidth}
+                    height={260}
+                    domain={accountAnalyticsBarDomain}
+                    entries={accountAnalyticsBarEntries}
+                    incomeColor={'#2F80ED'}
+                    expenseColor={'#D97A5F'}
+                    gridColor={theme.colors.border}
+                    labelColor={theme.colors.textSecondary}
+                    zeroLineColor={theme.colors.border}
+                    focusedKey={accountAnalyticsFocusedBucket?.key ?? null}
+                    onSelect={setAccountAnalyticsFocusedBucketKey}
+                    showNetLine={false}
+                    padding={{ top: 18, bottom: 40, left: 40, right: 16 }}
+                  />
+                </View>
+              </View>
+
+              <View style={[styles.analyticsPanelCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+                <Text style={[styles.analyticsPanelTitle, { color: theme.colors.text }]}>Income & Expense Distribution</Text>
+                <Text style={[styles.analyticsPanelMeta, { color: theme.colors.textSecondary }]}>A monthly view of where money came from and where it went.</Text>
+                <CategoryDistributionPanel
+                  sections={accountAnalyticsSections}
+                  formatCurrency={formatCurrency}
+                  emptyMessage="There is no income or expense data in this month yet."
+                  initialSectionKey={accountAnalyticsSections[0]?.items.length ? 'expense' : 'income'}
+                />
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={[styles.emptyState, styles.analyticsEmptyState, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <Text style={[styles.emptyTitle, { color: theme.colors.text }]}>No data</Text>
+              <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>There are no income or expense records for {accountAnalyticsMonthLabel} yet.</Text>
+            </View>
+          )}
+        </View>
+      </Modal>
       <Modal
         visible={!!detailAccount}
         animationType="slide"
@@ -1961,6 +2343,14 @@ const styles = StyleSheet.create({
   actionPanelTitleWrap: {
     flex: 1,
   },
+  analyticsTriggerButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   actionPanelTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -2355,6 +2745,160 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  analyticsModal: {
+    flex: 1,
+    padding: 16,
+  },
+  analyticsModalScroll: {
+    flex: 1,
+    marginTop: 16,
+  },
+  analyticsModalScrollContent: {
+    paddingBottom: 28,
+  },
+  analyticsNavigator: {
+    marginTop: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  analyticsNavigatorButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  analyticsNavigatorCopy: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  analyticsNavigatorEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  analyticsNavigatorTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  analyticsSummaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  analyticsSummaryCard: {
+    flex: 1,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+  },
+  analyticsSummaryLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  analyticsSummaryValue: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  analyticsMiniEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginTop: 2,
+  },
+  analyticsHeadlineValue: {
+    fontSize: 28,
+    fontWeight: '900',
+    marginTop: 6,
+    marginBottom: 14,
+  },
+  analyticsChartCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    marginTop: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  analyticsLegendRow: {
+    flexDirection: 'row',
+    gap: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    alignSelf: 'stretch',
+  },
+  analyticsLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  analyticsLegendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  analyticsLegendText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  analyticsFocusPill: {
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  analyticsFocusTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  analyticsFocusMetrics: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 6,
+    flexWrap: 'wrap',
+  },
+  analyticsFocusIncome: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  analyticsFocusExpense: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  analyticsPanelCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 16,
+  },
+  analyticsPanelTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  analyticsPanelMeta: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+    marginBottom: 14,
+  },
+  analyticsEmptyState: {
+    marginTop: 16,
+  },
   detailModal: { flex: 1, padding: 16 },
   detailContent: { paddingBottom: 24 },
   detailCard: { borderRadius: 18, padding: 16, borderWidth: 1, marginBottom: 16 },
@@ -2540,6 +3084,12 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 });
+
+
+
+
+
+
 
 
 

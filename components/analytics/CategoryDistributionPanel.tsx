@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
-import { FinanceDonutChart } from '@/components/charts/FinanceCharts';
+import { FinanceDonutChart } from '@/components/charts/SkiaFinanceCharts';
 import { useTheme } from '@/store/theme-store';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import type { CategoryDistributionSlice } from '@/src/domain/analytics';
@@ -157,15 +157,7 @@ export function CategoryDistributionPanel({
         </View>
       ) : activeSection && activeSection.items.length > 0 ? (
         <>
-          <View
-            style={[
-              styles.chartSurface,
-              {
-                borderColor: theme.colors.border,
-                backgroundColor: theme.isDark ? theme.colors.background : '#FCFCFD',
-              },
-            ]}
-          >
+          <View style={styles.chartSurface}>
             <FinanceDonutChart
               size={chartSize}
               slices={chartData}
@@ -259,13 +251,11 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   chartSurface: {
-    borderWidth: 1,
-    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 6,
-    overflow: 'hidden',
+    paddingVertical: 2,
+    paddingHorizontal: 0,
+    overflow: 'visible',
   },
   listWrap: {
     marginTop: 14,

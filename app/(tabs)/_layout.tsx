@@ -4,6 +4,7 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
+  Image,
 } from 'react-native';
 import { Home, List, BarChart3, User, Calendar, CreditCard, FileText, Target, LucideIcon } from 'lucide-react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -140,6 +141,11 @@ export default function TabLayout() {
       borderRadius: 999,
       backgroundColor: theme.colors.primary,
     },
+    transactionIconImage: {
+      width: 18,
+      height: 18,
+      resizeMode: 'contain',
+    },
   });
 
   const renderTopTab = (tab: TabItem) => {
@@ -181,10 +187,17 @@ export default function TabLayout() {
         onPress={() => setActiveTab(tab.key)}
         activeOpacity={0.88}
       >
+        {tab.key === 'transactions' ? (
+        <Image
+          source={require('../../assets/images/icon.png')}
+          style={[styles.transactionIconImage, { tintColor: isActive ? theme.colors.primary : theme.colors.textSecondary }]}
+        />
+      ) : (
         <IconComponent
           size={18}
           color={isActive ? theme.colors.primary : theme.colors.textSecondary}
         />
+      )}
         <Text
           style={[styles.bottomTabLabel, isActive && styles.activeBottomTabLabel]}
           numberOfLines={1}

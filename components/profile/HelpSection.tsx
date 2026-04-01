@@ -51,7 +51,7 @@ export function HelpSection({ onFaq, onContact, onEmail }: HelpSectionProps) {
       {renderItem(
         <Mail size={20} color={theme.colors.primary} />,
         'Email Support',
-        'support@moneymanager.com',
+        'app.moneymanager.mm@gmail.com',
         onEmail
       )}
     </View>

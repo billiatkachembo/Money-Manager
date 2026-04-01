@@ -13,10 +13,11 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import {
-  FinanceGroupedBarChart,
   FinanceLineChart,
-  FinanceVerticalBarChart,
-} from '@/components/charts/FinanceCharts';
+  MoneyManagerBarChartSection,
+  MoneyManagerLineChartSection,
+} from '@/components/charts/SkiaFinanceCharts';
+import { AccountModalSkiaBoundary } from '@/components/charts/AccountModalSkiaBoundary';
 import { ArrowDownRight, ArrowUpRight, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Download, Scale, Sparkles, TrendingUp, Wallet, X } from 'lucide-react-native';
 import { useTransactionStore } from '@/store/transaction-store';
 import { useTheme } from '@/store/theme-store';
@@ -1368,6 +1369,19 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     };
   }, [comparisonMonths, selectedRange, selectedTransactions]);
 
+  const analyticsSkiaData = useMemo(() => {
+    let runningNet = 0;
+    return {
+      months: comparisonSeries.bucketDetails.map((bucket) => bucket.label),
+      lineValues: comparisonSeries.bucketDetails.map((bucket) => {
+        runningNet = roundCurrency(runningNet + bucket.net);
+        return runningNet;
+      }),
+      income: comparisonSeries.bucketDetails.map((bucket) => bucket.income),
+      expenses: comparisonSeries.bucketDetails.map((bucket) => bucket.expenses),
+    };
+  }, [comparisonSeries.bucketDetails]);
+
   const comparisonNetData = useMemo(
     () =>
       comparisonSeries.bucketDetails.map((bucket) => ({
@@ -1408,23 +1422,17 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     () => categoryBarData.find((entry) => entry.key === focusedSpendingCategoryKey) ?? categoryBarData[0] ?? null,
     [categoryBarData, focusedSpendingCategoryKey]
   );
-  const averageCategorySpend = useMemo(
-    () => (categorySpending.length > 0 ? roundCurrency(totalCategorySpend / categorySpending.length) : 0),
-    [categorySpending.length, totalCategorySpend]
-  );
-  const categoryYDomain = useMemo<[number, number]>(
-    () => computeChartYDomain([...categoryBarData.map((item) => item.y), averageCategorySpend]),
-    [averageCategorySpend, categoryBarData]
-  );
-
-
-  const topThreeCategoryShare = useMemo(() => {
-    const leadingTotal = categoryBarData.slice(0, 3).reduce((sum, item) => sum + item.y, 0);
-    return totalCategorySpend > 0 ? leadingTotal / totalCategorySpend : 0;
-  }, [categoryBarData, totalCategorySpend]);
-  const focusedCategoryRank = useMemo(
-    () => (focusedCategoryBar ? categoryBarData.findIndex((entry) => entry.key === focusedCategoryBar.key) + 1 : null),
-    [categoryBarData, focusedCategoryBar]
+  const categoryTotalStatsEntries = useMemo(
+    () =>
+      categoryBarData.map((item) => ({
+        key: item.key,
+        label: item.x,
+        value: item.y,
+        color: item.fill,
+        valueLabel: item.valueLabel,
+        detail: `${formatPercentage(item.share)} of spend`,
+      })),
+    [categoryBarData]
   );
 
   useEffect(() => {
@@ -2006,59 +2014,27 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     [comparisonSeries.bucketDetails]
   );
 
-  const categoryChartEntries = useMemo(
-    () =>
-      categoryBarData.map((item) => ({
-        key: item.key,
-        label: item.x,
-        value: item.y,
-        color: item.fill,
-      })),
-    [categoryBarData]
-  );
-
-  const forecastChartTicks = useMemo(
+  const forecastAxisItems = useMemo(
     () =>
       netWorthForecastData
         ? netWorthForecastData.tickValues
             .map((tickDate) => {
               const index = netWorthForecastData.data.findIndex((point) => point.x.getTime() === tickDate.getTime());
-              return index >= 0 ? { index, label: tickDate.getFullYear().toString() } : null;
+              return index >= 0
+                ? {
+                    index,
+                    label: tickDate.getFullYear().toString(),
+                    valueLabel: formatCompactNumber(netWorthForecastData.data[index]?.y ?? 0),
+                  }
+                : null;
             })
-            .filter((value): value is { index: number; label: string } => value !== null)
+            .filter((value): value is { index: number; label: string; valueLabel: string } => value !== null)
         : [],
     [netWorthForecastData]
   );
-
-  const forecastLineSeries = useMemo(
-    () =>
-      netWorthForecastData
-        ? [
-            {
-              key: 'contributions',
-              values: netWorthForecastData.contributionData.map((point) => point.y),
-              color: forecastContributionColor,
-              strokeWidth: 1.8,
-              dashed: true,
-            },
-            {
-              key: 'projection',
-              values: netWorthForecastData.data.map((point) => point.y),
-              color: forecastProjectionColor,
-              strokeWidth: 3,
-              fillColor: forecastProjectionColor,
-              showDots: true,
-              dotRadius: 2.4,
-              dotFill: cardBackground,
-              dotStroke: forecastProjectionColor,
-              activeIndex: netWorthForecastData.data.length > 0 ? netWorthForecastData.data.length - 1 : null,
-              activeRadius: 4.4,
-              activeFill: forecastProjectionColor,
-              activeStroke: cardBackground,
-            },
-          ]
-        : [],
-    [cardBackground, forecastContributionColor, forecastProjectionColor, netWorthForecastData]
+  const forecastLineLabels = useMemo(
+    () => (netWorthForecastData ? netWorthForecastData.data.map((point) => point.x.getFullYear().toString()) : []),
+    [netWorthForecastData]
   );
   const netWorthProgressYDomain = useMemo(
     () => computeChartYDomain([
@@ -2084,6 +2060,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     return roundCurrency((netWorthProgress.netWorth[netWorthProgress.netWorth.length - 1] ?? 0) - (netWorthProgress.netWorth[0] ?? 0));
   }, [netWorthProgress.netWorth]);
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(0);
+  const [selectedForecastIndex, setSelectedForecastIndex] = useState(0);
   const [showMonthDrillDown, setShowMonthDrillDown] = useState(false);
 
   useEffect(() => {
@@ -2093,6 +2070,14 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     }
     setSelectedMonthIndex(netWorthProgress.points.length - 1);
   }, [netWorthProgress.points.length]);
+
+  useEffect(() => {
+    if (!netWorthForecastData || netWorthForecastData.data.length === 0) {
+      setSelectedForecastIndex(0);
+      return;
+    }
+    setSelectedForecastIndex(netWorthForecastData.data.length - 1);
+  }, [netWorthForecastData?.data.length]);
 
   const hasActiveAccounts = useMemo(
     () => accounts.some((account) => account.isActive !== false),
@@ -2114,6 +2099,10 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const safeSelectedMonthIndex = Math.min(
     selectedMonthIndex,
     Math.max(0, netWorthProgress.points.length - 1)
+  );
+  const safeSelectedForecastIndex = Math.min(
+    selectedForecastIndex,
+    Math.max(0, (netWorthForecastData?.data.length ?? 1) - 1)
   );
 
   const selectedMonthPoint = netWorthProgress.points[safeSelectedMonthIndex];
@@ -2434,10 +2423,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
             <View style={styles.analyticsHeroTopRow}>
               <View style={styles.analyticsHeroHeading}>
                 <Text style={[styles.analyticsHeroEyebrow, { color: theme.colors.primary }]}>Analytics</Text>
-                <Text style={[styles.analyticsHeroIntroTitle, { color: theme.colors.text }]}>Track the right window</Text>
-                <Text style={[styles.analyticsHeroIntroMeta, { color: theme.colors.textSecondary }]} numberOfLines={2}>
-                  Navigate periods, compare activity, and keep goals in view without switching screens.
-                </Text>
               </View>
               <TouchableOpacity
                 accessibilityRole="button"
@@ -2578,7 +2563,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         title="Net Worth"
         subtitle="Track assets, liabilities, and cumulative progress across your active accounts."
       >
-            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={styles.chartSection}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeading}>
             <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Net Worth Progress</Text>
@@ -2689,7 +2674,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 </Text>
               </View>
             </View>
-            <View style={[styles.chartContainer, styles.premiumLineChartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}> 
+            <View style={[styles.chartContainer, styles.premiumLineChartContainer]}> 
               <FinanceLineChart
                 width={chartWidth}
                 height={228}
@@ -2796,172 +2781,27 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
       >
       {hasVisibleSpendingTrendCharts ? (
         <>
-          {shouldShowExpenseDistributionChart ? (
-            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
+          {shouldShowComparisonChart ? (
+            <View style={styles.chartSection}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeading}>
-                  <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Income & Expense Distribution</Text>
+                  <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Income, Expenses & Distribution</Text>
                   <Text style={[styles.cardHeaderMetaText, { color: theme.colors.textSecondary }]}>
-                    {activeRange.distributionCaption}
+                    {activeRange.comparisonTitle} rendered with the shared Skia chart component.
                   </Text>
                 </View>
-                {renderChartExportAction('expense-distribution', 'Income & Expense Distribution')}
-              </View>
-              <ViewShot ref={setChartCaptureRef('expense-distribution')} options={chartCaptureOptions}>
-                <View collapsable={false}>
-                  <CategoryDistributionPanel
-                    sections={distributionSections}
-                    formatCurrency={formatCurrency}
-                    emptyMessage="There is no income or expense data in this view yet."
-                    initialSectionKey={expenseDistribution.length > 0 ? 'expense' : 'income'}
-                  />
-                </View>
-              </ViewShot>
-            </View>
-          ) : null}
-
-          {shouldShowComparisonChart ? (
-            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-              <View style={styles.cardHeader}>
-                <Text style={[styles.cardTitle, { color: theme.colors.text }]}>{activeRange.comparisonTitle}</Text>
-                <View style={styles.cardHeaderLegendActions}>
-                  <View style={[styles.legendRow, styles.headerLegendRow]}>
-                    <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: chartPalette.expenses }]} />
-                      <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                    </View>
-                    <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: chartPalette.income }]} />
-                      <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Income</Text>
-                    </View>
-                    <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: comparisonNetColor }]} />
-                      <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net</Text>
-                    </View>
-                  </View>
-                  {renderChartExportAction('comparison-6-month', activeRange.comparisonTitle)}
-                </View>
+                {renderChartExportAction('comparison-6-month', 'Income, Expenses & Distribution')}
               </View>
               <ViewShot ref={setChartCaptureRef('comparison-6-month')} options={chartCaptureOptions}>
                 <View collapsable={false}>
-                  <View style={styles.chartSummary}>
-                    <Text style={[styles.chartSummaryValue, { color: theme.colors.text }]}>{formatSignedCurrency(formatCurrency, monthlyIncome - monthlyExpenses)}</Text>
-                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>{activeRange.comparisonSummaryLabel}</Text>
-                  </View>
-                  <View style={styles.chartStatRow}>
-                    <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                      <AdaptiveAmountText style={[styles.chartStatValue, { color: chartPalette.income }]} minFontSize={11} value={formatCurrency(comparisonSeries.totalIncome)} />
-                    </View>
-                    <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                      <AdaptiveAmountText style={[styles.chartStatValue, { color: chartPalette.expenses }]} minFontSize={11} value={formatCurrency(comparisonSeries.totalExpenses)} />
-                    </View>
-                    <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Net</Text>
-                      <Text style={[styles.chartStatValue, { color: comparisonSeries.totalIncome - comparisonSeries.totalExpenses >= 0 ? theme.colors.success : theme.colors.error }]}>
-                        {formatSignedCurrency(formatCurrency, comparisonSeries.totalIncome - comparisonSeries.totalExpenses)}
-                      </Text>
-                    </View>
-                    {comparisonBestBucket ? (
-                      <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                        <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Best Span</Text>
-                        <Text style={[styles.chartStatValue, { color: comparisonBestBucket.net >= 0 ? theme.colors.success : theme.colors.error }]} numberOfLines={1}>
-                          {comparisonBestBucket.label}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  {focusedComparisonBucket ? (
-                    <View style={[styles.chartFocusCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
-                      <View style={styles.chartFocusHeader}>
-                        <View style={styles.chartFocusTitleRow}>
-                          <Text style={[styles.chartFocusName, { color: theme.colors.text }]} numberOfLines={1}>
-                            {focusedComparisonBucket.label}
-                          </Text>
-                        </View>
-                        <View style={[styles.chartFocusBadge, { borderColor: theme.colors.border }]}> 
-                          <Text
-                            style={[
-                              styles.chartFocusBadgeText,
-                              { color: focusedComparisonBucket.net >= 0 ? theme.colors.success : theme.colors.error },
-                            ]}
-                          >
-                            {focusedComparisonBucket.net >= 0 ? 'Surplus' : 'Deficit'}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.chartFocusMetricsRow}>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                          <AdaptiveAmountText style={[styles.chartFocusMetricValue, { color: chartPalette.income }]} minFontSize={12} value={formatCurrency(focusedComparisonBucket.income)} />
-                        </View>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                          <AdaptiveAmountText style={[styles.chartFocusMetricValue, { color: chartPalette.expenses }]} minFontSize={12} value={formatCurrency(focusedComparisonBucket.expenses)} />
-                        </View>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Net</Text>
-                          <Text style={[styles.chartFocusMetricValue, { color: focusedComparisonBucket.net >= 0 ? theme.colors.success : theme.colors.error }]}>
-                            {formatSignedCurrency(formatCurrency, focusedComparisonBucket.net)}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  ) : null}
-                  <View style={[styles.chartContainer, styles.premiumBarChartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}> 
-                    <FinanceGroupedBarChart
-                      width={chartWidth}
-                      height={228}
-                      domain={comparisonYDomain}
-                      entries={comparisonChartEntries}
-                      incomeColor={chartPalette.income}
-                      expenseColor={chartPalette.expenses}
-                      lineColor={comparisonNetColor}
-                      gridColor={gridColor}
-                      labelColor={axisLabelColor}
-                      zeroLineColor={softBorderColor}
-                      focusedKey={focusedComparisonBucket?.key ?? null}
-                      onSelect={setFocusedComparisonBucketKey}
-                      padding={{ top: 26, bottom: 42, left: 40, right: 16 }}
-                      showNetLine={false}
-                    />
-                  </View>
-                  <Text style={[styles.chartFocusHint, { color: theme.colors.textSecondary }]}>
-                    Bars show income and expenses for each {selectedRange === 'weekly' ? 'day' : 'period'}.
-                  </Text>
-                  <View style={styles.chartFocusChipRow}>
-                    {comparisonSeries.bucketDetails.map((bucket) => {
-                      const isFocused = focusedComparisonBucket?.key === bucket.key;
-                      const accentColor = bucket.net >= 0 ? theme.colors.success : theme.colors.error;
-                      return (
-                        <TouchableOpacity
-                          key={bucket.key}
-                          activeOpacity={0.85}
-                          onPress={() => setFocusedComparisonBucketKey(bucket.key)}
-                          style={[
-                            styles.chartFocusChip,
-                            {
-                              backgroundColor: isFocused ? secondarySurface : theme.colors.surface,
-                              borderColor: isFocused ? accentColor : softBorderColor,
-                            },
-                          ]}
-                        >
-                          <Text style={[styles.chartFocusChipText, { color: theme.colors.text }]}>{bucket.label}</Text>
-                          <Text style={[styles.chartFocusChipAmount, { color: accentColor }]}>
-                            {formatSignedCurrency(formatCurrency, bucket.net)}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+                  <AccountModalSkiaBoundary data={analyticsSkiaData} />
                 </View>
               </ViewShot>
             </View>
           ) : null}
 
           {shouldShowCategoryBreakdownChart ? (
-            <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+            <View style={styles.chartSection}>
               <View style={styles.cardHeader}>
                 <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Spending by Category</Text>
                 {renderChartExportAction('spending-by-category', 'Spending by Category')}
@@ -2974,78 +2814,34 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                       {topCategory ? `${topCategory.categoryName} leads this view` : 'Largest category in view'}
                     </Text>
                   </View>
-                  <View style={styles.categorySnapshotRow}>
-                    <View style={[styles.categorySnapshotCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.categorySnapshotLabel, { color: theme.colors.textSecondary }]}>Tracked</Text>
-                      <Text style={[styles.categorySnapshotValue, { color: theme.colors.text }]}>{categorySpending.length} categories</Text>
+                  <MoneyManagerBarChartSection
+                    width={chartWidth}
+                    height={244}
+                    entries={categoryTotalStatsEntries}
+                    selectedKey={focusedCategoryBar?.key ?? null}
+                    onSelectKey={setFocusedSpendingCategoryKey}
+                    gridColor={gridColor}
+                    axisLabelColor={axisLabelColor}
+                    textColor={theme.colors.text}
+                    tooltipSurface={secondarySurface}
+                    tooltipBorder={softBorderColor}
+                    selectionFill={theme.isDark ? 'rgba(255,255,255,0.05)' : 'rgba(15,23,42,0.05)'}
+                    valueFormatter={formatCurrency}
+                    emptyTitle="No spending data"
+                    emptyMessage="There is no category spending data for this view yet."
+                  />
+                  <View style={styles.chartSection}>
+
+                    <View style={styles.cardHeader}>
+                      <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Expense & Income Mix</Text>
                     </View>
-                    <View style={[styles.categorySnapshotCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.categorySnapshotLabel, { color: theme.colors.textSecondary }]}>Average</Text>
-                      <AdaptiveAmountText style={[styles.categorySnapshotValue, { color: theme.colors.text }]} minFontSize={11} value={formatCurrency(averageCategorySpend)} />
-                    </View>
-                    <View style={[styles.categorySnapshotCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                      <Text style={[styles.categorySnapshotLabel, { color: theme.colors.textSecondary }]}>Top 3 Share</Text>
-                      <Text style={[styles.categorySnapshotValue, { color: theme.colors.text }]}>{formatPercentage(topThreeCategoryShare)}</Text>
-                    </View>
-                  </View>
-                  {focusedCategoryBar ? (
-                    <View style={[styles.chartFocusCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}>
-                      <View style={styles.chartFocusHeader}>
-                        <View style={styles.chartFocusTitleRow}>
-                          <View style={[styles.chartFocusSwatch, { backgroundColor: focusedCategoryBar.fill }]} />
-                          <Text style={[styles.chartFocusName, { color: theme.colors.text }]} numberOfLines={1}>
-                            {focusedCategoryBar.fullLabel}
-                          </Text>
-                        </View>
-                        <View style={[styles.chartFocusBadge, { borderColor: focusedCategoryBar.fill }]}> 
-                          <Text style={[styles.chartFocusBadgeText, { color: focusedCategoryBar.fill }]}>#{focusedCategoryRank ?? 1} ranked</Text>
-                        </View>
-                      </View>
-                      <View style={styles.chartFocusMetricsRow}>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Spent</Text>
-                          <AdaptiveAmountText style={[styles.chartFocusMetricValue, { color: theme.colors.text }]} minFontSize={12} value={formatCurrency(focusedCategoryBar.y)} />
-                        </View>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Share</Text>
-                          <Text style={[styles.chartFocusMetricValue, { color: theme.colors.text }]}>{formatPercentage(focusedCategoryBar.share)}</Text>
-                        </View>
-                        <View style={styles.chartFocusMetric}>
-                          <Text style={[styles.chartFocusMetricLabel, { color: theme.colors.textSecondary }]}>Standing</Text>
-                          <Text style={[styles.chartFocusMetricValue, { color: theme.colors.text }]}>Top {Math.min(focusedCategoryRank ?? 1, categoryBarData.length)}</Text>
-                        </View>
-                      </View>
-                      <View style={[styles.categoryProgressTrack, { backgroundColor: theme.colors.surface }]}> 
-                        <View
-                          style={[
-                            styles.categoryProgressFill,
-                            {
-                              backgroundColor: focusedCategoryBar.fill,
-                              width: focusedCategoryBar.share > 0 ? `${Math.max(focusedCategoryBar.share * 100, 8)}%` : '0%',
-                            },
-                          ]}
-                        />
-                      </View>
-                    </View>
-                  ) : null}
-                  <View style={[styles.chartContainer, styles.premiumBarChartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}> 
-                    <FinanceVerticalBarChart
-                      width={chartWidth}
-                      height={244}
-                      domain={categoryYDomain}
-                      entries={categoryChartEntries}
-                      gridColor={gridColor}
-                      labelColor={axisLabelColor}
-                      benchmarkValue={averageCategorySpend}
-                      benchmarkColor={benchmarkLineColor}
-                      focusedKey={focusedCategoryBar?.key ?? null}
-                      onSelect={setFocusedSpendingCategoryKey}
-                      padding={{ top: 30, bottom: 46, left: 40, right: 16 }}
+                    <CategoryDistributionPanel
+                      sections={distributionSections}
+                      formatCurrency={formatCurrency}
+                      emptyMessage="No distribution data for this view yet."
+                      initialSectionKey="expense"
                     />
                   </View>
-                  <Text style={[styles.chartFocusHint, { color: theme.colors.textSecondary }]}>
-                    The dashed line marks the average category spend for this view.
-                  </Text>
                   <View style={styles.categoryRankList}>
                     {categoryBarData.map((item, index) => {
                       const isFocused = focusedCategoryBar?.key === item.key;
@@ -3216,7 +3012,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
         </View>
       ) : null}
       {shouldShowForecastChart ? (
-      <View style={[styles.card, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+      <View style={styles.chartSection}>
         <View style={styles.cardHeader}>
           <Text style={[styles.cardTitle, { color: theme.colors.text }]}>Net Worth Forecast</Text>
           {renderChartExportAction('net-worth-forecast', 'Net Worth Forecast', !netWorthSimulation || !netWorthForecastData)}
@@ -3325,32 +3121,31 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
               ) : null}
             </View>
             {netWorthForecastData ? (
-              <View style={[styles.chartContainer, styles.premiumLineChartContainer, styles.forecastChartContainer, { backgroundColor: analyticsCanvasBackground, borderColor: softBorderColor }]}> 
-                <View style={styles.forecastLegendRow}>
-                  <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: forecastProjectionColor }]} />
-                    <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Projected Net Worth</Text>
-                  </View>
-                  <View style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: forecastContributionColor }]} />
-                    <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Saved Capital</Text>
-                  </View>
-                </View>
-                <FinanceLineChart
+              <View style={[styles.chartContainer, styles.forecastChartContainer]}>
+                <MoneyManagerLineChartSection
                   width={chartWidth}
                   height={228}
-                  domain={netWorthForecastYDomain}
-                  ticks={forecastChartTicks}
-                  series={forecastLineSeries}
+                  labels={forecastLineLabels}
+                  values={netWorthForecastData.data.map((point) => point.y)}
+                  axisItems={forecastAxisItems}
+                  selectedIndex={safeSelectedForecastIndex}
+                  onSelectIndex={setSelectedForecastIndex}
+                  metricLabel="Projected Net Worth"
+                  lineColor={forecastProjectionColor}
                   gridColor={gridColor}
-                  labelColor={axisLabelColor}
-                  zeroLineColor={gridColor}
-                  padding={{ top: 16, bottom: 40, left: 40, right: 16 }}
+                  axisLabelColor={axisLabelColor}
+                  textColor={theme.colors.text}
+                  tooltipSurface={secondarySurface}
+                  tooltipBorder={softBorderColor}
+                  valueFormatter={formatCurrency}
+                  emptyTitle="No forecast data"
+                  emptyMessage="There is no forecast line data for this view yet."
                 />
                 <Text style={[styles.forecastAssumptionText, { color: theme.colors.textSecondary }]}> 
                   Assumes a saving pace of {formatCurrency(netWorthSimulation.monthlySavings)} per month and 5% annual portfolio growth.
                 </Text>
               </View>
+
             ) : null}
           </View>
         )}
@@ -4278,6 +4073,10 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     elevation: 4,
   },
+  chartSection: {
+    marginHorizontal: 16,
+    marginBottom: 20,
+  },
   summaryCardHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -4937,16 +4736,9 @@ const styles = StyleSheet.create({
   chartContainer: {
     alignItems: 'center',
     marginVertical: 8,
-    paddingHorizontal: 4,
-    paddingVertical: 12,
-    borderRadius: 22,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 1,
-    overflow: 'hidden',
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    overflow: 'visible',
   },
   lineChartStyle: {
     marginVertical: 8,
@@ -5486,6 +5278,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+
+
+
+
 
 
 

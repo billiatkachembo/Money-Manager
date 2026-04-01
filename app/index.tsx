@@ -1,8 +1,10 @@
 import React, { useEffect } from 'react';
-import { Image, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as NativeSplashScreen from 'expo-splash-screen';
+import { LinearGradient as RNGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import Animated, {
   Easing,
   cancelAnimation,
@@ -13,36 +15,51 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-const SPLASH_BACKGROUND = '#667eea';
-const LOGO_SOURCE = require('../assets/images/splash-logo-white.png');
-const LOGO_HOLD_MS = 320;
-const LOGO_PULSE_MS = 320;
-const LOGO_SETTLE_MS = 320;
-const NAVIGATE_MS = 1800;
+import Logo from '../components/logo';
+
+NativeSplashScreen.preventAutoHideAsync();
+
+const LOGO_HOLD_MS = 200;
+const NAVIGATE_MS = 1700;
 
 export default function SplashScreen() {
   const router = useRouter();
-  const scale = useSharedValue(1);
+
+  // Reanimated
+  const scale = useSharedValue(0.9);
+  const opacity = useSharedValue(0);
+  const translateY = useSharedValue(20);
 
   useEffect(() => {
-    const splashFrame = requestAnimationFrame(() => {
-      void NativeSplashScreen.hideAsync();
+    requestAnimationFrame(() => {
+      NativeSplashScreen.hideAsync();
     });
 
+    // Fade + slide
+    opacity.value = withTiming(1, { duration: 500 });
+
+    translateY.value = withTiming(0, {
+      duration: 500,
+      easing: Easing.out(Easing.cubic),
+    });
+
+    // Pulse
     scale.value = withDelay(
       LOGO_HOLD_MS,
       withSequence(
-        withTiming(1.045, {
-          duration: LOGO_PULSE_MS,
-          easing: Easing.out(Easing.cubic),
-        }),
-        withTiming(1, {
-          duration: LOGO_SETTLE_MS,
-          easing: Easing.out(Easing.quad),
-        })
+        withTiming(1.08, { duration: 370 }),
+        withTiming(0.98, { duration: 360 }),
+        withTiming(1, { duration: 3600 })
       )
     );
 
+
+    // 📳 Haptic on finish
+    setTimeout(() => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }, 1600);
+
+    // Navigate
     const timeout = setTimeout(() => {
       router.replace('/(tabs)/home');
     }, NAVIGATE_MS);
@@ -50,23 +67,34 @@ export default function SplashScreen() {
     return () => {
       clearTimeout(timeout);
       cancelAnimation(scale);
-      cancelAnimationFrame(splashFrame);
+      cancelAnimation(opacity);
+      cancelAnimation(translateY);
     };
-  }, [router, scale]);
+  }, []);
 
-  const logoAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
+  const logoStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [
+      { scale: scale.value },
+      { translateY: translateY.value },
+    ],
   }));
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: false, animation: 'none', gestureEnabled: false }} />
+      <Stack.Screen options={{ headerShown: false }} />
       <StatusBar style="light" />
-      <View style={[styles.container, { backgroundColor: SPLASH_BACKGROUND }]}>
-        <Animated.View style={logoAnimatedStyle}>
-          <Image source={LOGO_SOURCE} resizeMode="contain" style={styles.logo} />
-        </Animated.View>
-      </View>
+
+      <RNGradient
+        colors={['#667eea', '#764ba2']}
+        style={styles.container}
+      >
+        <View style={styles.brandLockup}>
+          <Animated.View style={logoStyle}>
+            <Logo size={200} />
+          </Animated.View>
+        </View>
+      </RNGradient>
     </>
   );
 }
@@ -77,8 +105,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  logo: {
-    width: 104,
-    height: 104,
+  brandLockup: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

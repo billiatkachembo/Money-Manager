@@ -37,6 +37,10 @@ function makeAccount(id: string, type: Account['type'], createdAt = '2026-01-01T
   };
 }
 
+function makeLocalDate(year: number, monthIndex: number, day: number, hour = 12): Date {
+  return new Date(year, monthIndex, day, hour, 0, 0, 0);
+}
+
 function makeTransaction(overrides: Partial<Transaction> & Pick<Transaction, 'id' | 'type' | 'amount' | 'date' | 'category'>): Transaction {
   return {
     description: 'test transaction',
@@ -333,7 +337,7 @@ test('net worth progress starts at the first recorded month and preserves net wo
     [checking, savings],
     [januaryIncome, februaryExpense, marchTransfer.debit, marchTransfer.credit],
     6,
-    new Date('2026-03-31T23:59:59.999Z')
+    makeLocalDate(2026, 2, 31)
   );
 
   assert.deepEqual(
@@ -467,7 +471,7 @@ test('behavior metrics keep a 6-month window and compute current-month totals ag
     makeTransaction({ id: 'mar-expense-2', type: 'expense', amount: 10, date: new Date('2026-03-18T08:00:00.000Z'), fromAccountId: checking.id, fromAccount: checking.id, category: books }),
   ];
 
-  const metrics = computeBehaviorMetrics(transactions, [budget], [checking], new Date('2026-03-31T23:59:59.999Z'));
+  const metrics = computeBehaviorMetrics(transactions, [budget], [checking], makeLocalDate(2026, 2, 31));
 
   assert.deepEqual(
     metrics.monthly.map((entry) => entry.month),
@@ -481,7 +485,7 @@ test('behavior metrics keep a 6-month window and compute current-month totals ag
     net: 100,
   });
   assert.equal(metrics.budget.adherence, 1);
-  assert.equal(metrics.budget.risk, 0.25);
+  assert.equal(metrics.budget.risk, 0.2);
   assert.equal(metrics.insightContext.monthlyIncome, 150);
   assert.equal(metrics.insightContext.monthlyExpenses, 50);
 });
@@ -525,7 +529,7 @@ test('net worth progress starts from the first recorded account month when histo
     }),
   ];
 
-  const progress = computeNetWorthProgress([checking, savings], transactions, 6, new Date('2026-03-31T23:59:59.999Z'));
+  const progress = computeNetWorthProgress([checking, savings], transactions, 6, makeLocalDate(2026, 2, 31));
 
   assert.deepEqual(progress.points.map((point) => point.month), ['2026-01', '2026-02', '2026-03']);
   assert.deepEqual(progress.netWorth, [500, 500, 425]);

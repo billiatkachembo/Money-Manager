@@ -273,7 +273,7 @@ try {
 $adaptiveCanvas = New-Canvas 1408
 try {
   Draw-ModernFinanceMark $adaptiveCanvas.Graphics 1408 $false
-  Save-Png $adaptiveCanvas.Bitmap (Join-Path $assetsPath 'adaptive-icon.png')
+  Save-Png $adaptiveCanvas.Bitmap (Join-Path $assetsPath 'icon.png')
 } finally {
   $adaptiveCanvas.Graphics.Dispose()
   $adaptiveCanvas.Bitmap.Dispose()
@@ -282,7 +282,7 @@ try {
 $splashCanvas = New-Canvas 512
 try {
   Draw-ModernFinanceMark $splashCanvas.Graphics 512 $false
-  Save-Png $splashCanvas.Bitmap (Join-Path $assetsPath 'splash-icon.png')
+  Save-Png $splashCanvas.Bitmap (Join-Path $assetsPath 'icon.png')
 } finally {
   $splashCanvas.Graphics.Dispose()
   $splashCanvas.Bitmap.Dispose()

@@ -38,7 +38,6 @@ import { useTransactionStore } from '@/store/transaction-store';
 import { useQuickActionsStore } from '@/store/quick-actions-store';
 import { useTheme } from '@/store/theme-store';
 import { useTabNavigationStore } from '@/store/tab-navigation-store';
-import { useRouter } from 'expo-router';
 import { getHealthScoreLabel, getHealthScoreColor } from '@/lib/health-score';
 import { hasFarmActivity, getSeasonalFarmSummary } from '@/lib/farming';
 import { Transaction, TransactionCategory } from '@/types/transaction';
@@ -400,7 +399,6 @@ export default function HomeScreen() {
   } = useTransactionStore();
   const { openAddTransactionAt, consumeQuickAdd } = useQuickActionsStore();
   const openNotesComposer = useTabNavigationStore((state) => state.openNotesComposer);
-  const router = useRouter();
 
   const currentMonthKey = useMemo(() => toMonthKey(new Date()), []);
   const selectedMonthKey = useMemo(() => toMonthKey(selectedMonthDate), [selectedMonthDate]);
@@ -1588,19 +1586,6 @@ export default function HomeScreen() {
               <Text style={[styles.activityCountValue, { color: theme.colors.text }]}>{activityTransactions.length}</Text>
               <Text style={[styles.activityCountLabel, { color: theme.colors.textSecondary }]}>{activityCountLabel}</Text>
             </View>
-            {activityTransactions.length > 0 && !showHomeSearch ? (
-              <TouchableOpacity
-                style={[
-                  styles.activitySeeAllBtn,
-                  { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-                ]}
-                activeOpacity={0.85}
-                onPress={() => router.push('/(tabs)/transactions')}
-              >
-                <Text style={[styles.seeAll, { color: theme.colors.primary }]}>See All</Text>
-                <ChevronRight size={14} color={theme.colors.primary} />
-              </TouchableOpacity>
-            ) : null}
           </View>
         </View>
 
@@ -3399,10 +3384,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  seeAll: {
-    fontSize: 12,
-    fontWeight: '600' as const,
-  },
   farmCard: {
     marginHorizontal: 16,
     marginTop: 12,
@@ -3513,15 +3494,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase' as const,
     letterSpacing: 0.4,
     marginTop: 2,
-  },
-  activitySeeAllBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
   },
   activitySummaryRow: {
     flexDirection: 'row',

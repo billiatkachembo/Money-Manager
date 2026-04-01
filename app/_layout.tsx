@@ -19,6 +19,7 @@ import {
   QUICK_ADD_ACTION_ID,
   QUICK_ADD_NOTIFICATION_SOURCE,
   QUICK_SEARCH_ACTION_ID,
+  QUICK_TRANSACTIONS_ACTION_ID,
 } from '@/src/notifications/quick-add-notification';
 import { AppTooltipHost } from '@/components/ui/AppTooltipHost';
 import { installAlertTooltipBridge } from '@/src/ui/alert-tooltip-bridge';
@@ -79,6 +80,13 @@ function QuickAddNotificationManager() {
       setShowQuickCreate(false);
       setActiveTab('transactions');
       triggerSearch();
+      clearLastResponse();
+      return;
+    }
+
+    if (actionId === QUICK_TRANSACTIONS_ACTION_ID) {
+      setShowQuickCreate(false);
+      setActiveTab('transactions');
       clearLastResponse();
       return;
     }

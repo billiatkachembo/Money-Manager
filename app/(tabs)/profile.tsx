@@ -26,7 +26,6 @@ import {
   Bell,
   Moon,
   Globe,
-  Smartphone,
   DollarSign,
   MapPin,
   Calendar,
@@ -36,13 +35,8 @@ import {
   ExternalLink,
   Info,
   CheckCircle,
-  Lock,
-  Eye,
-  Key,
-  Database,
-  BarChart3,
   Clock,
-  Shield as ShieldIcon
+  Database,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
@@ -73,15 +67,8 @@ import { Transaction, Budget } from '@/types/transaction';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
 import { showAppTooltip } from '@/store/app-tooltip-store';
 import {
-  ProfileHeader,
-  ProfileStats,
-  MenuGrid,
-  AutoLockPickerModal,
-  EditProfileModal,
   PrivacySecurityModal,
-  HelpSupportModal,
   SettingsModal,
-  ImportModal,
 } from '@/components/profile';
 import { enableQuickAddNotificationAsync, disableQuickAddNotificationAsync, enableDailyReminderAsync, disableDailyReminderAsync, getAppNotificationPermissionStateAsync, requestAppNotificationPermissionAsync, type AppNotificationPermissionState } from '@/src/notifications/quick-add-notification';
 import {
@@ -442,15 +429,6 @@ export default function ProfileScreen() {
   );
   const driveConnected = Boolean(driveAuth?.accessToken || driveAuth?.refreshToken);
   const notificationPermissionGranted = notificationPermissionState === 'granted';
-  const overviewStats = useMemo(
-    () => [
-      { label: 'Transactions', value: `${transactions.length}` },
-      { label: 'Accounts', value: `${activeAccountCount}` },
-      { label: 'Notes', value: `${notes.length}` },
-      { label: 'Active Goals', value: `${activeGoalCount}` },
-    ],
-    [activeAccountCount, activeGoalCount, notes.length, transactions.length]
-  );
   const profileInfoRows = useMemo(
     () => [
       {
@@ -1650,8 +1628,8 @@ ${buildTransactionExportWindowMessage()}`,
   const openEmailSupport = () => {
     const subject = encodeURIComponent('Money Manager Support Request');
     const body = encodeURIComponent(`Hello Support Team,\n\nI need help with:\n\n\nApp Version: 1.0.0\nDevice: ${Platform.OS}\n`);
-    Linking.openURL(`mailto:support@moneymanager.com?subject=${subject}&body=${body}`).catch(() => {
-      Alert.alert('Error', 'Could not open email app. Please send email to support@moneymanager.com');
+    Linking.openURL(`mailto:app.moneymanager.mm@gmail.com?subject=${subject}&body=${body}`).catch(() => {
+      Alert.alert('Error', 'Could not open email app. Please send email to app.moneymanager.mm@gmail.com.com');
     });
   };
 
@@ -1787,50 +1765,6 @@ ${buildTransactionExportWindowMessage()}`,
       <View style={[styles.profileSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
         <View style={styles.profileSectionHeader}>
           <View>
-            <Text style={[styles.profileSectionTitle, { color: theme.colors.text }]}>Overview</Text>
-            <Text style={[styles.profileSectionSubtitle, { color: theme.colors.textSecondary }]}>
-              {budgets.length} budgets | {recurringRules.length} recurring rules
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.overviewGrid}>
-          {overviewStats.map((item) => (
-            <View
-              key={item.label}
-              style={[
-                styles.overviewTile,
-                { backgroundColor: theme.colors.background, borderColor: theme.colors.border },
-              ]}
-            >
-              <Text style={[styles.overviewTileLabel, { color: theme.colors.textSecondary }]}>{item.label}</Text>
-              <Text style={[styles.overviewTileValue, { color: theme.colors.text }]}>{item.value}</Text>
-            </View>
-          ))}
-        </View>
-
-        <View style={[styles.moneyRow, { borderTopColor: theme.colors.border }]}>
-          <View style={styles.moneyMetric}>
-            <Text style={[styles.moneyMetricLabel, { color: theme.colors.textSecondary }]}>Total Income</Text>
-            <AdaptiveAmountText
-              style={[styles.moneyMetricValue, { color: theme.colors.success }]}
-              value={settings.privacy?.hideAmounts ? '***' : formatCurrency(totalIncome)}
-            />
-          </View>
-          <View style={[styles.moneyDivider, { backgroundColor: theme.colors.border }]} />
-          <View style={styles.moneyMetric}>
-            <Text style={[styles.moneyMetricLabel, { color: theme.colors.textSecondary }]}>Total Expenses</Text>
-            <AdaptiveAmountText
-              style={[styles.moneyMetricValue, { color: theme.colors.error }]}
-              value={settings.privacy?.hideAmounts ? '***' : formatCurrency(totalExpenses)}
-            />
-          </View>
-        </View>
-      </View>
-
-      <View style={[styles.profileSection, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
-        <View style={styles.profileSectionHeader}>
-          <View>
             <Text style={[styles.profileSectionTitle, { color: theme.colors.text }]}>At a Glance</Text>
             <Text style={[styles.profileSectionSubtitle, { color: theme.colors.textSecondary }]}>
               {theme.isDark ? 'Dark mode active' : 'Light mode active'}
@@ -1929,14 +1863,13 @@ ${buildTransactionExportWindowMessage()}`,
         <Text style={[styles.version, { color: theme.colors.textSecondary }]}>Money Manager v1.0.0</Text>
         <Text style={[styles.copyright, { color: theme.colors.textSecondary }]}>Designed and developed by Billiat</Text>
       </View>
-{/* App Settings Modal */}
-<SettingsModal
+      {/* App Settings Modal */}
+      <SettingsModal
         visible={showSettings}
         onClose={() => setShowSettings(false)}
         theme={theme}
         settings={settings}
         updateSettings={updateSettings}
-        openEditProfile={() => openSettingsDestination(openEditProfile)}
         themeMode={themeMode}
         systemTheme={systemTheme === 'dark' ? 'dark' : 'light'}
         setThemeMode={setThemeMode}
@@ -1950,7 +1883,6 @@ ${buildTransactionExportWindowMessage()}`,
         userProfile={userProfile}
         currencies={currencies}
         languages={languages}
-        onShowAutoLockPicker={() => openSettingsDestination(() => setShowAutoLockPicker(true))}
         onExportTransactions={() => openSettingsDestination(openTransactionExportPrompt)}
         onQuickAddToggle={handleQuickAddToggle}
         onDailyReminderToggle={handleDailyReminderToggle}
@@ -2177,180 +2109,19 @@ ${buildTransactionExportWindowMessage()}`,
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
-      {/* Privacy & Security Modal */}
-      <Modal visible={showPrivacySecurity} animationType="slide" presentationStyle="pageSheet">
-        <View style={[styles.modalContainer, { backgroundColor: theme.colors.background }]}>
-          <View style={[styles.modalHeader, { borderBottomColor: theme.colors.border }]}>
-            <TouchableOpacity onPress={() => setShowPrivacySecurity(false)}>
-              <Text style={[styles.cancelButton, { color: theme.colors.textSecondary }]}>Close</Text>
-            </TouchableOpacity>
-            <Text style={[styles.modalTitle, { color: theme.colors.text }]}>Privacy & Security</Text>
-            <View style={styles.spacer} />
-          </View>
-
-          <ScrollView style={styles.modalContent}>
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Privacy</Text>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Eye size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Hide Amounts</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Mask transaction amounts on main screen</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.privacy?.hideAmounts || false}
-                  onValueChange={(value) => updatePrivacySetting('hideAmounts', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Lock size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Require Authentication</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Require PIN/Face ID to open app</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.privacy?.requireAuth || false}
-                  onValueChange={(value) => updatePrivacySetting('requireAuth', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Database size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Data Sharing</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Share anonymous usage data to improve app</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.privacy?.dataSharing || false}
-                  onValueChange={(value) => updatePrivacySetting('dataSharing', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <BarChart3 size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Analytics</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Help us understand how you use the app</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.privacy?.analytics || false}
-                  onValueChange={(value) => updatePrivacySetting('analytics', value)}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-            </View>
-
-            <View style={styles.settingsSection}>
-              <Text style={[styles.sectionTitle, { color: theme.colors.text }]}>Security</Text>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Smartphone size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>Biometric Authentication</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Use fingerprint or face ID</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.biometricAuth}
-                  onValueChange={handleBiometricAuthToggle}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-
-              <View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-                <View style={styles.settingInfo}>
-                  <Key size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>App Password</Text>
-                    <Text style={[styles.settingSubtitle, { color: theme.colors.textSecondary }]}>Set a password to protect the app</Text>
-                  </View>
-                </View>
-                <Switch
-                  value={settings.security?.passwordEnabled || false}
-                  onValueChange={handlePasswordToggle}
-                  trackColor={{ false: '#e0e0e0', true: '#667eea' }}
-                />
-              </View>
-
-
-
-<View style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}>
-  <View style={styles.settingInfo}>
-    <ShieldIcon size={20} color="#667eea" />
-
-    <View style={styles.settingText}>
-      <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-        Two-Factor Authentication
-      </Text>
-
-      <Text
-        style={[
-          styles.settingSubtitle,
-          { color: theme.colors.textSecondary }
-        ]}
-      >
-        Add extra security to your account
-      </Text>
-    </View>
-  </View>
-
-  <Switch
-    value={twoFactorEnabled}
-    onValueChange={handleTwoFactorToggle}
-    trackColor={{ false: "#e0e0e0", true: "#667eea" }}
-  />
-</View>
-
-              <TouchableOpacity
-                style={[styles.settingItem, { borderBottomColor: theme.colors.border }]}
-                onPress={() => setShowAutoLockPicker(true)}
-              >
-                <View style={styles.settingInfo}>
-                  <Clock size={20} color="#667eea" />
-                  <View style={styles.settingText}>
-                    <Text style={[styles.settingTitle, { color: theme.colors.text }]}>
-                      Auto Lock
-                    </Text>
-                    <Text
-                      style={[
-                        styles.settingSubtitle,
-                        { color: theme.colors.textSecondary },
-                      ]}
-                    >
-                      {autoLockLabel}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text
-                  style={[
-                    styles.settingValue,
-                    { color: theme.colors.textSecondary },
-                  ]}
-                >
-                  {autoLockShort}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-
-          </ScrollView>
-        </View>
-      </Modal>
+      <PrivacySecurityModal
+        visible={showPrivacySecurity}
+        onClose={() => setShowPrivacySecurity(false)}
+        settings={settings}
+        twoFactorEnabled={twoFactorEnabled}
+        autoLockLabel={autoLockLabel}
+        autoLockShort={autoLockShort}
+        updatePrivacySetting={(key, value) => updatePrivacySetting(key, value)}
+        onBiometricAuthToggle={handleBiometricAuthToggle}
+        onPasswordToggle={handlePasswordToggle}
+        onTwoFactorToggle={handleTwoFactorToggle}
+        onShowAutoLockPicker={() => setShowAutoLockPicker(true)}
+      />
 
       {/* Edit Profile Modal */}
       <Modal visible={showEditProfile} animationType="slide" presentationStyle="pageSheet">
@@ -2483,7 +2254,7 @@ ${buildTransactionExportWindowMessage()}`,
                   <View style={styles.helpItemText}>
                     <Text style={[styles.helpItemTitle, { color: theme.colors.text }]}>Email Support</Text>
                     <Text style={[styles.helpItemSubtitle, { color: theme.colors.textSecondary }]}>
-                      support@moneymanager.com
+                      app.moneymanager.mm@gmail.com
                     </Text>
                   </View>
                 </View>
@@ -2684,30 +2455,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     marginTop: 4,
-  },
-  overviewGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  overviewTile: {
-    width: '48%',
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 13,
-    gap: 6,
-  },
-  overviewTileLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  overviewTileValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.3,
   },
   moneyRow: {
     flexDirection: 'row',

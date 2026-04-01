@@ -16,7 +16,6 @@ import {
 import {
   Download,
   Shield,
-  Edit3,
   Globe,
   Moon,
   Trash2,
@@ -45,7 +44,6 @@ interface SettingsModalProps {
   theme: any;
   settings: any;
   updateSettings: (settings: any) => void;
-  openEditProfile: () => void;
   themeMode: ThemeMode;
   systemTheme: 'light' | 'dark' | null;
   setThemeMode: (mode: ThemeMode) => void;
@@ -61,7 +59,6 @@ interface SettingsModalProps {
   googleDriveUnavailableReason?: string;
   currencies: CurrencyOption[];
   languages: SupportedLanguageOption[];
-  onShowAutoLockPicker: () => void;
   onExportTransactions: () => void;
   onQuickAddToggle: (value: boolean) => void | Promise<void>;
   onDailyReminderToggle: (value: boolean) => void | Promise<void>;
@@ -117,7 +114,6 @@ export function SettingsModal({
   theme,
   settings,
   updateSettings,
-  openEditProfile,
   themeMode,
   systemTheme,
   setThemeMode,
@@ -133,7 +129,6 @@ export function SettingsModal({
   googleDriveUnavailableReason,
   currencies,
   languages,
-  onShowAutoLockPicker,
   onExportTransactions,
   onQuickAddToggle,
   onDailyReminderToggle,
@@ -337,7 +332,6 @@ export function SettingsModal({
   const selectorItems: SelectorItem[] = selectorTarget === 'currency' ? sortedCurrencies : sortedLanguages;
 
   const quickActions = [
-    { key: 'profile', title: 'Profile', Icon: Edit3, color: '#6366F1', onPress: openEditProfile },
     { key: 'pc_manager', title: 'PC Manager', Icon: Globe, color: '#2563EB', onPress: onOpenPcManager },
     { key: 'backup', title: 'Backup', Icon: Download, color: '#0EA5E9', onPress: onBackupRestore },
     { key: 'export', title: 'Export', Icon: FileText, color: '#F97316', onPress: onExportTransactions },

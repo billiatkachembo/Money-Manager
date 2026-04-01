@@ -14,8 +14,8 @@ export function HelpSupportModal({ visible, onClose }: HelpSupportModalProps) {
   const openEmailSupport = () => {
     const subject = encodeURIComponent('Money Manager Support Request');
     const body = encodeURIComponent(`Hello Support Team,\\n\\nI need help with:\\n\\n\\nApp Version: 1.0.0\\nDevice: ${Platform.OS}\\n`);
-    Linking.openURL(`mailto:support@moneymanager.com?subject=${subject}&body=${body}`).catch(() => {
-      Alert.alert('Error', 'Could not open email app. Please send email to support@moneymanager.com');
+    Linking.openURL(`mailto:app.moneymanager.mm@gmail.com?subject=${subject}&body=${body}`).catch(() => {
+      Alert.alert('Error', 'Could not open email app. Please send email to app.moneymanager.mm@gmail.com');
     });
   };
 
@@ -91,7 +91,7 @@ export function HelpSupportModal({ visible, onClose }: HelpSupportModalProps) {
                 <View style={styles.helpItemText}>
                   <Text style={[styles.helpItemTitle, { color: theme.colors.text }]}>Email Support</Text>
                   <Text style={[styles.helpItemSubtitle, { color: theme.colors.textSecondary }]}>
-                    support@moneymanager.com
+                    app.moneymanager.mm@gmail.com
                   </Text>
                 </View>
               </View>

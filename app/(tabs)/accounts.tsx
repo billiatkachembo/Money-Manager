@@ -16,7 +16,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { BarChart3, ChevronLeft, ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
+import { BarChart3, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Download, Pencil, PiggyBank, Plus, Shield, Trash2 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AccountModalSkiaBoundary } from '@/components/charts/AccountModalSkiaBoundary';
 import { Account, AccountTypeDefinition, AccountTypeGroup, Transaction } from '@/types/transaction';
@@ -34,7 +34,7 @@ import { useTabNavigationStore } from '@/store/tab-navigation-store';
 import { exportAccountsToCsv } from '@/lib/account-csv';
 import { formatDateTimeWithWeekday, formatDateWithWeekday } from '@/utils/date';
 import { AdaptiveAmountText } from '@/components/ui/AdaptiveAmountText';
-import { computeNetWorthProgress } from '@/src/domain/analytics';
+import { computeCategoryBreakdown, computeCategoryDistribution, computeNetWorthProgress } from '@/src/domain/analytics';
 
 type AccountSortMode = 'name' | 'type' | 'balance' | 'newest';
 type AccountSortDirection = 'asc' | 'desc';
@@ -46,9 +46,9 @@ const ACCOUNT_SORT_OPTIONS: Array<{ key: AccountSortMode; label: string }> = [
   { key: 'newest', label: 'Newest' },
 ];
 
-const ACCOUNT_SORT_DIRECTIONS: Array<{ key: AccountSortDirection; label: string }> = [
-  { key: 'asc', label: 'Ascending' },
-  { key: 'desc', label: 'Descending' },
+const ACCOUNT_SORT_DIRECTIONS: Array<{ key: AccountSortDirection; label: string; compactLabel: string }> = [
+  { key: 'asc', label: 'Ascending', compactLabel: 'Asc' },
+  { key: 'desc', label: 'Descending', compactLabel: 'Desc' },
 ];
 
 function getDefaultSortDirection(mode: AccountSortMode): AccountSortDirection {
@@ -247,11 +247,10 @@ export default function AccountsScreen() {
   const [openingBalanceDate, setOpeningBalanceDate] = useState<Date>(() => new Date());
   const [showOpeningBalanceDatePicker, setShowOpeningBalanceDatePicker] = useState(false);
   const [detailAccount, setDetailAccount] = useState<Account | null>(null);
+  const [expandedAccountId, setExpandedAccountId] = useState<string | null>(null);
   const [isExportingAccounts, setIsExportingAccounts] = useState(false);
   const [showAnalyticsModal, setShowAnalyticsModal] = useState(false);
   const [analyticsMonthCursor, setAnalyticsMonthCursor] = useState<Date>(() => new Date());
-  const [accountAnalyticsFocusedBucketKey, setAccountAnalyticsFocusedBucketKey] = useState<string | null>(null);
-  const [accountAnalyticsFocusedPointIndex, setAccountAnalyticsFocusedPointIndex] = useState<number | null>(null);
 
   const sortedAccountTypeOptions = useMemo(
     () => getSortedAccountTypeOptions(accountTypeDefinitions),
@@ -589,10 +588,6 @@ export default function AccountsScreen() {
       ),
     [accountAnalyticsTransactions]
   );
-  const accountAnalyticsNet = useMemo(
-    () => roundCurrency(accountAnalyticsIncome - accountAnalyticsExpenses),
-    [accountAnalyticsExpenses, accountAnalyticsIncome]
-  );
   const accountAnalyticsMonthLabel = useMemo(
     () => formatMonthYearLabel(analyticsMonthCursor),
     [analyticsMonthCursor]
@@ -633,13 +628,34 @@ export default function AccountsScreen() {
     });
   }, [accountAnalyticsTrend.points, transactions]);
 
+  const accountAnalyticsExpenseDistribution = useMemo(
+    () => computeCategoryDistribution(computeCategoryBreakdown(accountAnalyticsTransactions, 'expense'), 5),
+    [accountAnalyticsTransactions]
+  );
+
+  const accountAnalyticsIncomeDistribution = useMemo(
+    () => computeCategoryDistribution(computeCategoryBreakdown(accountAnalyticsTransactions, 'income'), 5),
+    [accountAnalyticsTransactions]
+  );
+
+  const accountAnalyticsPieDistribution = useMemo(
+    () =>
+      accountAnalyticsExpenseDistribution.length > 0
+        ? accountAnalyticsExpenseDistribution
+        : accountAnalyticsIncomeDistribution,
+    [accountAnalyticsExpenseDistribution, accountAnalyticsIncomeDistribution]
+  );
+
   const accountAnalyticsSkiaData = useMemo(
     () => ({
       months: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.label),
+      lineValues: accountAnalyticsTrend.netWorth,
       income: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.income),
       expenses: accountAnalyticsIncomeExpenseSeries.map((entry) => entry.expenses),
+      pieLabels: accountAnalyticsPieDistribution.map((entry) => entry.name),
+      pieValues: accountAnalyticsPieDistribution.map((entry) => entry.amount),
     }),
-    [accountAnalyticsIncomeExpenseSeries]
+    [accountAnalyticsIncomeExpenseSeries, accountAnalyticsPieDistribution, accountAnalyticsTrend.netWorth]
   );
 
   const accountAnalyticsHasData = useMemo(
@@ -671,27 +687,6 @@ export default function AccountsScreen() {
     }
   }, [sortDirection, sortMode]);
 
-  const sortModeDescription = useMemo(() => {
-    switch (sortMode) {
-      case 'type':
-        return sortDirection === 'asc'
-          ? 'Active accounts stay first, then sections and accounts sort by account type from A to Z.'
-          : 'Active accounts stay first, then sections and accounts sort by account type from Z to A.';
-      case 'balance':
-        return sortDirection === 'asc'
-          ? 'Active accounts stay first, then smaller balances rise before larger ones across the whole list.'
-          : 'Active accounts stay first, then larger balances rise before smaller ones across the whole list.';
-      case 'newest':
-        return sortDirection === 'asc'
-          ? 'Active accounts stay first, then older accounts appear before newer ones across the whole list.'
-          : 'Active accounts stay first, then newer accounts appear before older ones across the whole list.';
-      case 'name':
-      default:
-        return sortDirection === 'asc'
-          ? 'Active accounts stay first, then sections and account names sort from A to Z.'
-          : 'Active accounts stay first, then sections and account names sort from Z to A.';
-    }
-  }, [sortDirection, sortMode]);
 
   const resetForm = () => {
     const initialDefinition = getAccountTypeDefinition('checking', accountTypeDefinitions);
@@ -828,8 +823,12 @@ export default function AccountsScreen() {
     setIsExportingAccounts(true);
 
     try {
-      const csvContent = exportAccountsToCsv(orderedAccounts);
-      const fileName = `money-manager-accounts-${formatFileTimestamp(new Date())}.csv`;
+      const csvContent = exportAccountsToCsv(orderedAccounts, {
+        accountTypeDefinitions,
+        activityByAccountId: accountActivityById,
+        exportedAt: new Date(),
+      });
+      const fileName = `Money Manager-Accounts-CSV-${formatFileTimestamp(new Date())}.csv`;
       const baseDir = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
       let exportUri: string | null = null;
 
@@ -851,7 +850,7 @@ export default function AccountsScreen() {
           await FileSystem.writeAsStringAsync(destinationUri, csvContent, {
             encoding: FileSystem.EncodingType.UTF8,
           });
-          Alert.alert('Accounts saved', 'Your accounts were exported as a CSV file.');
+          Alert.alert('Accounts saved', 'Your accounts CSV now includes account types, status, and activity totals.');
           return;
         }
       }
@@ -865,11 +864,11 @@ export default function AccountsScreen() {
       }
 
       await Sharing.shareAsync(exportUri, {
-        dialogTitle: 'Export accounts CSV',
+        dialogTitle: 'Export Money Manager accounts CSV',
         mimeType: 'text/csv',
         UTI: 'public.comma-separated-values-text',
       });
-      Alert.alert('Accounts ready', 'Your accounts CSV is ready to save or share.');
+      Alert.alert('Accounts ready', 'Your improved accounts CSV is ready to save or share.');
     } catch (error) {
       console.error('Failed to export accounts CSV:', error);
       Alert.alert(
@@ -1061,6 +1060,22 @@ export default function AccountsScreen() {
       contentContainerStyle={styles.contentContainer}
       showsVerticalScrollIndicator={false}
     >
+      <View style={styles.analyticsTopRow}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => setShowAnalyticsModal(true)}
+          style={[
+            styles.analyticsTriggerButton,
+            {
+              backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
+              borderColor: theme.colors.border,
+            },
+          ]}
+        >
+          <BarChart3 size={18} color={theme.colors.primary} />
+          <Text style={[styles.analyticsTriggerText, { color: theme.colors.text }]}>Analytics</Text>
+        </TouchableOpacity>
+      </View>
       <LinearGradient
         colors={heroGradientColors}
         start={{ x: 0, y: 0 }}
@@ -1186,54 +1201,7 @@ export default function AccountsScreen() {
               {orderedAccounts.length} tracked | {activeAccounts.length} visible
               {hiddenAccountsCount > 0 ? ` | ${hiddenAccountsCount} hidden` : ''}
             </Text>
-          </View>
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={() => setShowAnalyticsModal(true)}
-            style={[styles.analyticsTriggerButton, { backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC', borderColor: theme.colors.border }]}
-          >
-            <BarChart3 size={18} color={theme.colors.primary} />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.actionPanelTagRow}>
-          <View
-            style={[
-              styles.actionPanelTag,
-              {
-                backgroundColor: theme.isDark ? theme.colors.background : '#F8FAFC',
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.actionPanelTagText, { color: theme.colors.textSecondary }]}>Sort keeps visible accounts first</Text>
-          </View>
-          {customAccountTypeCount > 0 ? (
-            <View
-              style={[
-                styles.actionPanelTag,
-                {
-                  backgroundColor: withAlphaColor(theme.colors.primary, theme.isDark ? '22' : '12'),
-                  borderColor: withAlphaColor(theme.colors.primary, '38'),
-                },
-              ]}
-            >
-              <Text style={[styles.actionPanelTagText, { color: theme.colors.primary }]}>{customAccountTypeCount} custom type{customAccountTypeCount === 1 ? '' : 's'}</Text>
-            </View>
-          ) : null}
-          {debtPortfolioSummary.trackedPositions > 0 ? (
-            <View
-              style={[
-                styles.actionPanelTag,
-                {
-                  backgroundColor: withAlphaColor(theme.colors.error, theme.isDark ? '22' : '10'),
-                  borderColor: withAlphaColor(theme.colors.error, '34'),
-                },
-              ]}
-            >
-              <Text style={[styles.actionPanelTagText, { color: theme.colors.error }]}>{debtPortfolioSummary.trackedPositions} debt record{debtPortfolioSummary.trackedPositions === 1 ? '' : 's'}</Text>
-            </View>
-          ) : null}
-        </View>
+          </View></View>
         <View style={styles.actionButtonsRow}>
           <TouchableOpacity style={[styles.primaryButton, { backgroundColor: theme.colors.primary }]} onPress={() => openCreateAccount()}>
             <Plus size={18} color="white" />
@@ -1283,83 +1251,86 @@ export default function AccountsScreen() {
             <Text style={[styles.sortPanelTitle, { color: theme.colors.text }]}>Organize Accounts</Text>
             <Text style={[styles.sortPanelMeta, { color: theme.colors.textSecondary }]}>Active accounts stay first</Text>
           </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.sortChipsScroller}
-            contentContainerStyle={styles.sortChipsRow}
-          >
-            {ACCOUNT_SORT_OPTIONS.map((option) => {
-              const isSelected = sortMode === option.key;
-              return (
-                <TouchableOpacity
-                  key={option.key}
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    setSortMode(option.key);
-                    if (sortMode !== option.key) {
-                      setSortDirection(getDefaultSortDirection(option.key));
-                    }
-                  }}
-                  style={[
-                    styles.sortChip,
-                    {
-                      backgroundColor: isSelected
-                        ? theme.colors.primary
-                        : theme.isDark
-                          ? theme.colors.background
-                          : '#FFFFFF',
-                      borderColor: isSelected ? theme.colors.primary : theme.colors.border,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.sortChipText,
-                      { color: isSelected ? '#FFFFFF' : theme.colors.text },
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-            
-            {ACCOUNT_SORT_DIRECTIONS.map((direction) => {
-              const isSelected = sortDirection === direction.key;
-              return (
-                <TouchableOpacity
-                  key={direction.key}
-                  activeOpacity={0.85}
-                  onPress={() => setSortDirection(direction.key)}
-                  style={[
-                    styles.sortChip,
-                    {
-                      backgroundColor: isSelected
-                        ? theme.colors.text
-                        : theme.isDark
-                          ? theme.colors.background
-                          : '#FFFFFF',
-                      borderColor: isSelected ? theme.colors.text : theme.colors.border,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.sortChipText,
-                      { color: isSelected ? (theme.isDark ? '#0F172A' : '#FFFFFF') : theme.colors.text },
-                    ]}
-                  >
-                    {direction.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-          <Text style={[styles.sortPanelHint, { color: theme.colors.textSecondary }]}> 
+          <View style={styles.sortGroups}>
+            <View style={styles.sortGroup}>
+              <Text style={[styles.sortGroupLabel, { color: theme.colors.textSecondary }]}>Sort by</Text>
+              <View style={styles.sortChipRow}>
+                {ACCOUNT_SORT_OPTIONS.map((option) => {
+                  const isSelected = sortMode === option.key;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setSortMode(option.key);
+                        if (sortMode !== option.key) {
+                          setSortDirection(getDefaultSortDirection(option.key));
+                        }
+                      }}
+                      style={[
+                        styles.sortChip,
+                        {
+                          backgroundColor: isSelected
+                            ? theme.colors.primary
+                            : theme.isDark
+                              ? theme.colors.background
+                              : '#FFFFFF',
+                          borderColor: isSelected ? theme.colors.primary : theme.colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.sortChipText,
+                          { color: isSelected ? '#FFFFFF' : theme.colors.text },
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+            <View style={styles.sortGroup}>
+              <Text style={[styles.sortGroupLabel, { color: theme.colors.textSecondary }]}>Order</Text>
+              <View style={styles.sortChipRow}>
+                {ACCOUNT_SORT_DIRECTIONS.map((direction) => {
+                  const isSelected = sortDirection === direction.key;
+                  return (
+                    <TouchableOpacity
+                      key={direction.key}
+                      activeOpacity={0.85}
+                      onPress={() => setSortDirection(direction.key)}
+                      style={[
+                        styles.sortChip,
+                        styles.sortDirectionChip,
+                        {
+                          backgroundColor: isSelected
+                            ? theme.colors.text
+                            : theme.isDark
+                              ? theme.colors.background
+                              : '#FFFFFF',
+                          borderColor: isSelected ? theme.colors.text : theme.colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.sortChipText,
+                          { color: isSelected ? (theme.isDark ? '#0F172A' : '#FFFFFF') : theme.colors.text },
+                        ]}
+                      >
+                        {direction.compactLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+          <Text style={[styles.sortPanelHint, { color: theme.colors.textSecondary }]}>
             {(ACCOUNT_SORT_OPTIONS.find((option) => option.key === sortMode)?.label ?? 'Name') + ' / ' + sortDirectionLabel}
-            {' | '}
-            {sortModeDescription}
           </Text>
         </View>
       ) : null}
@@ -1419,12 +1390,13 @@ export default function AccountsScreen() {
                   const transferNet = roundCurrency(flow.transfersIn - flow.transfersOut);
                   const debtNet = roundCurrency(flow.debtIn - flow.debtOut - flow.debtPayments);
                   const displayBalance = getDisplayAccountBalance(account.balance, accountIsLiability);
+                  const isExpanded = expandedAccountId === account.id;
 
                   return (
                     <TouchableOpacity
                       key={account.id}
                       activeOpacity={0.92}
-                      onPress={() => setDetailAccount(account)}
+                      onPress={() => setExpandedAccountId((prev) => (prev === account.id ? null : account.id))}
                       style={[
                         styles.card,
                         {
@@ -1436,186 +1408,167 @@ export default function AccountsScreen() {
                     >
                       <View style={[styles.accountAccentBar, { backgroundColor: accentColor }]} />
                       <View style={styles.accountCardBody}>
-                        <View style={styles.accountCardTop}>
-                          <View style={styles.accountIdentity}>
-                            <View
-                              style={[
-                                styles.accountBadge,
-                                {
-                                  backgroundColor: withAlphaColor(accentColor, theme.isDark ? '24' : '16'),
-                                  borderColor: withAlphaColor(accentColor, '44'),
-                                },
-                              ]}
-                            >
-                              <TypeIcon size={18} color={accentColor} />
-                            </View>
-                            <View style={styles.accountMeta}>
-                              <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
-                              <View style={styles.accountTagRow}>
+                        {isExpanded ? (
+                          <>
+                            <View style={styles.accountCardTop}>
+                              <View style={styles.accountIdentity}>
                                 <View
                                   style={[
-                                    styles.accountTypeChip,
-                                    { backgroundColor: withAlphaColor(accentColor, theme.isDark ? '22' : '12') },
-                                  ]}
-                                >
-                                  <Text style={[styles.accountTypeChipText, { color: accentColor }]}>
-                                    {typeMeta.label ?? account.type}
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.hiddenPill,
+                                    styles.accountBadge,
                                     {
-                                      backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                      borderColor: theme.colors.border,
-                                      borderWidth: 1,
+                                      backgroundColor: withAlphaColor(accentColor, theme.isDark ? '24' : '16'),
+                                      borderColor: withAlphaColor(accentColor, '44'),
                                     },
                                   ]}
                                 >
-                                  <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}> 
-                                    {flow.transactions.length === 0
-                                      ? 'No activity'
-                                      : `${flow.transactions.length} ${flow.transactions.length === 1 ? 'entry' : 'entries'}`}
-                                  </Text>
+                                  <TypeIcon size={18} color={accentColor} />
                                 </View>
-                                {typeMeta.isCustom ? (
-                                  <View style={[styles.hiddenPill, { backgroundColor: withAlphaColor(accentColor, theme.isDark ? '20' : '10') }]}>
-                                    <Text style={[styles.hiddenPillText, { color: accentColor }]}>Custom</Text>
+                                <View style={styles.accountMeta}>
+                                  <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
+                                  <View style={styles.accountTagRow}>
+                                    <View
+                                      style={[
+                                        styles.accountTypeChip,
+                                        { backgroundColor: withAlphaColor(accentColor, theme.isDark ? '22' : '12') },
+                                      ]}
+                                    >
+                                      <Text style={[styles.accountTypeChipText, { color: accentColor }]}>
+                                        {typeMeta.label ?? account.type}
+                                      </Text>
+                                    </View>
+                                    <View
+                                      style={[
+                                        styles.hiddenPill,
+                                        {
+                                          backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
+                                          borderColor: theme.colors.border,
+                                          borderWidth: 1,
+                                        },
+                                      ]}
+                                    >
+                                      <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}>
+                                        {flow.transactions.length === 0
+                                          ? 'No activity'
+                                          : `${flow.transactions.length} ${flow.transactions.length === 1 ? 'entry' : 'entries'}`}
+                                      </Text>
+                                    </View>
+                                    {typeMeta.isCustom ? (
+                                      <View style={[styles.hiddenPill, { backgroundColor: withAlphaColor(accentColor, theme.isDark ? '20' : '10') }]}>
+                                        <Text style={[styles.hiddenPillText, { color: accentColor }]}>Custom</Text>
+                                      </View>
+                                    ) : null}
+                                    {!account.isActive ? (
+                                      <View style={[styles.hiddenPill, { backgroundColor: theme.colors.border }]}> 
+                                        <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}>Hidden</Text>
+                                      </View>
+                                    ) : null}
                                   </View>
-                                ) : null}
-                                {!account.isActive ? (
-                                  <View style={[styles.hiddenPill, { backgroundColor: theme.colors.border }]}> 
-                                    <Text style={[styles.hiddenPillText, { color: theme.colors.textSecondary }]}>Hidden</Text>
-                                  </View>
-                                ) : null}
+                                </View>
+                              </View>
+
+                              <View style={styles.actions}>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.iconButtonSurface,
+                                    {
+                                      backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
+                                      borderColor: theme.colors.border,
+                                    },
+                                  ]}
+                                  onPress={(event) => {
+                                    event.stopPropagation?.();
+                                    openEdit(account);
+                                  }}
+                                >
+                                  <Pencil size={16} color={theme.colors.primary} />
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                  style={[
+                                    styles.iconButtonSurface,
+                                    {
+                                      backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
+                                      borderColor: theme.colors.border,
+                                    },
+                                  ]}
+                                  onPress={(event) => {
+                                    event.stopPropagation?.();
+                                    removeAccount(account.id, account.name);
+                                  }}
+                                >
+                                  <Trash2 size={16} color={theme.colors.error} />
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+
+                            <View style={styles.accountBalanceRow}>
+                              <Text style={[styles.accountBalanceLabel, { color: theme.colors.textSecondary }]}>
+                                {accountIsLiability ? 'Outstanding balance' : 'Available balance'}
+                              </Text>
+                              <AdaptiveAmountText
+                                style={[
+                                  styles.balance,
+                                  { color: accountIsLiability || displayBalance < 0 ? theme.colors.error : theme.colors.text },
+                                ]}
+                                minFontSize={18}
+                                value={formatCurrency(displayBalance)}
+                              />
+                            </View>
+
+                            <View style={[styles.accountSummaryBlock, { borderTopColor: theme.colors.border }]}>
+                              <Text style={[styles.accountSummaryText, { color: theme.colors.textSecondary }]}>
+                                {`Income ${formatCurrency(flow.income)} | Expenses ${formatCurrency(flow.expenses)}`}
+                              </Text>
+                              {transferNet !== 0 || debtNet !== 0 ? (
+                                <Text style={[styles.accountSummarySubtext, { color: theme.colors.textSecondary }]}>
+                                  {[
+                                    transferNet !== 0 ? `Transfers ${formatSignedCurrency(formatCurrency, transferNet)}` : null,
+                                    debtNet !== 0 ? `Debt ${formatSignedCurrency(formatCurrency, debtNet)}` : null,
+                                  ].filter(Boolean).join(' | ')}
+                                </Text>
+                              ) : null}
+                            </View>
+
+                            <View style={[styles.accountFooterRow, { borderTopColor: theme.colors.border }]}> 
+                              <Text style={[styles.accountFooterText, { color: theme.colors.textSecondary }]}>
+                                {account.isActive
+                                  ? `Opened ${formatDateWithWeekday(account.createdAt)}`
+                                  : `Hidden from totals - Opened ${formatDateWithWeekday(account.createdAt)}`}
+                              </Text>
+                              <TouchableOpacity
+                                style={styles.accountFooterLink}
+                                onPress={(event) => {
+                                  event.stopPropagation?.();
+                                  setDetailAccount(account);
+                                }}
+                                activeOpacity={0.8}
+                              >
+                                <Text style={[styles.accountFooterLinkText, { color: accentColor }]}>Open details</Text>
+                                <ChevronRight size={14} color={accentColor} />
+                              </TouchableOpacity>
+                              <View style={styles.foldIndicator}>
+                                <ChevronUp size={14} color={theme.colors.textSecondary} />
+                              </View>
+                            </View>
+                          </>
+                        ) : (
+                          <View style={styles.accountCompactRow}>
+                            <Text style={[styles.name, { color: theme.colors.text }]}>{account.name}</Text>
+                            <View style={styles.accountCompactBalance}>
+                              <AdaptiveAmountText
+                                style={[
+                                  styles.balance,
+                                  styles.compactBalanceText,
+                                  { color: accountIsLiability || displayBalance < 0 ? theme.colors.error : theme.colors.text },
+                                ]}
+                                minFontSize={16}
+                                value={formatCurrency(displayBalance)}
+                              />
+                              <View style={styles.foldIndicator}>
+                                <ChevronDown size={14} color={theme.colors.textSecondary} />
                               </View>
                             </View>
                           </View>
-
-                          <View style={styles.actions}>
-                            <TouchableOpacity
-                              style={[
-                                styles.iconButtonSurface,
-                                {
-                                  backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                  borderColor: theme.colors.border,
-                                },
-                              ]}
-                              onPress={(event) => {
-                                event.stopPropagation?.();
-                                openEdit(account);
-                              }}
-                            >
-                              <Pencil size={16} color={theme.colors.primary} />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={[
-                                styles.iconButtonSurface,
-                                {
-                                  backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                  borderColor: theme.colors.border,
-                                },
-                              ]}
-                              onPress={(event) => {
-                                event.stopPropagation?.();
-                                removeAccount(account.id, account.name);
-                              }}
-                            >
-                              <Trash2 size={16} color={theme.colors.error} />
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-
-                        <View style={styles.accountBalanceRow}>
-                          <Text style={[styles.accountBalanceLabel, { color: theme.colors.textSecondary }]}>
-                            {accountIsLiability ? 'Outstanding balance' : 'Available balance'}
-                          </Text>
-                          <AdaptiveAmountText
-                            style={[
-                              styles.balance,
-                              { color: accountIsLiability || displayBalance < 0 ? theme.colors.error : theme.colors.text },
-                            ]}
-                            minFontSize={18}
-                            value={formatCurrency(displayBalance)}
-                          />
-                        </View>
-
-                        <View style={styles.accountStatsRow}>
-                          <View
-                            style={[
-                              styles.accountStatChip,
-                              {
-                                backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                borderColor: theme.colors.border,
-                              },
-                            ]}
-                          >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Income</Text>
-                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.success }]} minFontSize={10} value={formatCurrency(flow.income)} />
-                          </View>
-                          <View
-                            style={[
-                              styles.accountStatChip,
-                              {
-                                backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                borderColor: theme.colors.border,
-                              },
-                            ]}
-                          >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Expenses</Text>
-                            <AdaptiveAmountText style={[styles.accountStatValue, { color: theme.colors.error }]} minFontSize={10} value={formatCurrency(flow.expenses)} />
-                          </View>
-                          <View
-                            style={[
-                              styles.accountStatChip,
-                              {
-                                backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                borderColor: theme.colors.border,
-                              },
-                            ]}
-                          >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Transfers</Text>
-                            <AdaptiveAmountText
-                              style={[
-                                styles.accountStatValue,
-                                { color: transferNet >= 0 ? theme.colors.success : theme.colors.warning },
-                              ]}
-                              minFontSize={10}
-                              value={formatSignedCurrency(formatCurrency, transferNet)}
-                            />
-                          </View>
-                          <View
-                            style={[
-                              styles.accountStatChip,
-                              {
-                                backgroundColor: theme.isDark ? theme.colors.surface : '#F8FAFC',
-                                borderColor: theme.colors.border,
-                              },
-                            ]}
-                          >
-                            <Text style={[styles.accountStatLabel, { color: theme.colors.textSecondary }]}>Debt</Text>
-                            <AdaptiveAmountText
-                              style={[
-                                styles.accountStatValue,
-                                { color: debtNet === 0 ? theme.colors.textSecondary : debtNet > 0 ? theme.colors.warning : theme.colors.error },
-                              ]}
-                              minFontSize={10}
-                              value={formatSignedCurrency(formatCurrency, debtNet)}
-                            />
-                          </View>
-                        </View>
-
-                        <View style={[styles.accountFooterRow, { borderTopColor: theme.colors.border }]}> 
-                          <Text style={[styles.accountFooterText, { color: theme.colors.textSecondary }]}>
-                            {account.isActive
-                              ? `Opened ${formatDateWithWeekday(account.createdAt)}`
-                              : `Hidden from totals - Opened ${formatDateWithWeekday(account.createdAt)}`}
-                          </Text>
-                          <View style={styles.accountFooterLink}>
-                            <Text style={[styles.accountFooterLinkText, { color: accentColor }]}>Open details</Text>
-                            <ChevronRight size={14} color={accentColor} />
-                          </View>
-                        </View>
+                        )}
                       </View>
                     </TouchableOpacity>
                   );
@@ -1669,14 +1622,16 @@ export default function AccountsScreen() {
 
           {accountAnalyticsHasData ? (
             <ScrollView style={styles.analyticsModalScroll} contentContainerStyle={styles.analyticsModalScrollContent} showsVerticalScrollIndicator={false}>
-              <View style={[styles.analyticsPanelCard, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}>
+              <View style={styles.analyticsPanelCard}>
                 <Text style={[styles.analyticsMiniEyebrow, { color: theme.colors.textSecondary }]}>Balance</Text>
                 <AdaptiveAmountText
                   style={[styles.analyticsHeadlineValue, { color: theme.colors.text }]}
                   minFontSize={18}
                   value={formatCurrency(accountAnalyticsTrend.currentNetWorth)}
                 />
-                <Text style={[styles.analyticsPanelMeta, { color: theme.colors.textSecondary }]}>Skia account analytics using your shared chart component.</Text>
+                <Text style={[styles.analyticsPanelMeta, { color: theme.colors.textSecondary }]}>
+                  Income {formatCurrency(accountAnalyticsIncome)} | Expenses {formatCurrency(accountAnalyticsExpenses)}
+                </Text>
                 <AccountModalSkiaBoundary data={accountAnalyticsSkiaData} />
               </View>
             </ScrollView>
@@ -1688,6 +1643,7 @@ export default function AccountsScreen() {
           )}
         </View>
       </Modal>
+
       <Modal
         visible={!!detailAccount}
         animationType="slide"
@@ -2027,6 +1983,11 @@ export default function AccountsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   contentContainer: { paddingBottom: 28 },
+  analyticsTopRow: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    alignItems: 'flex-start',
+  },
   summaryCard: {
     margin: 16,
     borderRadius: 28,
@@ -2148,14 +2109,6 @@ const styles = StyleSheet.create({
   actionPanelTitleWrap: {
     flex: 1,
   },
-  analyticsTriggerButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   actionPanelTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -2164,22 +2117,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     marginTop: 6,
-  },
-  actionPanelTagRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 12,
-  },
-  actionPanelTag: {
-    borderRadius: 999,
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  actionPanelTagText: {
-    fontSize: 11,
-    fontWeight: '700',
   },
   actionButtonsRow: {
     flexDirection: 'row',
@@ -2251,13 +2188,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  sortChipsScroller: {
+  sortGroups: {
     marginTop: 14,
+    gap: 12,
   },
-  sortChipsRow: {
+  sortGroup: {
+    gap: 8,
+  },
+  sortGroupLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.45,
+  },
+  sortChipRow: {
     flexDirection: 'row',
-    gap: 10,
-    paddingRight: 4,
+    flexWrap: 'wrap',
+    gap: 8,
   },
   sortDivider: {
     borderRadius: 999,
@@ -2279,17 +2226,20 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   sortChip: {
-    minWidth: 72,
+    minWidth: 64,
     borderRadius: 999,
     borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  sortDirectionChip: {
+    minWidth: 58,
+  },
   sortChipText: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '800',
   },
   emptyState: {
     margin: 16,
@@ -2384,6 +2334,22 @@ const styles = StyleSheet.create({
   accountCardBody: {
     padding: 14,
   },
+  accountCompactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  accountCompactBalance: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  compactBalanceText: {
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: 0,
+  },
   rowBetween: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2467,39 +2433,35 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  accountStatsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
+  accountSummaryBlock: {
     marginTop: 16,
-  },
-  accountStatChip: {
-    flexGrow: 1,
-    flexBasis: '47%',
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 10,
-    minWidth: 120,
-  },
-  accountStatLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  accountStatValue: {
-    fontSize: 12,
-    fontWeight: '800',
-    marginTop: 6,
-  },
-  accountFooterRow: {
-    marginTop: 14,
     paddingTop: 12,
     borderTopWidth: 1,
+    gap: 4,
+  },
+  accountSummaryText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  accountSummarySubtext: {
+    fontSize: 11,
+    lineHeight: 17,
+  },
+  accountFooterRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 8,
+    borderTopWidth: 1,
+    marginTop: 16,
+    paddingTop: 12,
+  },
+  foldIndicator: {
+    marginLeft: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   accountFooterText: {
     flex: 1,
@@ -2550,6 +2512,20 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  analyticsTriggerButton: {
+    minHeight: 42,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  analyticsTriggerText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
   analyticsModal: {
     flex: 1,
     padding: 16,
@@ -2594,29 +2570,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 4,
   },
-  analyticsSummaryRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 14,
-  },
-  analyticsSummaryCard: {
-    flex: 1,
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-  },
-  analyticsSummaryLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  analyticsSummaryValue: {
-    fontSize: 15,
-    fontWeight: '800',
-    marginTop: 8,
-  },
   analyticsMiniEyebrow: {
     fontSize: 11,
     fontWeight: '700',
@@ -2630,70 +2583,9 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 14,
   },
-  analyticsChartCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    marginTop: 14,
-    paddingVertical: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  analyticsLegendRow: {
-    flexDirection: 'row',
-    gap: 16,
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    alignSelf: 'stretch',
-  },
-  analyticsLegendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  analyticsLegendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  analyticsLegendText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  analyticsFocusPill: {
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginHorizontal: 12,
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  analyticsFocusTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  analyticsFocusMetrics: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 6,
-    flexWrap: 'wrap',
-  },
-  analyticsFocusIncome: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  analyticsFocusExpense: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
   analyticsPanelCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 16,
-  },
-  analyticsPanelTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    paddingTop: 6,
+    paddingBottom: 12,
   },
   analyticsPanelMeta: {
     fontSize: 13,
@@ -2889,6 +2781,19 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

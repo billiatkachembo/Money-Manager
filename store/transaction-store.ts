@@ -198,9 +198,9 @@ const DEFAULT_SETTINGS: AppSettings = {
 };
 
 const DEFAULT_USER_PROFILE: UserProfile = {
-  name: 'Money Manager User',
+  name: 'User',
   email: 'user@example.com',
-  phone: '+1 (555) 123-4567',
+  phone: '+260xxxxxxxxx',
   location: 'New York, NY',
   occupation: 'Farmer',
   joinDate: new Date('2024-01-01T00:00:00.000Z'),

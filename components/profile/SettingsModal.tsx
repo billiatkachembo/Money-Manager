@@ -332,11 +332,46 @@ export function SettingsModal({
   const selectorItems: SelectorItem[] = selectorTarget === 'currency' ? sortedCurrencies : sortedLanguages;
 
   const quickActions = [
-    { key: 'pc_manager', title: 'PC Manager', Icon: Globe, color: '#2563EB', onPress: onOpenPcManager },
-    { key: 'backup', title: 'Backup', Icon: Download, color: '#0EA5E9', onPress: onBackupRestore },
-    { key: 'export', title: 'Export', Icon: FileText, color: '#F97316', onPress: onExportTransactions },
-    { key: 'privacy', title: 'Privacy', Icon: Shield, color: '#14B8A6', onPress: onPrivacySecurity },
-    { key: 'help', title: 'Help', Icon: HelpCircle, color: '#F59E0B', onPress: onHelpSupport },
+    {
+      key: 'pc_manager',
+      title: 'PC Manager',
+      subtitle: 'Open desktop tools',
+      Icon: Globe,
+      color: '#2563EB',
+      onPress: onOpenPcManager,
+    },
+    {
+      key: 'backup',
+      title: 'Backup',
+      subtitle: 'Restore and sync',
+      Icon: Download,
+      color: '#0EA5E9',
+      onPress: onBackupRestore,
+    },
+    {
+      key: 'export',
+      title: 'Export',
+      subtitle: 'Share CSV or Excel',
+      Icon: FileText,
+      color: '#F97316',
+      onPress: onExportTransactions,
+    },
+    {
+      key: 'privacy',
+      title: 'Privacy',
+      subtitle: 'Security controls',
+      Icon: Shield,
+      color: '#14B8A6',
+      onPress: onPrivacySecurity,
+    },
+    {
+      key: 'help',
+      title: 'Help',
+      subtitle: 'Support and guides',
+      Icon: HelpCircle,
+      color: '#F59E0B',
+      onPress: onHelpSupport,
+    },
   ];
 
   const handleCurrencySelect = (currencyCode: string) => {
@@ -610,16 +645,37 @@ export function SettingsModal({
           <View style={styles.settingsSection}>
             <Text style={[styles.sectionEyebrow, { color: theme.colors.textSecondary }]}>Quick Access</Text>
             <View style={styles.quickActionGrid}>
-              {quickActions.map((action) => {
+              {quickActions.map((action, index) => {
                 const Icon = action.Icon;
+                const isLastOddItem = quickActions.length % 2 === 1 && index === quickActions.length - 1;
                 return (
-                  <TouchableOpacity key={action.key} style={styles.quickActionItem} onPress={action.onPress} activeOpacity={0.85}>
-                    <View style={[styles.quickActionIconWrap, { backgroundColor: action.color + '18' }]}> 
-                      <Icon size={18} color={action.color} />
+                  <TouchableOpacity
+                    key={action.key}
+                    style={[
+                      styles.quickActionItem,
+                      isLastOddItem && styles.quickActionItemFullWidth,
+                      {
+                        backgroundColor: subtleSurface,
+                        borderColor: theme.colors.border,
+                      },
+                    ]}
+                    onPress={action.onPress}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.quickActionContent}>
+                      <View style={[styles.quickActionIconWrap, { backgroundColor: action.color + '18' }]}>
+                        <Icon size={18} color={action.color} />
+                      </View>
+                      <View style={styles.quickActionTextWrap}>
+                        <Text style={[styles.quickActionTitle, { color: theme.colors.text }]} numberOfLines={1}>
+                          {action.title}
+                        </Text>
+                        <Text style={[styles.quickActionSubtitle, { color: theme.colors.textSecondary }]} numberOfLines={2}>
+                          {action.subtitle}
+                        </Text>
+                      </View>
                     </View>
-                    <Text style={[styles.quickActionTitle, { color: theme.colors.text }]} numberOfLines={2}>
-                      {action.title}
-                    </Text>
+                    <ChevronRight size={16} color={theme.colors.textSecondary} />
                   </TouchableOpacity>
                 );
               })}
@@ -989,14 +1045,28 @@ const styles = StyleSheet.create({
   quickActionGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    rowGap: 20,
+    gap: 12,
   },
   quickActionItem: {
-    width: '31%',
+    width: '48%',
+    minHeight: 84,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 6,
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  quickActionItemFullWidth: {
+    width: '100%',
+  },
+  quickActionContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
   },
   quickActionIconWrap: {
     width: 42,
@@ -1004,13 +1074,21 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    marginRight: 12,
+  },
+  quickActionTextWrap: {
+    flex: 1,
+    minWidth: 0,
   },
   quickActionTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  quickActionSubtitle: {
     fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-    lineHeight: 17,
+    fontWeight: '500',
+    lineHeight: 16,
+    marginTop: 3,
   },
   settingsList: {},
   settingItemStack: {

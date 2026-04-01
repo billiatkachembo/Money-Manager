@@ -1085,8 +1085,7 @@ export default function AccountsScreen() {
         <View style={styles.heroHeader}>
           <View style={styles.heroCopy}>
             <Text style={[styles.heroEyebrow, { color: theme.isDark ? '#BFDBFE' : theme.colors.primary }]}>Portfolio</Text>
-            <Text style={[styles.heroTitle, { color: theme.colors.text }]}>Accounts</Text>
-            <Text style={[styles.heroSubtitle, { color: theme.colors.textSecondary }]}>Monitor balances, liabilities, and cash position from one place.</Text>
+            
           </View>
           <View
             style={[
@@ -1097,7 +1096,7 @@ export default function AccountsScreen() {
               },
             ]}
           >
-            <Shield size={14} color={theme.colors.primary} />
+            <Shield size={13} color={theme.colors.primary} />
             <Text style={[styles.heroBadgeText, { color: theme.colors.text }]}>{activeAccounts.length} active</Text>
           </View>
         </View>
@@ -1132,65 +1131,8 @@ export default function AccountsScreen() {
             <AdaptiveAmountText style={[styles.summaryHighlightValue, { color: theme.colors.error }]} minFontSize={14} value={formatCurrency(liabilitiesTotal)} />
             <Text style={[styles.summaryHighlightSub, { color: theme.colors.textSecondary }]}>Credit and negative balances</Text>
           </View>
-          <View
-            style={[
-              styles.summaryHighlightCard,
-              {
-                backgroundColor: theme.isDark ? 'rgba(15,23,42,0.38)' : '#FFFFFFCC',
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.summaryHighlightLabel, { color: theme.colors.textSecondary }]}>Today</Text>
-                          <AdaptiveAmountText
-                style={[
-                  styles.summaryHighlightValue,
-                  { color: netWorthChangeToday >= 0 ? theme.colors.success : theme.colors.error },
-                ]}
-                minFontSize={14}
-                value={formatSignedCurrency(formatCurrency, netWorthChangeToday)}
-              />
-            <Text style={[styles.summaryHighlightSub, { color: theme.colors.textSecondary }]}>Portfolio movement</Text>
-          </View>
-          <View
-            style={[
-              styles.summaryHighlightCard,
-              {
-                backgroundColor: theme.isDark ? 'rgba(15,23,42,0.38)' : '#FFFFFFCC',
-                borderColor: theme.colors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.summaryHighlightLabel, { color: theme.colors.textSecondary }]}>This Month</Text>
-                          <AdaptiveAmountText
-                style={[
-                  styles.summaryHighlightValue,
-                  { color: netWorthChangeMonth >= 0 ? theme.colors.success : theme.colors.error },
-                ]}
-                minFontSize={14}
-                value={formatSignedCurrency(formatCurrency, netWorthChangeMonth)}
-              />
-            <Text style={[styles.summaryHighlightSub, { color: theme.colors.textSecondary }]}>Month-to-date change</Text>
-          </View>
         </View>
 
-        <View style={[styles.summaryFooterRow, { borderTopColor: theme.colors.border }]}> 
-          <View style={styles.summaryFooterBlock}>
-            <Text style={[styles.summaryFooterLabel, { color: theme.colors.textSecondary }]}>Lifetime net cash flow</Text>
-                        <AdaptiveAmountText
-              style={[
-                styles.summaryFooterValue,
-                { color: lifetimeNetCashFlow >= 0 ? theme.colors.success : theme.colors.error },
-              ]}
-              minFontSize={12}
-              value={formatSignedCurrency(formatCurrency, lifetimeNetCashFlow)}
-            />
-          </View>
-          <View style={styles.summaryFooterBlock}>
-            <Text style={[styles.summaryFooterLabel, { color: theme.colors.textSecondary }]}>Savings reserve</Text>
-            <AdaptiveAmountText style={[styles.summaryFooterValue, { color: theme.colors.text }]} minFontSize={12} value={formatCurrency(savingsReserveTotal)} />
-          </View>
-        </View>
       </LinearGradient>
 
       <View style={[styles.actionPanel, { backgroundColor: theme.colors.surface, borderColor: theme.colors.border }]}> 
@@ -1989,9 +1931,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   summaryCard: {
-    margin: 16,
-    borderRadius: 28,
-    padding: 20,
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 14,
+    borderRadius: 22,
+    padding: 16,
     borderWidth: 1,
     overflow: 'hidden',
   },
@@ -2011,15 +1955,15 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   heroTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: '800',
-    marginTop: 6,
+    marginTop: 4,
   },
   heroSubtitle: {
-    fontSize: 13,
-    lineHeight: 19,
-    marginTop: 6,
-    maxWidth: 280,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 4,
+    maxWidth: 260,
   },
   heroBadge: {
     flexDirection: 'row',
@@ -2035,26 +1979,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   heroValue: {
-    fontSize: 36,
+    fontSize: 28,
     fontWeight: '900',
-    marginTop: 18,
+    marginTop: 12,
   },
   heroValueMeta: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 2,
   },
   summaryHighlightsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
-    marginTop: 20,
+    gap: 8,
+    marginTop: 12,
   },
   summaryHighlightCard: {
     flexGrow: 1,
-    flexBasis: '47%',
-    borderRadius: 18,
-    padding: 12,
+    flexBasis: '48%',
+    borderRadius: 15,
+    padding: 10,
     borderWidth: 1,
   },
   summaryHighlightLabel: {
@@ -2064,9 +2008,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   summaryHighlightValue: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
-    marginTop: 8,
+    marginTop: 6,
   },
   summaryHighlightSub: {
     fontSize: 11,

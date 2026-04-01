@@ -767,6 +767,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const [focusedExpenseName, setFocusedExpenseName] = useState<string | null>(null);
   const [focusedComparisonBucketKey, setFocusedComparisonBucketKey] = useState<string | null>(null);
   const [focusedSpendingCategoryKey, setFocusedSpendingCategoryKey] = useState<string | null>(null);
+  const [focusedSpendingTooltipKey, setFocusedSpendingTooltipKey] = useState<string | null>(null);
   const analyticsReferenceDateKey = formatDateDDMMYYYY(new Date());
   const analyticsReferenceDate = useMemo(() => endOfDay(new Date()), [analyticsReferenceDateKey]);
   const firstRecordedMonth = useMemo(() => {
@@ -1453,6 +1454,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     setFocusedSpendingCategoryKey((current) =>
       categoryBarData.some((entry) => entry.key === current) ? current : categoryBarData[0]?.key ?? null
     );
+    setFocusedSpendingTooltipKey(null);
   }, [categoryBarData]);
 
   const netWorthProgress = useMemo<NetWorthProgress>(
@@ -2060,24 +2062,34 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     return roundCurrency((netWorthProgress.netWorth[netWorthProgress.netWorth.length - 1] ?? 0) - (netWorthProgress.netWorth[0] ?? 0));
   }, [netWorthProgress.netWorth]);
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(0);
+  const [selectedMonthTooltipIndex, setSelectedMonthTooltipIndex] = useState<number | null>(null);
   const [selectedForecastIndex, setSelectedForecastIndex] = useState(0);
+  const [selectedForecastTooltipIndex, setSelectedForecastTooltipIndex] = useState<number | null>(null);
   const [showMonthDrillDown, setShowMonthDrillDown] = useState(false);
 
   useEffect(() => {
     if (netWorthProgress.points.length === 0) {
       setSelectedMonthIndex(0);
+      setSelectedMonthTooltipIndex(null);
       return;
     }
     setSelectedMonthIndex(netWorthProgress.points.length - 1);
+    setSelectedMonthTooltipIndex(null);
   }, [netWorthProgress.points.length]);
 
   useEffect(() => {
     if (!netWorthForecastData || netWorthForecastData.data.length === 0) {
       setSelectedForecastIndex(0);
+      setSelectedForecastTooltipIndex(null);
       return;
     }
     setSelectedForecastIndex(netWorthForecastData.data.length - 1);
+    setSelectedForecastTooltipIndex(null);
   }, [netWorthForecastData?.data.length]);
+
+  useEffect(() => {
+    setFocusedSpendingTooltipKey(null);
+  }, [activeRange.start.getTime(), activeRange.end.getTime()]);
 
   const hasActiveAccounts = useMemo(
     () => accounts.some((account) => account.isActive !== false),
@@ -2100,6 +2112,10 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
     selectedMonthIndex,
     Math.max(0, netWorthProgress.points.length - 1)
   );
+  const safeSelectedMonthTooltipIndex =
+    selectedMonthTooltipIndex === null
+      ? null
+      : Math.min(selectedMonthTooltipIndex, Math.max(0, netWorthProgress.points.length - 1));
   const safeSelectedForecastIndex = Math.min(
     selectedForecastIndex,
     Math.max(0, (netWorthForecastData?.data.length ?? 1) - 1)
@@ -2109,9 +2125,25 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
   const selectedMonthLabel = selectedMonthPoint
     ? netWorthSeries.labels[safeSelectedMonthIndex] ?? selectedMonthPoint.label
     : null;
-  const selectedMonthChange = netWorthProgress.monthOverMonthChange[safeSelectedMonthIndex] ?? 0;
-  const selectedMonthCumulativeGrowth = netWorthProgress.cumulativeGrowth[safeSelectedMonthIndex] ?? 0;
-  const selectedMonthCumulativeNetFlow = cumulativeNetFlow[safeSelectedMonthIndex] ?? 0;
+  const tooltipMonthPoint =
+    safeSelectedMonthTooltipIndex === null
+      ? null
+      : netWorthProgress.points[safeSelectedMonthTooltipIndex] ?? null;
+  const tooltipMonthLabel = tooltipMonthPoint
+    ? netWorthSeries.labels[safeSelectedMonthTooltipIndex ?? 0] ?? tooltipMonthPoint.label
+    : null;
+  const tooltipMonthChange =
+    safeSelectedMonthTooltipIndex === null
+      ? 0
+      : netWorthProgress.monthOverMonthChange[safeSelectedMonthTooltipIndex] ?? 0;
+  const tooltipMonthCumulativeGrowth =
+    safeSelectedMonthTooltipIndex === null
+      ? 0
+      : netWorthProgress.cumulativeGrowth[safeSelectedMonthTooltipIndex] ?? 0;
+  const tooltipMonthCumulativeNetFlow =
+    safeSelectedMonthTooltipIndex === null
+      ? 0
+      : cumulativeNetFlow[safeSelectedMonthTooltipIndex] ?? 0;
 
   const netWorthTrendText = useMemo(() => {
     if (netWorthProgress.monthlyChangeRate === null) {
@@ -2522,22 +2554,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                       value={formatSignedCurrency(formatCurrency, quickStats.netAmount)}
                     />
                   </View>
-                  <View style={[styles.analyticsHeroStat, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                    <Text style={[styles.analyticsHeroStatLabel, { color: theme.colors.textSecondary }]}>Transactions</Text>
-                    <Text style={[styles.analyticsHeroStatValue, { color: theme.colors.text }]}>{quickStats.transactionCount}</Text>
-                  </View>
-                </View>
-                <View style={styles.analyticsHeroFooter}>
-                  <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
-                    {activeRange.summaryCaption}
-                  </Text>
-                  <Text style={[styles.analyticsHeroFooterText, { color: theme.colors.textSecondary }]}>
-                    {monthlyIncome > 0
-                      ? `${formatPercentage(savingsRate)} of income remained after expenses.`
-                      : monthlyExpenses > 0
-                        ? 'Expenses are recorded, but no income has been added for this range yet.'
-                        : 'No income or expense activity has been recorded for this range yet.'}
-                  </Text>
                 </View>
               </>
             ) : (
@@ -2604,76 +2620,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 value={formatCurrency(netWorthProgress.currentNetWorth)}
               />
             </View>
-            <View style={styles.netWorthBreakdownRow}>
-              <View style={styles.netWorthBreakdownItem}>
-                <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Assets</Text>
-                <Text style={[styles.netWorthBreakdownValue, styles.incomeText]}>
-                  {formatCurrency(netWorthProgress.assets[netWorthProgress.assets.length - 1] ?? 0)}
-                </Text>
-              </View>
-              <View style={styles.netWorthBreakdownItem}>
-                <Text style={[styles.summaryLabel, { color: theme.colors.textSecondary }]}>Liabilities</Text>
-                <Text style={[styles.netWorthBreakdownValue, styles.expenseText]}>
-                  -{formatCurrency(netWorthProgress.liabilities[netWorthProgress.liabilities.length - 1] ?? 0)}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.netWorthGrowthRow, { borderTopColor: theme.colors.border }]}>
-              <Text style={[styles.netWorthGrowthLabel, { color: theme.colors.textSecondary }]}>
-                Cumulative Growth (since {netWorthSeries.labels[0] || 'start'})
-              </Text>
-              <Text
-                style={[
-                  styles.netWorthBreakdownValue,
-                  netWorthProgress.currentCumulativeGrowth >= 0 ? styles.incomeText : styles.expenseText,
-                ]}
-              >
-                {netWorthGrowthText}
-              </Text>
-            </View>
-            <View style={[styles.netWorthGrowthRow, { borderTopColor: theme.colors.border }]}>
-              <Text style={[styles.netWorthGrowthLabel, { color: theme.colors.textSecondary }]}>
-                Cumulative Net Inflow/Outflow
-              </Text>
-              <Text
-                style={[
-                  styles.netWorthBreakdownValue,
-                  (cumulativeNetFlow[cumulativeNetFlow.length - 1] ?? 0) >= 0 ? styles.incomeText : styles.expenseText,
-                ]}
-              >
-                {netFlowOverlayText}
-              </Text>
-            </View>
-            <View style={[styles.legendRow, styles.netWorthLegendRow]}>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.netWorth }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Net Worth</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.growth }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Cumulative Growth</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: chartPalette.netFlow }]} />
-                <Text style={[styles.legendText, { color: theme.colors.textSecondary }]}>Cumulative Inflow/Outflow</Text>
-              </View>
-            </View>
-            <View style={styles.chartStatRow}>
-              <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Peak</Text>
-                <AdaptiveAmountText style={[styles.chartStatValue, { color: chartPalette.netWorth }]} minFontSize={11} value={formatCurrency(netWorthPeakValue)} />
-              </View>
-              <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Low</Text>
-                <AdaptiveAmountText style={[styles.chartStatValue, { color: theme.colors.text }]} minFontSize={11} value={formatCurrency(netWorthLowValue)} />
-              </View>
-              <View style={[styles.chartStatCard, { backgroundColor: secondarySurface, borderColor: softBorderColor }]}> 
-                <Text style={[styles.chartStatLabel, { color: theme.colors.textSecondary }]}>Window Change</Text>
-                <Text style={[styles.chartStatValue, { color: netWorthRangeDelta >= 0 ? theme.colors.success : theme.colors.error }]}>
-                  {formatSignedCurrency(formatCurrency, netWorthRangeDelta)}
-                </Text>
-              </View>
-            </View>
             <View style={[styles.chartContainer, styles.premiumLineChartContainer]}> 
               <FinanceLineChart
                 width={chartWidth}
@@ -2685,9 +2631,13 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 labelColor={axisLabelColor}
                 zeroLineColor={gridColor}
                 padding={{ top: 24, bottom: 42, left: 40, right: 16 }}
+                onSelectIndex={(index) => {
+                  setSelectedMonthIndex(index);
+                  setSelectedMonthTooltipIndex(index);
+                }}
               />
             </View>
-            {selectedMonthPoint ? (
+            {tooltipMonthPoint ? (
               <View
                 style={[
                   styles.monthTooltip,
@@ -2699,29 +2649,29 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
               >
                 <View style={styles.monthTooltipHeader}>
                   <Text style={[styles.monthTooltipTitle, { color: theme.colors.text }]}>
-                    {selectedMonthLabel ?? 'Month Details'}
+                    {tooltipMonthLabel ?? 'Month Details'}
                   </Text>
                   <View style={styles.monthTooltipChange}>
-                    {selectedMonthChange > 0 ? (
-                      <ArrowUpRight size={14} color={getChangeColor(selectedMonthChange)} />
-                    ) : selectedMonthChange < 0 ? (
-                      <ArrowDownRight size={14} color={getChangeColor(selectedMonthChange)} />
+                    {tooltipMonthChange > 0 ? (
+                      <ArrowUpRight size={14} color={getChangeColor(tooltipMonthChange)} />
+                    ) : tooltipMonthChange < 0 ? (
+                      <ArrowDownRight size={14} color={getChangeColor(tooltipMonthChange)} />
                     ) : null}
                     <Text
                       style={[
                         styles.monthTooltipChangeText,
-                        { color: getChangeColor(selectedMonthChange) },
+                        { color: getChangeColor(tooltipMonthChange) },
                       ]}
                     >
-                      {formatSignedCurrency(formatCurrency, selectedMonthChange)}
+                      {formatSignedCurrency(formatCurrency, tooltipMonthChange)}
                     </Text>
                   </View>
                 </View>
                 <Text style={[styles.monthTooltipValue, { color: theme.colors.text }]}>
-                  Net Worth: {formatCurrency(selectedMonthPoint.netWorth)}
+                  Net Worth: {formatCurrency(tooltipMonthPoint.netWorth)}
                 </Text>
                 <Text style={[styles.monthTooltipMeta, { color: theme.colors.textSecondary }]}>
-                  Growth: {formatSignedCurrency(formatCurrency, selectedMonthCumulativeGrowth)} | Inflow/Outflow: {formatSignedCurrency(formatCurrency, selectedMonthCumulativeNetFlow)}
+                  Growth: {formatSignedCurrency(formatCurrency, tooltipMonthCumulativeGrowth)} | Inflow/Outflow: {formatSignedCurrency(formatCurrency, tooltipMonthCumulativeNetFlow)}
                 </Text>
               </View>
             ) : null}
@@ -2743,6 +2693,7 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                     ]}
                     onPress={() => {
                       setSelectedMonthIndex(index);
+                      setSelectedMonthTooltipIndex(null);
                       setShowMonthDrillDown(true);
                     }}
                   >
@@ -2761,9 +2712,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                 );
               })}
             </View>
-            <Text style={[styles.monthSelectorHint, { color: theme.colors.textSecondary }]}>
-              Tap a month card to drill into transactions. Tap chart points for monthly tooltip details.
-            </Text>
           </>
         )}
           </View>
@@ -2786,9 +2734,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
               <View style={styles.cardHeader}>
                 <View style={styles.cardHeaderLeading}>
                   <Text style={[styles.cardTitle, styles.cardHeaderTitle, { color: theme.colors.text }]}>Income, Expenses & Distribution</Text>
-                  <Text style={[styles.cardHeaderMetaText, { color: theme.colors.textSecondary }]}>
-                    {activeRange.comparisonTitle} rendered with the shared Skia chart component.
-                  </Text>
                 </View>
                 {renderChartExportAction('comparison-6-month', 'Income, Expenses & Distribution')}
               </View>
@@ -2808,18 +2753,20 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
               </View>
               <ViewShot ref={setChartCaptureRef('spending-by-category')} options={chartCaptureOptions}>
                 <View collapsable={false}>
-                  <View style={styles.chartSummary}>
-                    <AdaptiveAmountText style={[styles.chartSummaryValue, { color: theme.colors.text }]} minFontSize={14} value={formatCurrency(topCategory?.amount ?? 0)} />
-                    <Text style={[styles.chartSummaryLabel, { color: theme.colors.textSecondary }]}>
-                      {topCategory ? `${topCategory.categoryName} leads this view` : 'Largest category in view'}
-                    </Text>
-                  </View>
                   <MoneyManagerBarChartSection
                     width={chartWidth}
                     height={244}
                     entries={categoryTotalStatsEntries}
                     selectedKey={focusedCategoryBar?.key ?? null}
-                    onSelectKey={setFocusedSpendingCategoryKey}
+                    tooltipKey={focusedSpendingTooltipKey}
+                    onChartPressKey={(key) => {
+                      setFocusedSpendingCategoryKey(key);
+                      setFocusedSpendingTooltipKey(key);
+                    }}
+                    onAxisPressKey={(key) => {
+                      setFocusedSpendingCategoryKey(key);
+                      setFocusedSpendingTooltipKey(null);
+                    }}
                     gridColor={gridColor}
                     axisLabelColor={axisLabelColor}
                     textColor={theme.colors.text}
@@ -2849,7 +2796,10 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                         <TouchableOpacity
                           key={item.key}
                           activeOpacity={0.85}
-                          onPress={() => setFocusedSpendingCategoryKey(item.key)}
+                          onPress={() => {
+                            setFocusedSpendingCategoryKey(item.key);
+                            setFocusedSpendingTooltipKey(null);
+                          }}
                           style={[
                             styles.categoryRankRow,
                             {
@@ -3096,29 +3046,6 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                   </View>
                 ))}
               </View>
-              {netWorthForecastData && netWorthForecastData.horizonItems.length > 0 ? (
-                <View style={styles.forecastTimelineGrid}>
-                  {netWorthForecastData.horizonItems.map((item) => (
-                    <View
-                      key={item.label}
-                      style={[
-                        styles.forecastTimelineItem,
-                        { backgroundColor: theme.colors.surface, borderColor: softBorderColor },
-                      ]}
-                    >
-                      <Text style={[styles.forecastTimelineLabel, { color: theme.colors.textSecondary }]}>{item.label}</Text>
-                      <AdaptiveAmountText
-                        style={[styles.forecastTimelineValue, { color: theme.colors.text }]}
-                        minFontSize={11}
-                        value={formatCurrency(item.value)}
-                      />
-                      <Text style={[styles.forecastTimelineDate, { color: theme.colors.textSecondary }]}>
-                        {formatDateDDMMYYYY(item.date)}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
             </View>
             {netWorthForecastData ? (
               <View style={[styles.chartContainer, styles.forecastChartContainer]}>
@@ -3129,7 +3056,15 @@ const AnalyticsContent = React.memo(function AnalyticsContent({ visibleStage }: 
                   values={netWorthForecastData.data.map((point) => point.y)}
                   axisItems={forecastAxisItems}
                   selectedIndex={safeSelectedForecastIndex}
-                  onSelectIndex={setSelectedForecastIndex}
+                  tooltipIndex={selectedForecastTooltipIndex}
+                  onChartPressIndex={(index) => {
+                    setSelectedForecastIndex(index);
+                    setSelectedForecastTooltipIndex(index);
+                  }}
+                  onAxisPressIndex={(index) => {
+                    setSelectedForecastIndex(index);
+                    setSelectedForecastTooltipIndex(null);
+                  }}
                   metricLabel="Projected Net Worth"
                   lineColor={forecastProjectionColor}
                   gridColor={gridColor}

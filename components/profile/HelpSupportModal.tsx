@@ -29,7 +29,7 @@ export function HelpSupportModal({ visible, onClose }: HelpSupportModalProps) {
       'How would you like to contact support?',
       [
         { text: 'Email', onPress: openEmailSupport },
-        { text: 'Phone', onPress: () => Linking.openURL('tel:+15551234567') },
+        { text: 'Phone', onPress: () => Linking.openURL('tel:') },
         { text: 'Cancel', style: 'cancel' },
       ]
     );

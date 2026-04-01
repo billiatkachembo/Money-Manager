@@ -841,7 +841,10 @@ interface MoneyManagerLineChartSectionProps {
   labels: string[];
   values: number[];
   selectedIndex: number;
+  tooltipIndex?: number | null;
   onSelectIndex?: (index: number) => void;
+  onChartPressIndex?: (index: number) => void;
+  onAxisPressIndex?: (index: number) => void;
   axisItems?: MoneyManagerAxisItem[];
   metricLabel?: string;
   lineColor: string;
@@ -869,7 +872,10 @@ interface MoneyManagerBarChartSectionProps {
   height?: number;
   entries: MoneyManagerBarEntry[];
   selectedKey?: string | null;
+  tooltipKey?: string | null;
   onSelectKey?: (key: string) => void;
+  onChartPressKey?: (key: string) => void;
+  onAxisPressKey?: (key: string) => void;
   axisItems?: MoneyManagerAxisItem[];
   gridColor: string;
   axisLabelColor: string;
@@ -949,7 +955,10 @@ export function MoneyManagerLineChartSection({
   labels,
   values,
   selectedIndex,
+  tooltipIndex,
   onSelectIndex,
+  onChartPressIndex,
+  onAxisPressIndex,
   axisItems,
   metricLabel,
   lineColor,
@@ -964,15 +973,24 @@ export function MoneyManagerLineChartSection({
 }: MoneyManagerLineChartSectionProps) {
   const hasData = labels.length > 0 && values.length > 0;
   const safeSelectedIndex = clamp(selectedIndex, 0, Math.max(values.length - 1, 0));
-  const tooltipProgress = useSharedValue(1);
+  const safeTooltipIndex =
+    tooltipIndex !== null && tooltipIndex !== undefined && tooltipIndex >= 0 && tooltipIndex < values.length
+      ? tooltipIndex
+      : null;
+  const tooltipProgress = useSharedValue(0);
 
   useEffect(() => {
+    if (safeTooltipIndex === null) {
+      tooltipProgress.value = 0;
+      return;
+    }
+
     tooltipProgress.value = 0;
     tooltipProgress.value = withTiming(1, {
       duration: 180,
       easing: Easing.out(Easing.cubic),
     });
-  }, [safeSelectedIndex, tooltipProgress]);
+  }, [safeTooltipIndex, tooltipProgress]);
 
   const tooltipStyle = useAnimatedStyle(() => ({
     opacity: tooltipProgress.value,
@@ -1007,9 +1025,9 @@ export function MoneyManagerLineChartSection({
       ),
     [points, safeSelectedIndex]
   );
-  const selectedPoint = points[safeSelectedIndex] ?? points[points.length - 1] ?? null;
-  const selectedLabel = labels[safeSelectedIndex] ?? labels[labels.length - 1] ?? 'Overview';
-  const selectedValue = values[safeSelectedIndex] ?? values[values.length - 1] ?? 0;
+  const tooltipPoint = safeTooltipIndex === null ? null : points[safeTooltipIndex] ?? null;
+  const tooltipLabel = safeTooltipIndex === null ? null : labels[safeTooltipIndex] ?? labels[labels.length - 1] ?? 'Overview';
+  const tooltipValue = safeTooltipIndex === null ? null : values[safeTooltipIndex] ?? values[values.length - 1] ?? 0;
   const renderedAxisItems =
     axisItems?.filter((item) => item.index >= 0 && item.index < values.length) ??
     values.map((value, index) => ({
@@ -1021,7 +1039,7 @@ export function MoneyManagerLineChartSection({
   return (
     <View style={[styles.moneyManagerSection, { width }]}> 
       {metricLabel ? <Text style={[styles.moneyManagerMetricLabel, { color: axisLabelColor }]}>{metricLabel}</Text> : null}
-      <Text style={[styles.moneyManagerMetricValue, { color: textColor }]}>{valueFormatter(selectedValue)}</Text>
+      <Text style={[styles.moneyManagerMetricValue, { color: textColor }]}>{valueFormatter(values[safeSelectedIndex] ?? values[values.length - 1] ?? 0)}</Text>
       <View style={styles.moneyManagerChartSurface}>
         <Canvas style={{ width, height }}>
           <Rect x={plotLeft} y={plotTop} width={1} height={plotHeight} color={gridColor} />
@@ -1055,29 +1073,35 @@ export function MoneyManagerLineChartSection({
             {formatAxisTick(tick)}
           </Text>
         ))}
-        {selectedPoint ? (
+        {tooltipPoint && tooltipLabel !== null && tooltipValue !== null ? (
           <Animated.View
             pointerEvents="none"
             style={[
               styles.moneyManagerTooltip,
               {
-                left: clamp(selectedPoint.x - 58, plotLeft + 4, width - 118),
-                top: clamp(selectedPoint.y - 48, 2, height - 58),
+                left: clamp(tooltipPoint.x - 58, plotLeft + 4, width - 118),
+                top: clamp(tooltipPoint.y - 48, 2, height - 58),
                 backgroundColor: tooltipSurface,
                 borderColor: tooltipBorder,
               },
               tooltipStyle,
             ]}
           >
-            <Text style={[styles.moneyManagerTooltipEyebrow, { color: axisLabelColor }]}>{selectedLabel}</Text>
-            <Text style={[styles.moneyManagerTooltipValue, { color: textColor }]}>{valueFormatter(selectedValue)}</Text>
+            <Text style={[styles.moneyManagerTooltipEyebrow, { color: axisLabelColor }]}>{tooltipLabel}</Text>
+            <Text style={[styles.moneyManagerTooltipValue, { color: textColor }]}>{valueFormatter(tooltipValue)}</Text>
           </Animated.View>
         ) : null}
         {points.map((point, index) => (
           <TouchableOpacity
             key={`line-touch-${labels[index] ?? index}-${index}`}
             activeOpacity={0.88}
-            onPress={() => onSelectIndex?.(index)}
+            onPress={() => {
+              if (onChartPressIndex) {
+                onChartPressIndex(index);
+                return;
+              }
+              onSelectIndex?.(index);
+            }}
             style={[
               styles.moneyManagerPointTouchTarget,
               {
@@ -1099,7 +1123,13 @@ export function MoneyManagerLineChartSection({
             <TouchableOpacity
               key={`line-axis-${item.label}-${item.index}`}
               activeOpacity={0.88}
-              onPress={() => onSelectIndex?.(item.index)}
+              onPress={() => {
+                if (onAxisPressIndex) {
+                  onAxisPressIndex(item.index);
+                  return;
+                }
+                onSelectIndex?.(item.index);
+              }}
               style={[
                 styles.moneyManagerAxisItem,
                 {
@@ -1133,7 +1163,10 @@ export function MoneyManagerBarChartSection({
   height = 206,
   entries,
   selectedKey,
+  tooltipKey,
   onSelectKey,
+  onChartPressKey,
+  onAxisPressKey,
   axisItems,
   gridColor,
   axisLabelColor,
@@ -1150,15 +1183,23 @@ export function MoneyManagerBarChartSection({
   const safeSelectedKey = entries.some((entry) => entry.key === selectedKey)
     ? selectedKey ?? null
     : entries[0]?.key ?? null;
-  const tooltipProgress = useSharedValue(1);
+  const safeTooltipKey = entries.some((entry) => entry.key === tooltipKey)
+    ? tooltipKey ?? null
+    : null;
+  const tooltipProgress = useSharedValue(0);
 
   useEffect(() => {
+    if (!safeTooltipKey) {
+      tooltipProgress.value = 0;
+      return;
+    }
+
     tooltipProgress.value = 0;
     tooltipProgress.value = withTiming(1, {
       duration: 180,
       easing: Easing.out(Easing.cubic),
     });
-  }, [safeSelectedKey, tooltipProgress]);
+  }, [safeTooltipKey, tooltipProgress]);
 
   const tooltipStyle = useAnimatedStyle(() => ({
     opacity: tooltipProgress.value,
@@ -1202,7 +1243,9 @@ export function MoneyManagerBarChartSection({
       }),
     [barDomain, baseBarWidth, entries, groupWidth, plotHeight, plotLeft, plotTop, plotWidth, safeSelectedKey, selectedGroupWidth]
   );
-  const selectedBar = bars.find((bar) => bar.entry.key === safeSelectedKey) ?? bars[0] ?? null;
+  const tooltipBar = safeTooltipKey
+    ? bars.find((bar) => bar.entry.key === safeTooltipKey) ?? null
+    : null;
   const renderedAxisItems =
     axisItems?.filter((item) => item.index >= 0 && item.index < entries.length) ??
     entries.map((entry, index) => ({
@@ -1256,14 +1299,14 @@ export function MoneyManagerBarChartSection({
             {formatAxisTick(tick)}
           </Text>
         ))}
-        {selectedBar ? (
+        {tooltipBar ? (
           <Animated.View
             pointerEvents="none"
             style={[
               styles.moneyManagerTooltip,
               {
-                left: clamp(selectedBar.centerX - 62, plotLeft + 4, width - 124),
-                top: clamp(selectedBar.y - 56, 4, height - 64),
+                left: clamp(tooltipBar.centerX - 62, plotLeft + 4, width - 124),
+                top: clamp(tooltipBar.y - 56, 4, height - 64),
                 backgroundColor: tooltipSurface,
                 borderColor: tooltipBorder,
               },
@@ -1271,14 +1314,14 @@ export function MoneyManagerBarChartSection({
             ]}
           >
             <Text style={[styles.moneyManagerTooltipEyebrow, { color: axisLabelColor }]} numberOfLines={1}>
-              {selectedBar.entry.label}
+              {tooltipBar.entry.label}
             </Text>
             <Text style={[styles.moneyManagerTooltipValue, { color: textColor }]} numberOfLines={1}>
-              {valueFormatter(selectedBar.entry.value)}
+              {valueFormatter(tooltipBar.entry.value)}
             </Text>
-            {selectedBar.entry.detail ? (
+            {tooltipBar.entry.detail ? (
               <Text style={[styles.moneyManagerTooltipMeta, { color: axisLabelColor }]} numberOfLines={1}>
-                {selectedBar.entry.detail}
+                {tooltipBar.entry.detail}
               </Text>
             ) : null}
           </Animated.View>
@@ -1287,7 +1330,13 @@ export function MoneyManagerBarChartSection({
           <TouchableOpacity
             key={`bar-touch-${bar.entry.key}`}
             activeOpacity={0.88}
-            onPress={() => onSelectKey?.(bar.entry.key)}
+            onPress={() => {
+              if (onChartPressKey) {
+                onChartPressKey(bar.entry.key);
+                return;
+              }
+              onSelectKey?.(bar.entry.key);
+            }}
             style={[
               styles.barTouchTarget,
               {
@@ -1311,7 +1360,13 @@ export function MoneyManagerBarChartSection({
             <TouchableOpacity
               key={`bar-axis-${item.label}-${item.index}`}
               activeOpacity={0.88}
-              onPress={() => onSelectKey?.(bar.entry.key)}
+              onPress={() => {
+                if (onAxisPressKey) {
+                  onAxisPressKey(bar.entry.key);
+                  return;
+                }
+                onSelectKey?.(bar.entry.key);
+              }}
               style={[
                 styles.moneyManagerAxisItem,
                 {

@@ -199,9 +199,9 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const DEFAULT_USER_PROFILE: UserProfile = {
   name: 'User',
-  email: 'user@example.com',
+  email: ' ',
   phone: '+260xxxxxxxxx',
-  location: 'New York, NY',
+  location: 'Mansa, Zambia',
   occupation: 'Farmer',
   joinDate: new Date('2024-01-01T00:00:00.000Z'),
   avatar: 'U',

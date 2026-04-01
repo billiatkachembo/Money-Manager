@@ -202,11 +202,16 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
   }, [data?.pieLabels, data?.pieValues]);
 
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [lineTooltipIndex, setLineTooltipIndex] = useState<number | null>(null);
+  const [barTooltipIndex, setBarTooltipIndex] = useState<number | null>(null);
   const [selectedPieKey, setSelectedPieKey] = useState<string | null>(null);
+  const [pieTooltipKey, setPieTooltipKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (months.length === 0) {
       setSelectedIndex(0);
+      setLineTooltipIndex(null);
+      setBarTooltipIndex(null);
       return;
     }
 
@@ -216,11 +221,14 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
       }
       return current;
     });
+    setLineTooltipIndex(null);
+    setBarTooltipIndex(null);
   }, [months.length]);
 
   useEffect(() => {
     if (pieEntries.length === 0) {
       setSelectedPieKey(null);
+      setPieTooltipKey(null);
       return;
     }
 
@@ -231,12 +239,14 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
 
       return pieEntries.reduce((best, entry) => (entry.value > best.value ? entry : best), pieEntries[0]).key;
     });
+    setPieTooltipKey(null);
   }, [pieEntries]);
 
   const selectedMonthLabel = months[selectedIndex] ?? months[months.length - 1] ?? "Overview";
-  const selectedLineValue = lineValues[selectedIndex] ?? lineValues[lineValues.length - 1] ?? 0;
-  const selectedIncome = income[selectedIndex] ?? 0;
-  const selectedExpense = expenses[selectedIndex] ?? 0;
+  const lineTooltipLabel = lineTooltipIndex !== null ? months[lineTooltipIndex] ?? selectedMonthLabel : null;
+  const lineTooltipValue = lineTooltipIndex !== null ? lineValues[lineTooltipIndex] ?? 0 : 0;
+  const barTooltipIncome = barTooltipIndex !== null ? income[barTooltipIndex] ?? 0 : 0;
+  const barTooltipExpense = barTooltipIndex !== null ? expenses[barTooltipIndex] ?? 0 : 0;
   const totalIncome = useMemo(() => roundCurrency(income.reduce((sum, value) => sum + value, 0)), [income]);
   const totalExpense = useMemo(() => roundCurrency(expenses.reduce((sum, value) => sum + value, 0)), [expenses]);
   const hasBarData = income.some((value) => value > 0) || expenses.some((value) => value > 0);
@@ -269,7 +279,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
       linePoints.map((point, index) => makeCirclePath(point.x, point.y, index === selectedIndex ? 4.5 : 3.2)),
     [linePoints, selectedIndex]
   );
-  const selectedLinePoint = linePoints[selectedIndex] ?? linePoints[linePoints.length - 1] ?? null;
+  const lineTooltipPoint = lineTooltipIndex !== null ? linePoints[lineTooltipIndex] ?? null : null;
 
   const barChartMax = useMemo(() => computeBarMax([...income, ...expenses]), [expenses, income]);
   const barDomain = useMemo<[number, number]>(() => (hasBarData ? [0, barChartMax] : [-1, 1]), [barChartMax, hasBarData]);
@@ -286,21 +296,39 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
   const barGap = clamp(groupWidth * 0.08, 2, 6);
   const selectedGroupWidth = Math.max(groupWidth - 6, barWidth * 2 + barGap + 10);
 
-  const lineTooltipProgress = useSharedValue(1);
-  const barTooltipProgress = useSharedValue(1);
-  const pieTooltipProgress = useSharedValue(1);
+  const lineTooltipProgress = useSharedValue(0);
+  const barTooltipProgress = useSharedValue(0);
+  const pieTooltipProgress = useSharedValue(0);
 
   useEffect(() => {
+    if (lineTooltipIndex === null) {
+      lineTooltipProgress.value = 0;
+      return;
+    }
+
     lineTooltipProgress.value = 0;
     lineTooltipProgress.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
-    barTooltipProgress.value = 0;
-    barTooltipProgress.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
-  }, [barTooltipProgress, lineTooltipProgress, selectedIndex]);
+  }, [lineTooltipIndex, lineTooltipProgress]);
 
   useEffect(() => {
+    if (barTooltipIndex === null) {
+      barTooltipProgress.value = 0;
+      return;
+    }
+
+    barTooltipProgress.value = 0;
+    barTooltipProgress.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
+  }, [barTooltipIndex, barTooltipProgress]);
+
+  useEffect(() => {
+    if (!pieTooltipKey) {
+      pieTooltipProgress.value = 0;
+      return;
+    }
+
     pieTooltipProgress.value = 0;
     pieTooltipProgress.value = withTiming(1, { duration: 180, easing: Easing.out(Easing.cubic) });
-  }, [pieTooltipProgress, selectedPieKey]);
+  }, [pieTooltipKey, pieTooltipProgress]);
 
   const lineTooltipStyle = useAnimatedStyle(() => ({
     opacity: lineTooltipProgress.value,
@@ -317,13 +345,47 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
     transform: [{ scale: 0.96 + pieTooltipProgress.value * 0.04 }],
   }));
 
-  const selectedPieEntry = useMemo(
-    () => pieEntries.find((entry) => entry.key === selectedPieKey) ?? pieEntries[0] ?? null,
-    [pieEntries, selectedPieKey]
+  const pieTooltipEntry = useMemo(
+    () => (pieTooltipKey ? pieEntries.find((entry) => entry.key === pieTooltipKey) ?? null : null),
+    [pieEntries, pieTooltipKey]
   );
   const pieTotal = useMemo(() => roundCurrency(pieEntries.reduce((sum, entry) => sum + entry.value, 0)), [pieEntries]);
-  const selectedPieShare = selectedPieEntry && hasPieData && pieTotal > 0 ? selectedPieEntry.value / pieTotal : 0;
-  const emptyBarLabel = compactCurrency(formatCurrency, 0);
+  const selectedPieShare = pieTooltipEntry && hasPieData && pieTotal > 0 ? pieTooltipEntry.value / pieTotal : 0;
+
+  const handleSelectMonthFromNavigation = (index: number) => {
+    setSelectedIndex(index);
+    setLineTooltipIndex(null);
+    setBarTooltipIndex(null);
+    setPieTooltipKey(null);
+  };
+
+  const handleSelectLinePoint = (index: number) => {
+    setSelectedIndex(index);
+    setLineTooltipIndex(index);
+    setBarTooltipIndex(null);
+    setPieTooltipKey(null);
+  };
+
+  const handleSelectBarGroup = (index: number) => {
+    setSelectedIndex(index);
+    setBarTooltipIndex(index);
+    setLineTooltipIndex(null);
+    setPieTooltipKey(null);
+  };
+
+  const handleSelectPieCallout = (key: string) => {
+    setSelectedPieKey(key);
+    setPieTooltipKey(key);
+    setLineTooltipIndex(null);
+    setBarTooltipIndex(null);
+  };
+
+  const handleSelectPieLegend = (key: string) => {
+    setSelectedPieKey(key);
+    setPieTooltipKey(null);
+    setLineTooltipIndex(null);
+    setBarTooltipIndex(null);
+  };
 
   if (months.length === 0) {
     return (
@@ -340,33 +402,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
       contentContainerStyle={styles.contentContainer}
       showsVerticalScrollIndicator={false}
     >
-      <View style={styles.headerRow}>
-        <Text style={[styles.headerTitle, { color: theme.colors.text }]}>Total Stats</Text>
-        <View style={styles.monthPill}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            activeOpacity={0.85}
-            disabled={selectedIndex <= 0}
-            onPress={() => setSelectedIndex((current) => clamp(current - 1, 0, Math.max(months.length - 1, 0)))}
-            style={styles.navButton}
-          >
-            <ChevronLeft size={15} color={selectedIndex <= 0 ? axisLabelColor : theme.colors.text} />
-          </TouchableOpacity>
-          <Text style={[styles.monthPillText, { color: theme.colors.text }]}>{selectedMonthLabel}</Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            activeOpacity={0.85}
-            disabled={selectedIndex >= months.length - 1}
-            onPress={() => setSelectedIndex((current) => clamp(current + 1, 0, Math.max(months.length - 1, 0)))}
-            style={styles.navButton}
-          >
-            <ChevronRight size={15} color={selectedIndex >= months.length - 1 ? axisLabelColor : theme.colors.text} />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <Text style={[styles.balanceLabel, { color: axisLabelColor }]}>Balance</Text>
-      <Text style={[styles.balanceValue, { color: theme.colors.text }]}>{formatCurrency(selectedLineValue)}</Text>
+      
 
       <View style={styles.chartSection}>
         <View style={styles.chartSurface}>
@@ -402,28 +438,28 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
               {formatAxisTick(tick)}
             </Text>
           ))}
-          {selectedLinePoint ? (
+          {lineTooltipPoint && lineTooltipLabel ? (
             <Animated.View
               style={[
                 styles.lineTooltip,
                 {
-                  left: clamp(selectedLinePoint.x - 58, LINE_PADDING.left + 4, CHART_W - 118),
-                  top: clamp(selectedLinePoint.y - 48, 2, LINE_H - 58),
+                  left: clamp(lineTooltipPoint.x - 58, LINE_PADDING.left + 4, CHART_W - 118),
+                  top: clamp(lineTooltipPoint.y - 48, 2, LINE_H - 58),
                   backgroundColor: tooltipSurface,
                   borderColor: tooltipBorder,
                 },
                 lineTooltipStyle,
               ]}
             >
-              <Text style={[styles.tooltipEyebrow, { color: axisLabelColor }]}>{selectedMonthLabel}</Text>
-              <Text style={[styles.tooltipValue, { color: theme.colors.text }]}>{formatCurrency(selectedLineValue)}</Text>
+              <Text style={[styles.tooltipEyebrow, { color: axisLabelColor }]}>{lineTooltipLabel}</Text>
+              <Text style={[styles.tooltipValue, { color: theme.colors.text }]}>{formatCurrency(lineTooltipValue)}</Text>
             </Animated.View>
           ) : null}
           {linePoints.map((point, index) => (
             <TouchableOpacity
               key={`line-touch-${months[index]}-${index}`}
               activeOpacity={0.88}
-              onPress={() => setSelectedIndex(index)}
+              onPress={() => handleSelectLinePoint(index)}
               style={[
                 styles.pointTouchTarget,
                 {
@@ -439,7 +475,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
             <TouchableOpacity
               key={`${label}-line-${index}`}
               activeOpacity={0.88}
-              onPress={() => setSelectedIndex(index)}
+              onPress={() => handleSelectMonthFromNavigation(index)}
               style={styles.axisItem}
             >
               <Text style={[styles.axisLabel, { color: axisLabelColor }]}>{label}</Text>
@@ -524,7 +560,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 <TouchableOpacity
                   key={`${label}-bar-touch-${index}`}
                   activeOpacity={0.88}
-                  onPress={() => setSelectedIndex(index)}
+                  onPress={() => handleSelectBarGroup(index)}
                   style={[
                     styles.barTouchTarget,
                     {
@@ -537,7 +573,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 />
               ))
             : null}
-          {hasBarData ? (
+          {hasBarData && barTooltipIndex !== null ? (
             <Animated.View
               pointerEvents="none"
               style={[
@@ -549,32 +585,17 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 barTooltipStyle,
               ]}
             >
-              <Text style={[styles.barTooltipText, { color: incomeColor }]}>Income {formatCurrency(selectedIncome)}</Text>
-              <Text style={[styles.barTooltipText, { color: expenseColor }]}>Expenses {formatCurrency(selectedExpense)}</Text>
+              <Text style={[styles.barTooltipText, { color: incomeColor }]}>Income {formatCurrency(barTooltipIncome)}</Text>
+              <Text style={[styles.barTooltipText, { color: expenseColor }]}>Expenses {formatCurrency(barTooltipExpense)}</Text>
             </Animated.View>
-          ) : (
-            <View
-              pointerEvents="none"
-              style={[
-                styles.barTooltip,
-                styles.emptyBarTooltip,
-                {
-                  backgroundColor: tooltipSurface,
-                  borderColor: tooltipBorder,
-                },
-              ]}
-            >
-              <Text style={[styles.barTooltipText, { color: incomeColor }]}>Income {emptyBarLabel}</Text>
-              <Text style={[styles.barTooltipText, { color: expenseColor }]}>Expenses {emptyBarLabel}</Text>
-            </View>
-          )}
+          ) : null}
         </View>
         <View style={styles.barAxisRow}>
           {months.map((label, index) => (
             <TouchableOpacity
               key={`${label}-bar-${index}`}
               activeOpacity={0.88}
-              onPress={() => setSelectedIndex(index)}
+              onPress={() => handleSelectMonthFromNavigation(index)}
               style={styles.barAxisItem}
             >
               <Text style={[styles.axisLabel, { color: axisLabelColor }]}>{label}</Text>
@@ -588,8 +609,6 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
       {hasPieSeries ? (
         <View style={styles.chartSection}>
           <View style={[styles.pieSummaryRow, { borderBottomColor: theme.colors.border }]}>
-            <Text style={[styles.pieSummaryText, { color: incomeColor }]}>Income {formatCurrency(totalIncome)}</Text>
-            <Text style={[styles.pieSummaryText, { color: theme.colors.text }]}>Expenses {formatCurrency(totalExpense)}</Text>
           </View>
           {hasPieData ? (
             <View style={styles.pieWrap}>
@@ -597,7 +616,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 size={PIE_SIZE}
                 slices={pieEntries}
                 focusedKey={selectedPieKey}
-                onSelect={setSelectedPieKey}
+                onSelect={handleSelectPieCallout}
                 variant="pie"
                 showCallouts
                 labelColor={theme.colors.text}
@@ -609,7 +628,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
               <Text style={[styles.emptyText, { color: theme.colors.textSecondary }]}>There is no distribution data for this window yet.</Text>
             </View>
           )}
-          {selectedPieEntry && hasPieData ? (
+          {pieTooltipEntry && hasPieData ? (
             <Animated.View
               style={[
                 styles.pieFocusCard,
@@ -620,10 +639,10 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 pieTooltipStyle,
               ]}
             >
-              <View style={[styles.pieFocusSwatch, { backgroundColor: selectedPieEntry.color }]} />
+              <View style={[styles.pieFocusSwatch, { backgroundColor: pieTooltipEntry.color }]} />
               <View style={styles.pieFocusCopy}>
-                <Text style={[styles.tooltipEyebrow, { color: axisLabelColor }]}>{selectedPieEntry.label}</Text>
-                <Text style={[styles.tooltipValue, { color: theme.colors.text }]}>{formatCurrency(selectedPieEntry.value)}</Text>
+                <Text style={[styles.tooltipEyebrow, { color: axisLabelColor }]}>{pieTooltipEntry.label}</Text>
+                <Text style={[styles.tooltipValue, { color: theme.colors.text }]}>{formatCurrency(pieTooltipEntry.value)}</Text>
               </View>
               <Text style={[styles.pieFocusShare, { color: theme.colors.text }]}>{formatPercentage(selectedPieShare)}</Text>
             </Animated.View>
@@ -636,7 +655,7 @@ export default function AccountModalSkia({ data }: AccountModalSkiaProps) {
                 <TouchableOpacity
                   key={entry.key}
                   activeOpacity={0.88}
-                  onPress={() => setSelectedPieKey(entry.key)}
+                  onPress={() => handleSelectPieLegend(entry.key)}
                   style={[
                     styles.pieLegendRow,
                     {

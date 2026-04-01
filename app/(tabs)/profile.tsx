@@ -658,8 +658,8 @@ export default function ProfileScreen() {
     const exportedAt = new Date();
     const isExcel = format === 'excel';
     const content = isExcel
-      ? exportTransactionsReportExcel(transactions, preset, exportedAt)
-      : exportTransactionsReportCsv(transactions, preset, exportedAt);
+      ? exportTransactionsReportExcel(allTransactions, preset, exportedAt)
+      : exportTransactionsReportCsv(allTransactions, preset, exportedAt);
     const fileName = isExcel ? 'Money Manager-Excel.xls' : 'Money Manager-CSV.csv';
     const mimeType = isExcel ? 'application/vnd.ms-excel' : 'text/csv';
 
@@ -1645,7 +1645,7 @@ ${buildTransactionExportWindowMessage()}`,
         'How would you like to contact support?',
         [
           { text: 'Email', onPress: openEmailSupport },
-          { text: 'Phone', onPress: () => Linking.openURL('tel:+15551234567') },
+          { text: 'Phone', onPress: () => Linking.openURL('tel:') },
           { text: 'Cancel', style: 'cancel' },
         ]
       );
